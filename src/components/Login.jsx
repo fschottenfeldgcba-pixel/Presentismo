@@ -1,6 +1,6 @@
-import React, { useState } from 'react';
-import { LogIn, Key, Users, UserPlus, ArrowLeft } from 'lucide-react';
-import { login, signUp } from '../services/supabaseService';
+import React, { useState, useEffect } from 'react';
+import { LogIn, Key, Users, UserPlus, ArrowLeft, Mail, RefreshCw } from 'lucide-react';
+import { login, signUp, recuperarPassword, updatePassword } from '../services/supabaseService';
 
 export default function Login({ onLoginSuccess }) {
   const [email, setEmail] = useState('');
@@ -12,6 +12,66 @@ export default function Login({ onLoginSuccess }) {
   const [isSignUp, setIsSignUp] = useState(false);
   const [nombre, setNombre] = useState('');
   const [rol, setRol] = useState('gerencia');
+
+  // Modo de recuperación y restablecimiento de contraseña
+  const [isRecovery, setIsRecovery] = useState(false);
+  const [isResetMode, setIsResetMode] = useState(false);
+  const [recoveryEmailSent, setRecoveryEmailSent] = useState(false);
+  const [newPassword, setNewPassword] = useState('');
+
+  // Detectar si el usuario viene desde el correo de restablecimiento de contraseña
+  useEffect(() => {
+    const hash = window.location.hash;
+    if (hash && (hash.includes('access_token=') || hash.includes('type=recovery'))) {
+      setIsResetMode(true);
+      setError('');
+    }
+  }, []);
+
+  const handleRecoverySubmit = async (e) => {
+    e.preventDefault();
+    if (!email) {
+      setError('Por favor, ingresá tu correo electrónico.');
+      return;
+    }
+    
+    setLoading(true);
+    setError('');
+    const { error: recError } = await recuperarPassword(email);
+    setLoading(false);
+    
+    if (recError) {
+      setError(`Error al enviar correo: ${recError.message}`);
+    } else {
+      setRecoveryEmailSent(true);
+    }
+  };
+
+  const handleResetSubmit = async (e) => {
+    e.preventDefault();
+    if (!newPassword || newPassword.length < 6) {
+      setError('La contraseña debe tener al menos 6 caracteres.');
+      return;
+    }
+    
+    setLoading(true);
+    setError('');
+    const { error: resetError } = await updatePassword(newPassword);
+    setLoading(false);
+    
+    if (resetError) {
+      setError(`Error al restablecer contraseña: ${resetError.message}`);
+    } else {
+      alert('¡Tu contraseña ha sido restablecida con éxito! Ya podés ingresar al sistema.');
+      // Limpiar URL de los hash tokens para no quedarse en modo reset
+      window.history.replaceState(null, null, window.location.pathname);
+      setIsResetMode(false);
+      setIsRecovery(false);
+      setIsSignUp(false);
+      setPassword('');
+      setNewPassword('');
+    }
+  };
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -80,21 +140,155 @@ export default function Login({ onLoginSuccess }) {
         </div>
 
         {error && (
-          <div style={{
-            backgroundColor: '#FDE8E8',
-            color: '#9B1C1C',
-            padding: '0.75rem',
-            borderRadius: '8px',
-            fontSize: '0.85rem',
-            marginBottom: '1rem',
-            border: '1px solid #F8B4B4'
-          }}>
-            {error}
+          <div>
+            <div style={{
+              backgroundColor: '#FDE8E8',
+              color: '#9B1C1C',
+              padding: '0.75rem',
+              borderRadius: '8px',
+              fontSize: '0.85rem',
+              marginBottom: '1rem',
+              border: '1px solid #F8B4B4'
+            }}>
+              {error}
+            </div>
+            {error.includes('Email not confirmed') && (
+              <div style={{
+                backgroundColor: '#EFF6FF',
+                color: '#1E40AF',
+                padding: '0.75rem',
+                borderRadius: '8px',
+                fontSize: '0.8rem',
+                marginBottom: '1rem',
+                border: '1px solid #BFDBFE',
+                lineHeight: '1.4'
+              }}>
+                💡 <strong>Tip para pruebas locales</strong>: En la consola de Supabase, podés desactivar la confirmación de email obligatoria en: <em>Authentication &gt; Providers &gt; Email &gt; Confirm email: OFF</em>. Así podrás ingresar inmediatamente sin validar el correo.
+              </div>
+            )}
+            {error.includes('rate limit exceeded') && (
+              <div style={{
+                backgroundColor: '#EFF6FF',
+                color: '#1E40AF',
+                padding: '0.75rem',
+                borderRadius: '8px',
+                fontSize: '0.8rem',
+                marginBottom: '1rem',
+                border: '1px solid #BFDBFE',
+                lineHeight: '1.4'
+              }}>
+                💡 <strong>Límite de envíos excedido</strong>: Supabase limita la cantidad de correos de confirmación. Esperá unos minutos o desactivá <em>Confirm email</em> en la consola de Supabase para omitir este paso en tus pruebas.
+              </div>
+            )}
           </div>
         )}
 
-        {/* MODO REGISTRO */}
-        {isSignUp ? (
+        {/* VISTA DE RESTABLECIMIENTO (RESET PASSWORD) */}
+        {isResetMode ? (
+          <form onSubmit={handleResetSubmit}>
+            <p style={{ fontSize: '0.85rem', color: 'var(--color-text-muted)', marginBottom: '1.25rem' }}>
+              Establecé tu nueva contraseña para ingresar al sistema:
+            </p>
+            <div className="form-group">
+              <label htmlFor="reset-password">Nueva Contraseña *</label>
+              <input
+                type="password"
+                id="reset-password"
+                className="form-control"
+                placeholder="Mínimo 6 caracteres"
+                value={newPassword}
+                onChange={(e) => setNewPassword(e.target.value)}
+                required
+              />
+            </div>
+            <button 
+              type="submit" 
+              className="btn btn-primary" 
+              style={{ width: '100%', marginTop: '1rem', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px' }}
+              disabled={loading}
+            >
+              {loading ? 'Restableciendo...' : <><Key size={18} /> Guardar Nueva Contraseña</>}
+            </button>
+            <div style={{ textAlign: 'center', marginTop: '1.5rem' }}>
+              <button 
+                type="button" 
+                style={{ border: 'none', background: 'none', color: 'var(--color-highlight)', textDecoration: 'underline', cursor: 'pointer', fontSize: '0.85rem' }}
+                onClick={() => {
+                  setIsResetMode(false);
+                  setIsRecovery(false);
+                  setIsSignUp(false);
+                  setError('');
+                }}
+              >
+                Volver al inicio de sesión
+              </button>
+            </div>
+          </form>
+        ) : isRecovery ? (
+          /* VISTA DE RECUPERACIÓN (RECOVER PASSWORD) */
+          <form onSubmit={handleRecoverySubmit}>
+            {recoveryEmailSent ? (
+              <div style={{ textAlign: 'center', padding: '1rem 0' }}>
+                <Mail size={40} style={{ color: 'var(--color-success)', marginBottom: '1rem' }} />
+                <h4 style={{ fontSize: '1rem', color: 'var(--color-primary)', fontWeight: '700' }}>¡Correo enviado!</h4>
+                <p style={{ fontSize: '0.85rem', color: 'var(--color-text-muted)', marginTop: '8px', lineHeight: '1.4' }}>
+                  Te enviamos un correo electrónico a <strong>{email}</strong> con las instrucciones para restablecer tu contraseña.
+                </p>
+                <button 
+                  type="button" 
+                  className="btn btn-primary" 
+                  style={{ width: '100%', marginTop: '1.5rem' }}
+                  onClick={() => {
+                    setIsRecovery(false);
+                    setRecoveryEmailSent(false);
+                    setError('');
+                  }}
+                >
+                  Volver al inicio de sesión
+                </button>
+              </div>
+            ) : (
+              <>
+                <p style={{ fontSize: '0.85rem', color: 'var(--color-text-muted)', marginBottom: '1.25rem', lineHeight: '1.4' }}>
+                  Ingresá tu correo electrónico y te enviaremos un link para restablecer tu contraseña:
+                </p>
+                <div className="form-group">
+                  <label htmlFor="recovery-email">Correo Electrónico *</label>
+                  <input
+                    type="email"
+                    id="recovery-email"
+                    className="form-control"
+                    placeholder="ejemplo@correo.com"
+                    value={email}
+                    onChange={(e) => setEmail(e.target.value)}
+                    required
+                  />
+                </div>
+                <button 
+                  type="submit" 
+                  className="btn btn-primary" 
+                  style={{ width: '100%', marginTop: '1rem', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px' }}
+                  disabled={loading}
+                >
+                  {loading ? 'Enviando...' : <><Mail size={18} /> Enviar correo de recuperación</>}
+                </button>
+                <div style={{ textAlign: 'center', marginTop: '1.5rem' }}>
+                  <button 
+                    type="button" 
+                    style={{ border: 'none', background: 'none', color: 'var(--color-highlight)', textDecoration: 'underline', cursor: 'pointer', fontSize: '0.85rem' }}
+                    onClick={() => {
+                      setIsRecovery(false);
+                      setError('');
+                    }}
+                  >
+                    Volver al inicio de sesión
+                  </button>
+                </div>
+              </>
+            )}
+          </form>
+        ) : isSignUp ? (
+          /* MODO REGISTRO */
           <form onSubmit={handleSignUpSubmit}>
             <div className="form-group">
               <label htmlFor="reg-nombre">Nombre Completo *</label>
@@ -209,7 +403,7 @@ export default function Login({ onLoginSuccess }) {
               </button>
             </form>
 
-            <div style={{ textAlign: 'center', marginTop: '1rem' }}>
+            <div style={{ textAlign: 'center', marginTop: '1.25rem', display: 'flex', flexDirection: 'column', gap: '10px', alignItems: 'center' }}>
               <button 
                 type="button" 
                 style={{ border: 'none', background: 'none', color: 'var(--color-highlight)', textDecoration: 'underline', cursor: 'pointer', fontSize: '0.85rem' }}
@@ -219,6 +413,16 @@ export default function Login({ onLoginSuccess }) {
                 }}
               >
                 ¿No tenés usuario? Registrar administrador aquí
+              </button>
+              <button 
+                type="button" 
+                style={{ border: 'none', background: 'none', color: 'var(--color-text-muted)', textDecoration: 'underline', cursor: 'pointer', fontSize: '0.8rem' }}
+                onClick={() => {
+                  setIsRecovery(true);
+                  setError('');
+                }}
+              >
+                ¿Olvidaste tu contraseña?
               </button>
             </div>
           </>

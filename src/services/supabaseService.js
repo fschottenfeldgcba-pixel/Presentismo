@@ -102,6 +102,22 @@ export const signUp = async (email, password, nombre, rol) => {
   }
 };
 
+/**
+ * Envía un correo electrónico para restablecer la contraseña.
+ */
+export const recuperarPassword = async (email) => {
+  try {
+    const { data, error } = await supabase.auth.resetPasswordForEmail(email, {
+      redirectTo: `${window.location.origin}/reset-password`
+    });
+    if (error) throw error;
+    return { data, error: null };
+  } catch (error) {
+    console.error('Error en recuperarPassword:', error);
+    return { data: null, error };
+  }
+};
+
 // =========================================================================
 // 2. REUNIONES
 // =========================================================================
@@ -435,6 +451,13 @@ export const normalizeComuna = (val) => {
   if (val === null || val === undefined || val.toString().trim() === '') return null;
   const clean = val.toString().trim();
   
+  if (clean.toLowerCase().includes('norte')) {
+    return 'Comuna 1 Norte';
+  }
+  if (clean.toLowerCase().includes('sur')) {
+    return 'Comuna 1 Sur';
+  }
+
   const match = clean.match(/\d+/);
   if (match) {
     const num = parseInt(match[0]);
@@ -514,6 +537,85 @@ export const getFuncionarioStats = async (funcionarioName) => {
     };
   } catch (error) {
     console.error('Error en getFuncionarioStats:', error);
+    return { data: null, error };
+  }
+};
+
+/**
+ * Elimina todos los inscriptos/asistentes de una reunión.
+ * También limpia la cola de oradores asociada a la reunión.
+ */
+export const eliminarTodosLosInscriptos = async (reunionId) => {
+  try {
+    // 1. Eliminar oradores de la reunión primero
+    const { error: errOradores } = await supabase
+      .from('oradores')
+      .delete()
+      .eq('reunion_id', reunionId);
+
+    if (errOradores) throw errOradores;
+
+    // 2. Eliminar inscripciones/asistencias
+    const { data, error } = await supabase
+      .from('inscripciones_asistencias')
+      .delete()
+      .eq('reunion_id', reunionId);
+
+    if (error) throw error;
+    return { data, error: null };
+  } catch (error) {
+    console.error('Error en eliminarTodosLosInscriptos:', error);
+    return { data: null, error };
+  }
+};
+
+/**
+ * Elimina una reunión y todos sus datos asociados (asistencia y oradores)
+ */
+export const deleteReunionCompleta = async (reunionId) => {
+  try {
+    // 1. Eliminar oradores
+    const { error: errOradores } = await supabase
+      .from('oradores')
+      .delete()
+      .eq('reunion_id', reunionId);
+
+    if (errOradores) throw errOradores;
+
+    // 2. Eliminar inscripciones/asistencias
+    const { error: errAsistencias } = await supabase
+      .from('inscripciones_asistencias')
+      .delete()
+      .eq('reunion_id', reunionId);
+
+    if (errAsistencias) throw errAsistencias;
+
+    // 3. Eliminar la reunión
+    const { data, error } = await supabase
+      .from('reuniones')
+      .delete()
+      .eq('id', reunionId);
+
+    if (error) throw error;
+    return { data, error: null };
+  } catch (error) {
+    console.error('Error en deleteReunionCompleta:', error);
+    return { data: null, error };
+  }
+};
+
+/**
+ * Actualiza la contraseña del usuario logueado o en sesión de recuperación.
+ */
+export const updatePassword = async (newPassword) => {
+  try {
+    const { data, error } = await supabase.auth.updateUser({
+      password: newPassword
+    });
+    if (error) throw error;
+    return { data, error: null };
+  } catch (error) {
+    console.error('Error en updatePassword:', error);
     return { data: null, error };
   }
 };

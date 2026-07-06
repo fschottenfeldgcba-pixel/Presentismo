@@ -4,12 +4,29 @@ import DashboardAdmin from './components/DashboardAdmin';
 import ABMReuniones from './components/ABMReuniones';
 import ControlAsistencia from './components/ControlAsistencia';
 import AdministrarReunion from './components/AdministrarReunion';
+import PanelModerador from './components/PanelModerador';
 import { LogOut, Users2, ShieldCheck } from 'lucide-react';
 
 export default function App() {
   const [user, setUser] = useState(null);
   const [currentView, setCurrentView] = useState('login'); // 'login' | 'dashboard' | 'create_reunion' | 'asistencia'
   const [selectedReunion, setSelectedReunion] = useState(null);
+  const [dialog, setDialog] = useState(null);
+
+  // Sobrescribir popups nativos del navegador por modales web
+  React.useEffect(() => {
+    window.alert = (message, title = 'Aviso del Sistema') => {
+      return new Promise(resolve => {
+        setDialog({ message, title, type: 'alert', resolve });
+      });
+    };
+
+    window.confirm = (message, title = 'Confirmación') => {
+      return new Promise(resolve => {
+        setDialog({ message, title, type: 'confirm', resolve });
+      });
+    };
+  }, []);
 
   const handleLoginSuccess = (loggedInUser) => {
     setUser(loggedInUser);
@@ -80,6 +97,10 @@ export default function App() {
               setSelectedReunion(reunion);
               setCurrentView('administrar_reunion');
             }}
+            onModerarReunion={(reunion) => {
+              setSelectedReunion(reunion);
+              setCurrentView('moderar_reunion');
+            }}
             onCreateMeetingClick={() => setCurrentView('create_reunion')}
           />
         )}
@@ -115,6 +136,16 @@ export default function App() {
             }}
           />
         )}
+
+        {currentView === 'moderar_reunion' && user && selectedReunion && (
+          <PanelModerador 
+            reunion={selectedReunion}
+            onBack={() => {
+              setSelectedReunion(null);
+              setCurrentView('dashboard');
+            }}
+          />
+        )}
       </main>
 
       {/* FOOTER PREMIUM */}
@@ -130,6 +161,65 @@ export default function App() {
         }}>
           © 2026 - Dirección General de Participación Ciudadana - Gobierno de la Ciudad de Buenos Aires.
         </footer>
+      )}
+      {/* GLOBAL CUSTOM ALERT/CONFIRM DIALOG MODAL */}
+      {dialog && (
+        <div className="modal-overlay" style={{ zIndex: 999999, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          <div className="modal-content" style={{ 
+            maxWidth: '450px', 
+            width: '90%', 
+            padding: '1.75rem', 
+            borderTop: `4px solid ${dialog.type === 'confirm' ? 'var(--color-primary)' : 'var(--color-highlight)'}`,
+            borderRadius: '12px',
+            textAlign: 'center',
+            backgroundColor: '#FFFFFF',
+            boxShadow: '0 20px 25px -5px rgba(0, 0, 0, 0.15), 0 10px 10px -5px rgba(0, 0, 0, 0.04)',
+            animation: 'fadeIn 0.2s ease'
+          }}>
+            <h3 style={{ fontSize: '1.25rem', color: 'var(--color-primary)', margin: '0 0 0.85rem 0', fontWeight: '700' }}>
+              {dialog.title}
+            </h3>
+            <p style={{ 
+              fontSize: '0.9rem', 
+              color: '#334155', 
+              margin: '0 0 1.75rem 0', 
+              lineHeight: '1.6',
+              whiteSpace: 'pre-line'
+            }}>
+              {dialog.message}
+            </p>
+            <div style={{ display: 'flex', gap: '12px', justifyContent: 'center' }}>
+              {dialog.type === 'confirm' && (
+                <button 
+                  className="btn btn-secondary" 
+                  onClick={() => {
+                    dialog.resolve(false);
+                    setDialog(null);
+                  }}
+                  style={{ padding: '8px 20px', fontSize: '0.85rem', fontWeight: '600' }}
+                >
+                  Cancelar
+                </button>
+              )}
+              <button 
+                className="btn btn-primary" 
+                onClick={() => {
+                  dialog.resolve(true);
+                  setDialog(null);
+                }}
+                style={{ 
+                  padding: '8px 20px', 
+                  fontSize: '0.85rem',
+                  fontWeight: '600',
+                  backgroundColor: dialog.type === 'confirm' ? 'var(--color-primary)' : 'var(--color-highlight)',
+                  borderColor: dialog.type === 'confirm' ? 'var(--color-primary)' : 'var(--color-highlight)'
+                }}
+              >
+                Aceptar
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

@@ -1,11 +1,42 @@
 import React, { useState, useEffect } from 'react';
-import { BarChart3, Plus, Download, Calendar, MapPin, Users, Award, ChevronRight, FileSpreadsheet, Settings, Search, Edit3, Save, Activity, Mic, MessageSquare, Check, TrendingUp, AlertTriangle, Trash2 } from 'lucide-react';
-import { getReuniones, getAsistentesPorReunion, getOradores, upsertVecino, normalizeComuna, normalizeCanalDifusion, guardarAsistencia, registrarOrador } from '../services/supabaseService';
+import { BarChart3, Plus, Download, Calendar, MapPin, Users, Award, ChevronRight, FileSpreadsheet, Settings, Search, Edit3, Save, Activity, Mic, MessageSquare, Check, TrendingUp, AlertTriangle, Trash2, UserCog } from 'lucide-react';
+import { getReuniones, getAsistentesPorReunion, getOradores, upsertVecino, normalizeComuna, normalizeCanalDifusion, guardarAsistencia, registrarOrador, eliminarTodosLosInscriptos } from '../services/supabaseService';
 import { supabase } from '../lib/supabaseClient';
 import * as XLSX from 'xlsx';
-import EstadisticasFuncionario from './EstadisticasFuncionario';
 
-const COMUNAS = Array.from({ length: 15 }, (_, i) => `Comuna ${i + 1}`);
+const CLIMA_MAP = {
+  bajo: { label: '🔥 Clima bajo', waLabel: 'bajo' },
+  medio: { label: '🔥 Clima medio', waLabel: 'medio' },
+  alto: { label: '🔥 Clima caliente', waLabel: 'caliente' }
+};
+
+const SEMAFORO_MAP = {
+  verde: { label: '🟢 Verde (Favorable)', waLabel: 'verde 🟢' },
+  amarillo: { label: '🟡 Amarillo (Neutral/Mixto)', waLabel: 'amarillo 🟡' },
+  rojo: { label: '🔴 Rojo (Tenso/Reclamos)', waLabel: 'rojo 🔴' }
+};
+import EstadisticasFuncionario from './EstadisticasFuncionario';
+import ABMFuncionarios from './ABMFuncionarios';
+
+const COMUNAS = [
+  "Comuna 1",
+  "Comuna 1 Norte",
+  "Comuna 1 Sur",
+  "Comuna 2",
+  "Comuna 3",
+  "Comuna 4",
+  "Comuna 5",
+  "Comuna 6",
+  "Comuna 7",
+  "Comuna 8",
+  "Comuna 9",
+  "Comuna 10",
+  "Comuna 11",
+  "Comuna 12",
+  "Comuna 13",
+  "Comuna 14",
+  "Comuna 15"
+];
 
 const BARRIOS = [
   "Convocatoria Comunal",
@@ -59,7 +90,7 @@ const BARRIOS = [
   "Villa Urquiza"
 ];
 
-export default function DashboardAdmin({ user, onSelectReunion, onManageReunion, onCreateMeetingClick }) {
+export default function DashboardAdmin({ user, onSelectReunion, onManageReunion, onModerarReunion, onCreateMeetingClick }) {
   const [activeDashboardTab, setActiveDashboardTab] = useState('reuniones'); // 'reuniones' | 'padron'
   const [reuniones, setReuniones] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -79,6 +110,8 @@ export default function DashboardAdmin({ user, onSelectReunion, onManageReunion,
   const [searchingPadron, setSearchingPadron] = useState(false);
   const [padronResults, setPadronResults] = useState([]);
   const [selectedVecino, setSelectedVecino] = useState(null);
+  const [topVecinos, setTopVecinos] = useState([]);
+  const [loadingTop, setLoadingTop] = useState(false);
 
   // Formulario del Vecino en Padrón Central
   const [vDni, setVDni] = useState('');
@@ -98,6 +131,93 @@ export default function DashboardAdmin({ user, onSelectReunion, onManageReunion,
   const [inscriptosList, setInscriptosList] = useState([]);
   const [loadingInscriptos, setLoadingInscriptos] = useState(false);
   const [inscriptosSearch, setInscriptosSearch] = useState('');
+  
+  // Estados para Modal de Informe Final
+  const [showInformeModal, setShowInformeModal] = useState(false);
+  const [selectedReunionInforme, setSelectedReunionInforme] = useState(null);
+  const [informeOradores, setInformeOradores] = useState([]);
+  const [informeAsistentes, setInformeAsistentes] = useState([]);
+  const [loadingInforme, setLoadingInforme] = useState(false);
+
+  const handleOpenInformeFinal = async (reunion) => {
+    setSelectedReunionInforme(reunion);
+    setShowInformeModal(true);
+    setLoadingInforme(true);
+    setInformeOradores([]);
+    setInformeAsistentes([]);
+    try {
+      const [asisRes, oradoresRes] = await Promise.all([
+        getAsistentesPorReunion(reunion.id),
+        getOradores(reunion.id)
+      ]);
+      if (asisRes.data) setInformeAsistentes(asisRes.data);
+      if (oradoresRes.data) setInformeOradores(oradoresRes.data);
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setLoadingInforme(false);
+    }
+  };
+
+  const handleCopyInformeWhatsApp = (reunion, oradores, asistentes) => {
+    try {
+      let displayFecha = '';
+      let displayHora = '17 hs';
+      if (reunion.fecha) {
+        const parts = reunion.fecha.split('-');
+        if (parts.length === 3) {
+          displayFecha = `${parts[2]}/${parts[1]}`;
+        }
+      }
+      
+      if (reunion.nombre && reunion.nombre.includes('-')) {
+        const nameParts = reunion.nombre.split('-');
+        const lastPart = nameParts[nameParts.length - 1].trim();
+        if (lastPart.toLowerCase().includes('hs') || lastPart.toLowerCase().includes('h')) {
+          displayHora = lastPart.toLowerCase().replace('hs', ' hs').replace('h', ' hs');
+        }
+      }
+
+      const oradoresAnotados = oradores.length;
+      const oradoresEfectivos = oradores.filter(o => o.estado === 'hablo');
+      const inscriptosCount = asistentes.length;
+      const presentesCount = asistentes.filter(a => a.asistio).length;
+      const ratioAsistencia = inscriptosCount > 0 ? Math.round((presentesCount / inscriptosCount) * 100) : 0;
+
+      const txt = `👨‍👩‍👧‍👦 RDV | *${reunion.funcionario || reunion.nombre}* - ${reunion.comuna}
+📅 ${displayFecha || 'Fecha'} | 🕠 ${displayHora}
+⏰ Inicio: ${reunion.hora_inicio_real || '--:--'} hs | Finalizó: ${reunion.hora_fin_real || '--:--'} hs
+
+📋 Inscriptos: ${inscriptosCount}
+👥 Asistentes: ${presentesCount} (${ratioAsistencia}%)
+📝 Oradores anotados: ${oradoresAnotados}
+🎤 Oradores efectivos: ${oradoresEfectivos.length}
+
+🔥 Clima ${CLIMA_MAP[reunion.clima]?.waLabel || reunion.clima || 'bajo'}
+🚦 Semáforo político: ${SEMAFORO_MAP[reunion.semaforo_politico]?.waLabel || reunion.semaforo_politico || 'verde'}
+
+*📝 Síntesis cualitativa:*
+${(reunion.sintesis_cualitativa || '').trim() || 'La reunión se desarrolló con normalidad.'}
+
+*🏛️ Gestión presente:*
+${(reunion.gestion_presente || '').trim() || '- ' + (reunion.funcionario || 'Funcionario')}
+
+*📌 Temas más comentados:*
+${oradoresEfectivos.length > 0 
+  ? oradoresEfectivos.map(o => {
+      const tel = o.vecino?.celular ? ` ${o.vecino.celular}` : '';
+      return `${o.vecino?.nombre || ''} ${o.vecino?.apellido || ''}${tel}: ${o.tema_efectivo || o.tema_original || 'Sin minuta registrada.'}`;
+    }).join('\n\n')
+  : 'No se registraron oradores efectivos.'
+}`;
+
+      navigator.clipboard.writeText(txt);
+      alert('¡Resumen de WhatsApp copiado con éxito al portapapeles!');
+    } catch (err) {
+      console.error(err);
+      alert('No se pudo copiar automáticamente.');
+    }
+  };
   
   // Estados para importación masiva en modal (Requisito 7)
   const [showImportArea, setShowImportArea] = useState(false);
@@ -127,6 +247,189 @@ export default function DashboardAdmin({ user, onSelectReunion, onManageReunion,
   const [meetingAsistentes, setMeetingAsistentes] = useState([]);
 
   const isCercaniaOrGerencia = user && (user.rol === 'gerencia' || user.rol === 'cercania');
+
+  // Clasificación de reuniones según la fecha
+  const getMeetingCategory = (dateStr) => {
+    if (!dateStr) return 'historicas';
+    
+    const parts = dateStr.split('-');
+    if (parts.length !== 3) return 'historicas';
+    
+    const meetingDate = new Date(parseInt(parts[0]), parseInt(parts[1]) - 1, parseInt(parts[2]));
+    meetingDate.setHours(0, 0, 0, 0);
+    
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    
+    // 1. ¿Hoy?
+    if (meetingDate.getTime() === today.getTime()) {
+      return 'hoy';
+    }
+    
+    // 2. ¿Esta semana (Lunes a Domingo)?
+    const dayOfWeek = today.getDay();
+    const diffToMonday = dayOfWeek === 0 ? -6 : 1 - dayOfWeek;
+    
+    const startOfWeek = new Date(today);
+    startOfWeek.setDate(today.getDate() + diffToMonday);
+    startOfWeek.setHours(0, 0, 0, 0);
+    
+    const endOfWeek = new Date(startOfWeek);
+    endOfWeek.setDate(startOfWeek.getDate() + 6);
+    endOfWeek.setHours(23, 59, 59, 999);
+    
+    if (meetingDate >= startOfWeek && meetingDate <= endOfWeek) {
+      return 'semana';
+    }
+    
+    // 3. ¿Este mes?
+    if (meetingDate.getMonth() === today.getMonth() && meetingDate.getFullYear() === today.getFullYear()) {
+      return 'mes';
+    }
+    
+    return 'historicas';
+  };
+
+  // Renderizador genérico de sección de tabla de reuniones
+  const renderMeetingTableSection = (title, emoji, categoryMeetings) => {
+    if (categoryMeetings.length === 0) return null;
+    
+    return (
+      <div style={{ marginBottom: '2.5rem' }}>
+        <h4 style={{ 
+          fontSize: '1.05rem', 
+          color: 'var(--color-primary)', 
+          fontWeight: '700', 
+          marginBottom: '1rem', 
+          display: 'flex', 
+          alignItems: 'center', 
+          gap: '8px',
+          borderBottom: '1px solid var(--color-border)',
+          paddingBottom: '8px'
+        }}>
+          <span style={{ fontSize: '1.25rem' }}>{emoji}</span> {title}
+          <span className="badge" style={{ backgroundColor: '#F1F5F9', color: 'var(--color-primary)', fontSize: '0.75rem', padding: '3px 8px', borderRadius: '12px', fontWeight: '700' }}>
+            {categoryMeetings.length}
+          </span>
+        </h4>
+        <div className="table-responsive" style={{ marginBottom: '1rem' }}>
+          <table className="table">
+            <thead>
+              <tr>
+                <th>Reunión / Funcionario</th>
+                <th>Fecha y Lugar</th>
+                <th>Tipo de Evento</th>
+                <th>Comuna</th>
+                <th style={{ textAlign: 'center' }}>Asistencia</th>
+                <th style={{ textAlign: 'center' }}>Oradores</th>
+                <th style={{ textAlign: 'right' }}>Acciones</th>
+              </tr>
+            </thead>
+            <tbody>
+              {categoryMeetings.map(r => {
+                const totalInscriptos = r.totalInscriptos || 0;
+                const presentes = r.totalPresentes || 0;
+                const ratio = totalInscriptos > 0 ? Math.round((presentes / totalInscriptos) * 100) : 0;
+                const oradoresEfectivos = r.totalOradoresEfectivos || 0;
+                const oradoresEnEspera = r.totalOradoresEnEspera || 0;
+                const isMicMeeting = r.tipo_reunion !== 'Uno a Uno';
+                
+                return (
+                  <tr key={r.id}>
+                    <td>
+                      <div style={{ fontWeight: '600', color: 'var(--color-primary)' }}>{r.nombre}</div>
+                      <div style={{ fontSize: '0.8rem', color: 'var(--color-text-muted)' }}>
+                        Cargo: {r.funcionario || 'No asignado'}
+                      </div>
+                    </td>
+                    <td>
+                      <div style={{ fontSize: '0.9rem' }}>{r.fecha}</div>
+                      <div style={{ fontSize: '0.8rem', color: 'var(--color-text-muted)', display: 'flex', alignItems: 'center', gap: '4px' }}>
+                        <MapPin size={12} /> {r.lugar}
+                      </div>
+                    </td>
+                    <td>
+                      <span className="badge badge-info" style={{ fontSize: '0.75rem' }}>
+                        {r.tipo_reunion}
+                      </span>
+                    </td>
+                    <td>
+                      <span style={{ fontWeight: '500' }}>{r.comuna}</span>
+                    </td>
+                    <td style={{ textAlign: 'center' }}>
+                      <div style={{ fontWeight: '600' }}>{presentes} / {totalInscriptos}</div>
+                      <div style={{ fontSize: '0.75rem', color: 'var(--color-text-muted)' }}>({ratio}%)</div>
+                    </td>
+                    <td style={{ textAlign: 'center' }}>
+                      {isMicMeeting ? (
+                        <div style={{ fontSize: '0.85rem', fontWeight: '600', color: 'var(--color-primary)' }}>
+                          <span style={{ color: 'var(--color-success)' }}>{oradoresEfectivos} ef.</span>
+                          {oradoresEnEspera > 0 && <span style={{ color: 'var(--color-text-muted)', marginLeft: '4px' }}>/ {oradoresEnEspera} esp.</span>}
+                        </div>
+                      ) : (
+                        <span style={{ color: 'var(--color-text-muted)' }}>-</span>
+                      )}
+                    </td>
+                    <td style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
+                      <div style={{ display: 'inline-flex', gap: '3px' }}>
+                        <button 
+                          className="btn btn-secondary btn-sm" 
+                          onClick={() => handleOpenInscriptos(r)}
+                          title="Ver lista completa de inscriptos y descargar XLS"
+                          style={{ padding: '3px 6px', display: 'flex', alignItems: 'center', gap: '3px', fontSize: '0.7rem' }}
+                        >
+                          <Users size={12} style={{ color: 'var(--color-highlight)' }} /> Inscriptos
+                        </button>
+                        {isCercaniaOrGerencia && (
+                          <>
+                            <button 
+                              className="btn btn-secondary btn-sm" 
+                              onClick={() => onManageReunion(r)}
+                              title="Editar valores de la reunión"
+                              style={{ padding: '3px 6px', display: 'flex', alignItems: 'center', gap: '3px', fontSize: '0.7rem' }}
+                            >
+                              <Settings size={12} style={{ color: 'var(--color-primary)' }} /> Editar
+                            </button>
+                            {isMicMeeting && (
+                              <>
+                                <button 
+                                  className="btn btn-secondary btn-sm" 
+                                  onClick={() => onModerarReunion(r)}
+                                  title="Panel de moderador y oradores"
+                                  style={{ padding: '3px 6px', display: 'flex', alignItems: 'center', gap: '3px', fontSize: '0.7rem' }}
+                                >
+                                  <Mic size={12} style={{ color: 'var(--color-highlight)' }} /> Moderar
+                                </button>
+                                <button 
+                                  className="btn btn-secondary btn-sm" 
+                                  onClick={() => handleOpenInformeFinal(r)}
+                                  title="Ver informe final y resumen cualitativo/cuantitativo"
+                                  style={{ padding: '3px 6px', display: 'flex', alignItems: 'center', gap: '3px', fontSize: '0.7rem', border: '1px solid var(--color-highlight)', color: 'var(--color-primary)' }}
+                                >
+                                  <Activity size={12} style={{ color: 'var(--color-highlight)' }} /> Informe
+                                </button>
+                              </>
+                            )}
+                          </>
+                        )}
+                        <button 
+                          className="btn btn-primary btn-sm" 
+                          onClick={() => onSelectReunion(r)}
+                          style={{ padding: '3px 6px', fontSize: '0.7rem', display: 'inline-flex', alignItems: 'center', gap: '3px' }}
+                        >
+                          Asistencia <ChevronRight size={12} />
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    );
+  };
 
   const loadAllData = async () => {
     setLoading(true);
@@ -205,6 +508,12 @@ export default function DashboardAdmin({ user, onSelectReunion, onManageReunion,
   useEffect(() => {
     loadAllData();
   }, []);
+
+  useEffect(() => {
+    if (activeDashboardTab === 'padron') {
+      loadTopVecinos();
+    }
+  }, [activeDashboardTab]);
 
   // Exportar lista de presentismo a un archivo CSV enriquecido
   const handleExportCSV = async (reunion) => {
@@ -401,6 +710,97 @@ export default function DashboardAdmin({ user, onSelectReunion, onManageReunion,
     setVBarrio(vecino.barrio || 'Convocatoria Comunal');
     setVComuna(vecino.comuna || 'Comuna 1');
     loadRadiografia(vecino.dni);
+  };
+
+  const loadTopVecinos = async () => {
+    try {
+      setLoadingTop(true);
+      // Intentar consulta a la vista top_10_vecinos
+      const { data: viewData, error: viewError } = await supabase
+        .from('top_10_vecinos')
+        .select('*');
+
+      if (!viewError && viewData) {
+        setTopVecinos(viewData);
+      } else {
+        // Fallback en JS si no se ha creado la vista
+        console.warn('La vista top_10_vecinos no existe. Usando fallback en JS...');
+        const { data: vecinosData, error: vecError } = await supabase
+          .from('vecinos')
+          .select('dni, nombre, apellido, celular, email, comuna, barrio, inscripciones_asistencias(count)');
+
+        if (!vecError && vecinosData) {
+          const processed = vecinosData
+            .map(v => ({
+              dni: v.dni,
+              nombre: v.nombre,
+              apellido: v.apellido,
+              celular: v.celular,
+              email: v.email,
+              comuna: v.comuna,
+              barrio: v.barrio,
+              total_inscripciones: v.inscripciones_asistencias?.[0]?.count || 0
+            }))
+            .filter(v => v.total_inscripciones > 0)
+            .sort((a, b) => b.total_inscripciones - a.total_inscripciones)
+            .slice(0, 10);
+
+          setTopVecinos(processed);
+        }
+      }
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setLoadingTop(false);
+    }
+  };
+
+  const handleExportInscriptosToExcel = () => {
+    if (inscriptosList.length === 0 || !selectedReunionInscriptos) return;
+    
+    // Preparar filas para el Excel
+    const dataToExport = inscriptosList.map(item => ({
+      DNI: item.vecino?.dni || item.vecino_id || '',
+      Nombre: item.vecino?.nombre || '',
+      Apellido: item.vecino?.apellido || '',
+      Celular: item.vecino?.celular || '',
+      Email: item.vecino?.email || '',
+      Barrio: item.vecino?.barrio || '',
+      Comuna: item.vecino?.comuna || '',
+      Asistio: item.asistio ? 'Sí' : 'No',
+      'Como se entero': item.como_se_entero || '',
+      'Estado Convocatoria': item.estado_convocatoria || ''
+    }));
+
+    const worksheet = XLSX.utils.json_to_sheet(dataToExport);
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, worksheet, 'Inscriptos');
+    
+    const cleanName = selectedReunionInscriptos.nombre.replace(/[^a-zA-Z0-9]/g, '_');
+    const fileName = `Inscriptos_${cleanName}.xlsx`;
+    XLSX.writeFile(workbook, fileName);
+  };
+
+  const handleVaciarInscriptos = async () => {
+    if (!selectedReunionInscriptos) return;
+    const confirmMessage = `¿Estás seguro de que querés borrar TODOS los inscriptos y la cola de oradores de la reunión "${selectedReunionInscriptos.nombre}"?\n\nEsta acción no se puede deshacer y te permitirá volver a cargar la lista desde cero.`;
+    if (!await window.confirm(confirmMessage)) return;
+
+    try {
+      const { error } = await eliminarTodosLosInscriptos(selectedReunionInscriptos.id);
+      if (error) {
+        alert(`Error al vaciar la lista: ${error.message}`);
+      } else {
+        alert('¡Se borraron todos los inscriptos y oradores con éxito!');
+        // Recargar el listado local del modal
+        setInscriptosList([]);
+        // Recargar el listado principal de reuniones (para actualizar los contadores)
+        await loadAllData();
+      }
+    } catch (err) {
+      console.error(err);
+      alert('Error al intentar vaciar la lista.');
+    }
   };
 
   // Abrir Modal de Inscriptos y cargar datos
@@ -1088,7 +1488,7 @@ export default function DashboardAdmin({ user, onSelectReunion, onManageReunion,
 
     const hasUnidentified = parsedOradoresPreview.some(row => row.warning);
     if (hasUnidentified) {
-      if (!confirm('Hay algunos vecinos que no fueron identificados. ¿Querés continuar y guardar solo los oradores vinculados? (Los no vinculados se omitirán)')) {
+      if (!await confirm('Hay algunos vecinos que no fueron identificados. ¿Querés continuar y guardar solo los oradores vinculados? (Los no vinculados se omitirán)')) {
         return;
       }
     }
@@ -1254,16 +1654,16 @@ export default function DashboardAdmin({ user, onSelectReunion, onManageReunion,
           <Users size={16} /> Padrón Central de Vecinos
         </div>
         <div 
-          className={`tab ${activeDashboardTab === 'acreditacion_masiva' ? 'active' : ''}`}
-          onClick={() => setActiveDashboardTab('acreditacion_masiva')}
-        >
-          <FileSpreadsheet size={16} /> Cierre Masivo de Asistencia
-        </div>
-        <div 
           className={`tab ${activeDashboardTab === 'estadisticas_funcionario' ? 'active' : ''}`}
           onClick={() => setActiveDashboardTab('estadisticas_funcionario')}
         >
           <TrendingUp size={16} /> Estadísticas por Funcionario
+        </div>
+        <div 
+          className={`tab ${activeDashboardTab === 'funcionarios' ? 'active' : ''}`}
+          onClick={() => setActiveDashboardTab('funcionarios')}
+        >
+          <UserCog size={16} /> Funcionarios
         </div>
       </div>
 
@@ -1335,10 +1735,10 @@ export default function DashboardAdmin({ user, onSelectReunion, onManageReunion,
 
           {/* Grilla de Reuniones con filtro libre */}
           <div className="card">
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.25rem', flexWrap: 'wrap', gap: '12px' }}>
-              <h3 style={{ fontSize: '1.2rem', margin: 0, display: 'flex', alignItems: 'center', gap: '8px' }}>
-                <Calendar size={20} style={{ color: 'var(--color-highlight)' }} />
-                Reuniones del Mes
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '2rem', flexWrap: 'wrap', gap: '12px' }}>
+              <h3 style={{ fontSize: '1.25rem', margin: 0, display: 'flex', alignItems: 'center', gap: '8px', color: 'var(--color-primary)', fontWeight: '700' }}>
+                <Calendar size={22} style={{ color: 'var(--color-highlight)' }} />
+                Cronograma de Reuniones
               </h3>
               <input
                 type="text"
@@ -1346,122 +1746,45 @@ export default function DashboardAdmin({ user, onSelectReunion, onManageReunion,
                 placeholder="Filtrar por funcionario, fecha, tipo..."
                 value={searchTerm}
                 onChange={(e) => setSearchTerm(e.target.value)}
-                style={{ maxWidth: '300px', fontSize: '0.85rem', padding: '6px 12px' }}
+                style={{ maxWidth: '300px', fontSize: '0.85rem', padding: '8px 14px', borderRadius: '8px', border: '1px solid var(--color-border)' }}
               />
             </div>
 
-            <div className="table-responsive">
-              <table className="table">
-                <thead>
-                  <tr>
-                    <th>Reunión / Funcionario</th>
-                    <th>Fecha y Lugar</th>
-                    <th>Tipo de Evento</th>
-                    <th>Comuna</th>
-                    <th style={{ textAlign: 'center' }}>Asistencia</th>
-                    <th style={{ textAlign: 'center' }}>Oradores</th>
-                    <th style={{ textAlign: 'right' }}>Acciones</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {reuniones
-                    .filter(r => {
-                      const term = searchTerm.toLowerCase();
-                      return (
-                        (r.nombre && r.nombre.toLowerCase().includes(term)) ||
-                        (r.funcionario && r.funcionario.toLowerCase().includes(term)) ||
-                        (r.fecha && r.fecha.toLowerCase().includes(term)) ||
-                        (r.tipo_reunion && r.tipo_reunion.toLowerCase().includes(term))
-                      );
-                    })
-                    .map(r => {
-                      const totalInscriptos = r.totalInscriptos || 0;
-                      const presentes = r.totalPresentes || 0;
-                      const ratio = totalInscriptos > 0 ? Math.round((presentes / totalInscriptos) * 100) : 0;
-                      const oradoresEfectivos = r.totalOradoresEfectivos || 0;
-                      const oradoresEnEspera = r.totalOradoresEnEspera || 0;
-                      const isMicMeeting = r.tipo_reunion === 'Encuentro con Vecinos' || r.tipo_reunion === 'Cafe con Vecinos';
-                      
-                      return (
-                        <tr key={r.id}>
-                          <td>
-                            <div style={{ fontWeight: '600', color: 'var(--color-primary)' }}>{r.nombre}</div>
-                            <div style={{ fontSize: '0.8rem', color: 'var(--color-text-muted)' }}>
-                              Cargo: {r.funcionario || 'No asignado'}
-                            </div>
-                          </td>
-                          <td>
-                            <div style={{ fontSize: '0.9rem' }}>{r.fecha}</div>
-                            <div style={{ fontSize: '0.8rem', color: 'var(--color-text-muted)', display: 'flex', alignItems: 'center', gap: '4px' }}>
-                              <MapPin size={12} /> {r.lugar}
-                            </div>
-                          </td>
-                          <td>
-                            <span className="badge badge-info" style={{ fontSize: '0.75rem' }}>
-                              {r.tipo_reunion}
-                            </span>
-                          </td>
-                          <td>
-                            <span style={{ fontWeight: '500' }}>{r.comuna}</span>
-                          </td>
-                          <td style={{ textAlign: 'center' }}>
-                            <div style={{ fontWeight: '600' }}>{presentes} / {totalInscriptos}</div>
-                            <div style={{ fontSize: '0.75rem', color: 'var(--color-text-muted)' }}>({ratio}%)</div>
-                          </td>
-                          <td style={{ textAlign: 'center' }}>
-                            {isMicMeeting ? (
-                              <div style={{ fontSize: '0.85rem', fontWeight: '600', color: 'var(--color-primary)' }}>
-                                <span style={{ color: 'var(--color-success)' }}>{oradoresEfectivos} ef.</span>
-                                {oradoresEnEspera > 0 && <span style={{ color: 'var(--color-text-muted)', marginLeft: '4px' }}>/ {oradoresEnEspera} esp.</span>}
-                              </div>
-                            ) : (
-                              <span style={{ color: 'var(--color-text-muted)' }}>-</span>
-                            )}
-                          </td>
-                          <td style={{ textAlign: 'right' }}>
-                            <div style={{ display: 'inline-flex', gap: '8px' }}>
-                              <button 
-                                className="btn btn-secondary btn-sm" 
-                                onClick={() => handleOpenInscriptos(r)}
-                                title="Ver lista completa de inscriptos"
-                                style={{ padding: '6px 10px', display: 'flex', alignItems: 'center', gap: '4px' }}
-                              >
-                                <Users size={14} style={{ color: 'var(--color-highlight)' }} /> Inscriptos
-                              </button>
-                              {isCercaniaOrGerencia && (
-                                <>
-                                  <button 
-                                    className="btn btn-secondary btn-sm" 
-                                    onClick={() => handleExportCSV(r)}
-                                    title="Exportar planilla de asistencia para encuestas"
-                                    style={{ padding: '6px 10px' }}
-                                  >
-                                    <FileSpreadsheet size={14} style={{ color: '#0F766E' }} /> CSV
-                                  </button>
-                                  <button 
-                                    className="btn btn-secondary btn-sm" 
-                                    onClick={() => onManageReunion(r)}
-                                    title="Administrar reunión y cargar minuta"
-                                    style={{ padding: '6px 10px', display: 'flex', alignItems: 'center', gap: '4px' }}
-                                  >
-                                    <Settings size={14} style={{ color: 'var(--color-primary)' }} /> Administrar
-                                  </button>
-                                </>
-                              )}
-                              <button 
-                                className="btn btn-primary btn-sm" 
-                                onClick={() => onSelectReunion(r)}
-                              >
-                                Tomar Asistencia <ChevronRight size={14} />
-                              </button>
-                            </div>
-                          </td>
-                        </tr>
-                      );
-                    })}
-                </tbody>
-              </table>
-            </div>
+            {/* Clasificar y Renderizar las Secciones Temporales */}
+            {(() => {
+              const filtered = reuniones.filter(r => {
+                const term = searchTerm.toLowerCase();
+                return (
+                  (r.nombre && r.nombre.toLowerCase().includes(term)) ||
+                  (r.funcionario && r.funcionario.toLowerCase().includes(term)) ||
+                  (r.fecha && r.fecha.toLowerCase().includes(term)) ||
+                  (r.tipo_reunion && r.tipo_reunion.toLowerCase().includes(term))
+                );
+              });
+
+              if (filtered.length === 0) {
+                return (
+                  <div style={{ textAlign: 'center', padding: '3rem 1.5rem', color: 'var(--color-text-muted)' }}>
+                    <Calendar size={48} style={{ color: '#94A3B8', marginBottom: '12px' }} />
+                    <p style={{ margin: 0, fontSize: '0.95rem', fontWeight: '500' }}>No se encontraron reuniones que coincidan con la búsqueda.</p>
+                  </div>
+                );
+              }
+
+              const hoy = filtered.filter(r => getMeetingCategory(r.fecha) === 'hoy');
+              const semana = filtered.filter(r => getMeetingCategory(r.fecha) === 'semana');
+              const mes = filtered.filter(r => getMeetingCategory(r.fecha) === 'mes');
+              const historicas = filtered.filter(r => getMeetingCategory(r.fecha) === 'historicas');
+
+              return (
+                <>
+                  {renderMeetingTableSection('Reuniones de HOY', '📅', hoy)}
+                  {renderMeetingTableSection('Reuniones de esta semana', '🗓️', semana)}
+                  {renderMeetingTableSection('Reuniones de este mes', '📆', mes)}
+                  {renderMeetingTableSection('Reuniones históricas', '🏛️', historicas)}
+                </>
+              );
+            })()}
           </div>
         </>
       ) : activeDashboardTab === 'padron' ? (
@@ -1474,64 +1797,125 @@ export default function DashboardAdmin({ user, onSelectReunion, onManageReunion,
 
           <div style={{ display: 'flex', gap: '1.5rem', flexWrap: 'wrap' }}>
             {/* Buscador de Padrón y Resultados */}
-            <div className="card" style={{ flex: '1 1 350px', margin: 0 }}>
-              <h3 style={{ fontSize: '1.2rem', color: 'var(--color-primary)', marginBottom: '1rem' }}>
-                Buscador del Padrón Histórico
-              </h3>
+            <div style={{ flex: '1 1 350px', display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
               
-              <form onSubmit={handleSearchPadron} style={{ display: 'flex', gap: '10px', marginBottom: '1.5rem' }}>
-                <div style={{ position: 'relative', flexGrow: 1 }}>
-                  <input
-                    type="text"
-                    className="form-control"
-                    placeholder="Buscar por DNI o Apellido..."
-                    value={padronSearch}
-                    onChange={(e) => setPadronSearch(e.target.value)}
-                    style={{ paddingLeft: '2.5rem' }}
-                  />
-                  <Search size={16} style={{ position: 'absolute', left: '10px', top: '50%', transform: 'translateY(-50%)', color: 'var(--color-text-muted)' }} />
-                </div>
-                <button type="submit" className="btn btn-primary" disabled={searchingPadron}>
-                  {searchingPadron ? 'Buscando...' : 'Buscar'}
-                </button>
-              </form>
+              {/* Card de Búsqueda */}
+              <div className="card" style={{ margin: 0 }}>
+                <h3 style={{ fontSize: '1.2rem', color: 'var(--color-primary)', marginBottom: '1rem' }}>
+                  Buscador del Padrón Histórico
+                </h3>
+                
+                <form onSubmit={handleSearchPadron} style={{ display: 'flex', gap: '10px', marginBottom: '1.5rem' }}>
+                  <div style={{ position: 'relative', flexGrow: 1 }}>
+                    <input
+                      type="text"
+                      className="form-control"
+                      placeholder="Buscar por DNI o Apellido..."
+                      value={padronSearch}
+                      onChange={(e) => setPadronSearch(e.target.value)}
+                      style={{ paddingLeft: '2.5rem' }}
+                    />
+                    <Search size={16} style={{ position: 'absolute', left: '10px', top: '50%', transform: 'translateY(-50%)', color: 'var(--color-text-muted)' }} />
+                  </div>
+                  <button type="submit" className="btn btn-primary" disabled={searchingPadron}>
+                    {searchingPadron ? 'Buscando...' : 'Buscar'}
+                  </button>
+                </form>
 
-              {searchingPadron ? (
-                <div style={{ textAlign: 'center', padding: '2rem' }}>
-                  <div className="spinner"></div>
-                  <p style={{ marginTop: '0.75rem', color: 'var(--color-text-muted)', fontSize: '0.85rem' }}>Consultando padrón global...</p>
-                </div>
-              ) : padronResults.length === 0 ? (
-                <div style={{ textAlign: 'center', padding: '2rem', color: 'var(--color-text-muted)', fontSize: '0.85rem' }}>
-                  No se han realizado búsquedas o no hay coincidencias.
-                </div>
-              ) : (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', maxHeight: '400px', overflowY: 'auto' }}>
-                  {padronResults.map(v => (
-                    <div 
-                      key={v.dni}
-                      onClick={() => handleSelectVecino(v)}
-                      style={{
-                        padding: '10px 14px',
-                        border: selectedVecino?.dni === v.dni ? '1px solid var(--color-highlight)' : '1px solid var(--color-border)',
-                        borderRadius: '8px',
-                        backgroundColor: selectedVecino?.dni === v.dni ? '#F0FDF4' : '#FFFFFF',
-                        cursor: 'pointer',
-                        display: 'flex',
-                        justifyContent: 'space-between',
-                        alignItems: 'center',
-                        transition: 'all 0.2s'
-                      }}
-                    >
-                      <div>
-                        <strong style={{ color: 'var(--color-primary)', display: 'block' }}>{v.nombre} {v.apellido}</strong>
-                        <span style={{ fontSize: '0.75rem', color: 'var(--color-text-muted)' }}>DNI: {v.dni}</span>
+                {searchingPadron ? (
+                  <div style={{ textAlign: 'center', padding: '2rem' }}>
+                    <div className="spinner"></div>
+                    <p style={{ marginTop: '0.75rem', color: 'var(--color-text-muted)', fontSize: '0.85rem' }}>Consultando padrón global...</p>
+                  </div>
+                ) : padronResults.length === 0 ? (
+                  <div style={{ textAlign: 'center', padding: '1rem', color: 'var(--color-text-muted)', fontSize: '0.85rem' }}>
+                    No se han realizado búsquedas o no hay coincidencias.
+                  </div>
+                ) : (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', maxHeight: '250px', overflowY: 'auto' }}>
+                    {padronResults.map(v => (
+                      <div 
+                        key={v.dni}
+                        onClick={() => handleSelectVecino(v)}
+                        style={{
+                          padding: '10px 14px',
+                          border: selectedVecino?.dni === v.dni ? '1px solid var(--color-highlight)' : '1px solid var(--color-border)',
+                          borderRadius: '8px',
+                          backgroundColor: selectedVecino?.dni === v.dni ? '#F0FDF4' : '#FFFFFF',
+                          cursor: 'pointer',
+                          display: 'flex',
+                          justifyContent: 'space-between',
+                          alignItems: 'center',
+                          transition: 'all 0.2s'
+                        }}
+                      >
+                        <div>
+                          <strong style={{ color: 'var(--color-primary)', display: 'block' }}>{v.nombre} {v.apellido}</strong>
+                          <span style={{ fontSize: '0.75rem', color: 'var(--color-text-muted)' }}>DNI: {v.dni}</span>
+                        </div>
+                        <ChevronRight size={16} style={{ color: selectedVecino?.dni === v.dni ? 'var(--color-highlight)' : '#CBD5E1' }} />
                       </div>
-                      <ChevronRight size={16} style={{ color: selectedVecino?.dni === v.dni ? 'var(--color-highlight)' : '#CBD5E1' }} />
-                    </div>
-                  ))}
-                </div>
-              )}
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              {/* Card de Top 10 Vecinos con más inscripciones */}
+              <div className="card" style={{ margin: 0 }}>
+                <h3 style={{ fontSize: '1.15rem', color: 'var(--color-primary)', marginBottom: '1rem', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <Award size={18} style={{ color: 'var(--color-highlight)' }} />
+                  Top 10 Vecinos Participativos
+                </h3>
+
+                {loadingTop ? (
+                  <div style={{ textAlign: 'center', padding: '2rem' }}>
+                    <div className="spinner"></div>
+                  </div>
+                ) : topVecinos.length === 0 ? (
+                  <p style={{ margin: 0, fontSize: '0.85rem', color: 'var(--color-text-muted)', fontStyle: 'italic', textAlign: 'center', padding: '1rem' }}>
+                    No hay datos de inscripciones cargados en el sistema.
+                  </p>
+                ) : (
+                  <div className="table-responsive" style={{ marginTop: 0, maxHeight: '350px', overflowY: 'auto' }}>
+                    <table className="table" style={{ margin: 0, width: '100%' }}>
+                      <thead>
+                        <tr>
+                          <th style={{ padding: '6px 4px', fontSize: '0.75rem', width: '35px' }}>#</th>
+                          <th style={{ padding: '6px 4px', fontSize: '0.75rem' }}>Vecino</th>
+                          <th style={{ padding: '6px 4px', fontSize: '0.75rem', textAlign: 'center', width: '45px' }}>Insc.</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {topVecinos.map((v, index) => (
+                          <tr 
+                            key={v.dni}
+                            onClick={() => handleSelectVecino(v)}
+                            style={{ 
+                              cursor: 'pointer',
+                              backgroundColor: selectedVecino?.dni === v.dni ? '#F0FDF4' : 'transparent',
+                              transition: 'background-color 0.2s'
+                            }}
+                          >
+                            <td style={{ padding: '6px 4px', fontSize: '0.8rem', fontWeight: 'bold', color: 'var(--color-text-muted)' }}>
+                              {index + 1}
+                            </td>
+                            <td style={{ padding: '6px 4px', fontSize: '0.8rem' }}>
+                              <div style={{ fontWeight: '600', color: 'var(--color-primary)' }}>{v.nombre} {v.apellido}</div>
+                              <div style={{ fontSize: '0.7rem', color: 'var(--color-text-muted)' }}>Comuna: {v.comuna || 'Comuna 1'}</div>
+                            </td>
+                            <td style={{ padding: '6px 4px', fontSize: '0.8rem', textAlign: 'center' }}>
+                              <span className="badge badge-success" style={{ fontSize: '0.7rem', padding: '2px 6px', fontWeight: 'bold' }}>
+                                {v.total_inscripciones}
+                              </span>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+
             </div>
 
             {/* Ficha del Vecino / Editor General y Radiografia (Requisito 5) */}
@@ -1684,6 +2068,9 @@ export default function DashboardAdmin({ user, onSelectReunion, onManageReunion,
                     <div>
                       {/* Resumen rápido de métricas */}
                       <div style={{ display: 'flex', gap: '10px', marginBottom: '1.5rem', flexWrap: 'wrap' }}>
+                        <span className="badge badge-secondary" style={{ padding: '6px 12px', fontSize: '0.8rem', backgroundColor: '#FEF3C7', color: '#B45309', border: '1px solid #FCD34D' }}>
+                          Inscripto en: {radiografia.filter(item => item.estado_convocatoria !== '-').length} reuniones
+                        </span>
                         <span className="badge badge-success" style={{ padding: '6px 12px', fontSize: '0.8rem' }}>
                           Reuniones asistidas: {radiografia.filter(item => item.asistio).length}
                         </span>
@@ -2106,9 +2493,12 @@ export default function DashboardAdmin({ user, onSelectReunion, onManageReunion,
             )}
           </div>
         </div>
-      ) : (
+      ) : activeDashboardTab === 'estadisticas_funcionario' ? (
         /* VISTA DE ESTADÍSTICAS POR FUNCIONARIO (BI) */
         <EstadisticasFuncionario />
+      ) : (
+        /* VISTA DE ABM DE FUNCIONARIOS */
+        <ABMFuncionarios />
       )}
 
       {/* MODAL VER INSCRIPTOS (Requisito 6) */}
@@ -2121,6 +2511,25 @@ export default function DashboardAdmin({ user, onSelectReunion, onManageReunion,
                 Inscriptos: {selectedReunionInscriptos.nombre}
               </h3>
               <div style={{ display: 'flex', gap: '8px' }}>
+                <button 
+                  className="btn btn-secondary btn-sm"
+                  onClick={handleExportInscriptosToExcel}
+                  title="Descargar listado de inscriptos en Excel"
+                  style={{ display: 'flex', alignItems: 'center', gap: '4px', border: '1px solid #10B981', color: '#0F766E', backgroundColor: '#F0FDF4' }}
+                  disabled={inscriptosList.length === 0}
+                >
+                  <FileSpreadsheet size={14} /> Descargar XLS
+                </button>
+                {inscriptosList.length > 0 && (
+                  <button 
+                    className="btn btn-secondary btn-sm"
+                    onClick={handleVaciarInscriptos}
+                    title="Borrar todos los inscriptos de esta reunión"
+                    style={{ display: 'flex', alignItems: 'center', gap: '4px', border: '1px solid #EF4444', color: '#B91C1C', backgroundColor: '#FEF2F2' }}
+                  >
+                    <Trash2 size={14} /> Vaciar Lista
+                  </button>
+                )}
                 <button 
                   className="btn btn-highlight btn-sm"
                   onClick={() => setShowImportArea(prev => !prev)}
@@ -2287,6 +2696,169 @@ export default function DashboardAdmin({ user, onSelectReunion, onManageReunion,
                     </table>
                   </div>
                 )}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* MODAL INFORME FINAL */}
+      {showInformeModal && selectedReunionInforme && (
+        <div className="modal-overlay">
+          <div className="modal-content" style={{ maxWidth: '850px', width: '95%', borderTopColor: 'var(--color-highlight)' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.5rem', flexWrap: 'wrap', gap: '8px' }}>
+              <h3 style={{ fontSize: '1.25rem', color: 'var(--color-primary)', margin: 0, display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <Activity size={20} style={{ color: 'var(--color-highlight)' }} />
+                Informe de Reunión: {selectedReunionInforme.nombre}
+              </h3>
+              <div style={{ display: 'flex', gap: '8px' }}>
+                <button 
+                  className="btn btn-primary btn-sm"
+                  onClick={() => handleCopyInformeWhatsApp(selectedReunionInforme, informeOradores, informeAsistentes)}
+                  style={{ display: 'flex', alignItems: 'center', gap: '6px' }}
+                >
+                  <MessageSquare size={14} /> Copiar WhatsApp
+                </button>
+                <button 
+                  className="btn btn-secondary btn-sm" 
+                  onClick={() => {
+                    setShowInformeModal(false);
+                    setSelectedReunionInforme(null);
+                    setInformeOradores([]);
+                    setInformeAsistentes([]);
+                  }}
+                >
+                  Cerrar
+                </button>
+              </div>
+            </div>
+
+            {loadingInforme ? (
+              <div style={{ textAlign: 'center', padding: '3rem' }}>
+                <div className="spinner" style={{ margin: '0 auto 1rem auto' }}></div>
+                <p style={{ color: 'var(--color-text-muted)', fontSize: '0.9rem' }}>Cargando informe...</p>
+              </div>
+            ) : (
+              <div style={{ maxHeight: '70vh', overflowY: 'auto', paddingRight: '4px' }}>
+                
+                {/* 1. VARIABLES CUANTITATIVAS */}
+                <div className="card" style={{ margin: '0 0 1.25rem 0', padding: '1.25rem', backgroundColor: '#F8FAFC' }}>
+                  <h4 style={{ fontSize: '1rem', color: 'var(--color-primary)', marginTop: 0, marginBottom: '1rem', borderBottom: '1px solid var(--color-border)', paddingBottom: '6px', fontWeight: '700' }}>
+                    1. Variables Cuantitativas
+                  </h4>
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: '1rem' }}>
+                    <div style={{ backgroundColor: '#FFFFFF', padding: '10px', borderRadius: '8px', border: '1px solid var(--color-border)', textAlign: 'center' }}>
+                      <div style={{ fontSize: '0.75rem', color: 'var(--color-text-muted)', fontWeight: '600', marginBottom: '4px' }}>Inscriptos</div>
+                      <div style={{ fontSize: '1.25rem', fontWeight: '700', color: 'var(--color-primary)' }}>{informeAsistentes.length}</div>
+                    </div>
+                    <div style={{ backgroundColor: '#FFFFFF', padding: '10px', borderRadius: '8px', border: '1px solid var(--color-border)', textAlign: 'center' }}>
+                      <div style={{ fontSize: '0.75rem', color: 'var(--color-text-muted)', fontWeight: '600', marginBottom: '4px' }}>Asistencia</div>
+                      <div style={{ fontSize: '1.25rem', fontWeight: '700', color: 'var(--color-success)' }}>
+                        {informeAsistentes.filter(a => a.asistio).length} <span style={{ fontSize: '0.85rem', fontWeight: 'normal', color: 'var(--color-text-muted)' }}>({informeAsistentes.length > 0 ? Math.round((informeAsistentes.filter(a => a.asistio).length / informeAsistentes.length) * 100) : 0}%)</span>
+                      </div>
+                    </div>
+                    <div style={{ backgroundColor: '#FFFFFF', padding: '10px', borderRadius: '8px', border: '1px solid var(--color-border)', textAlign: 'center' }}>
+                      <div style={{ fontSize: '0.75rem', color: 'var(--color-text-muted)', fontWeight: '600', marginBottom: '4px' }}>Oradores Anotados</div>
+                      <div style={{ fontSize: '1.25rem', fontWeight: '700', color: 'var(--color-primary)' }}>{informeOradores.length}</div>
+                    </div>
+                    <div style={{ backgroundColor: '#FFFFFF', padding: '10px', borderRadius: '8px', border: '1px solid var(--color-border)', textAlign: 'center' }}>
+                      <div style={{ fontSize: '0.75rem', color: 'var(--color-text-muted)', fontWeight: '600', marginBottom: '4px' }}>Oradores Efectivos</div>
+                      <div style={{ fontSize: '1.25rem', fontWeight: '700', color: 'var(--color-success)' }}>{informeOradores.filter(o => o.estado === 'hablo').length}</div>
+                    </div>
+                    <div style={{ backgroundColor: '#FFFFFF', padding: '10px', borderRadius: '8px', border: '1px solid var(--color-border)', textAlign: 'center' }}>
+                      <div style={{ fontSize: '0.75rem', color: 'var(--color-text-muted)', fontWeight: '600', marginBottom: '4px' }}>Tiempos de Habla (Promedio)</div>
+                      <div style={{ fontSize: '1.25rem', fontWeight: '700', color: 'var(--color-highlight)' }}>
+                        {(() => {
+                          const oradHablan = informeOradores.filter(o => o.estado === 'hablo');
+                          const secsTotal = oradHablan.reduce((acc, o) => acc + (o.duracion_segundos || 0), 0);
+                          const secsProm = oradHablan.length > 0 ? Math.round(secsTotal / oradHablan.length) : 0;
+                          const m = Math.floor(secsProm / 60);
+                          const s = secsProm % 60;
+                          return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
+                        })()}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* 2. VARIABLES CUALITATIVAS */}
+                <div className="card" style={{ margin: '0 0 1.25rem 0', padding: '1.25rem' }}>
+                  <h4 style={{ fontSize: '1rem', color: 'var(--color-primary)', marginTop: 0, marginBottom: '1rem', borderBottom: '1px solid var(--color-border)', paddingBottom: '6px', fontWeight: '700' }}>
+                    2. Variables Cualitativas
+                  </h4>
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '1rem', marginBottom: '1rem' }}>
+                    <div>
+                      <span style={{ fontSize: '0.8rem', color: 'var(--color-text-muted)', fontWeight: '600', display: 'block', marginBottom: '2px' }}>Inicio Real</span>
+                      <strong style={{ fontSize: '0.9rem' }}>{selectedReunionInforme.hora_inicio_real || '--:--'} hs</strong>
+                    </div>
+                    <div>
+                      <span style={{ fontSize: '0.8rem', color: 'var(--color-text-muted)', fontWeight: '600', display: 'block', marginBottom: '2px' }}>Cierre Real</span>
+                      <strong style={{ fontSize: '0.9rem' }}>{selectedReunionInforme.hora_fin_real || '--:--'} hs</strong>
+                    </div>
+                    <div>
+                      <span style={{ fontSize: '0.8rem', color: 'var(--color-text-muted)', fontWeight: '600', display: 'block', marginBottom: '2px' }}>Clima de la Reunión</span>
+                      <strong style={{ fontSize: '0.9rem' }}>{CLIMA_MAP[selectedReunionInforme.clima]?.label || 'Bajo'}</strong>
+                    </div>
+                    <div>
+                      <span style={{ fontSize: '0.8rem', color: 'var(--color-text-muted)', fontWeight: '600', display: 'block', marginBottom: '2px' }}>Semáforo Político</span>
+                      <strong style={{ fontSize: '0.9rem' }}>{SEMAFORO_MAP[selectedReunionInforme.semaforo_politico]?.label || 'Verde'}</strong>
+                    </div>
+                  </div>
+
+                  <div style={{ marginBottom: '1rem', padding: '10px', backgroundColor: '#F1F5F9', borderRadius: '8px' }}>
+                    <span style={{ fontSize: '0.8rem', color: 'var(--color-text-muted)', fontWeight: '600', display: 'block', marginBottom: '4px' }}>Síntesis Cualitativa</span>
+                    <p style={{ margin: 0, fontSize: '0.85rem', whiteSpace: 'pre-wrap', lineHeight: '1.4' }}>
+                      {selectedReunionInforme.sintesis_cualitativa || 'No se cargó síntesis cualitativa.'}
+                    </p>
+                  </div>
+
+                  <div style={{ padding: '10px', backgroundColor: '#F1F5F9', borderRadius: '8px' }}>
+                    <span style={{ fontSize: '0.8rem', color: 'var(--color-text-muted)', fontWeight: '600', display: 'block', marginBottom: '4px' }}>Gestión Presente</span>
+                    <p style={{ margin: 0, fontSize: '0.85rem', whiteSpace: 'pre-wrap', lineHeight: '1.4' }}>
+                      {selectedReunionInforme.gestion_presente || 'No se registraron funcionarios presentes.'}
+                    </p>
+                  </div>
+                </div>
+
+                {/* 3. MINUTAS DE LOS ORADORES */}
+                <div className="card" style={{ margin: 0, padding: '1.25rem' }}>
+                  <h4 style={{ fontSize: '1rem', color: 'var(--color-primary)', marginTop: 0, marginBottom: '1rem', borderBottom: '1px solid var(--color-border)', paddingBottom: '6px', fontWeight: '700' }}>
+                    3. Minutas de los Oradores
+                  </h4>
+
+                  {informeOradores.filter(o => o.estado === 'hablo').length === 0 ? (
+                    <div style={{ padding: '1.5rem', textAlign: 'center', color: 'var(--color-text-muted)', fontSize: '0.85rem' }}>
+                      No se registraron exposiciones efectivas en esta reunión.
+                    </div>
+                  ) : (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                      {informeOradores
+                        .filter(o => o.estado === 'hablo')
+                        .map((o, idx) => {
+                          const mins = Math.floor((o.duracion_segundos || 0) / 60);
+                          const secs = (o.duracion_segundos || 0) % 60;
+                          const dur = `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+                          return (
+                            <div key={o.id} style={{ border: '1px solid var(--color-border)', borderRadius: '8px', padding: '10px' }}>
+                              <div style={{ display: 'flex', justifyContent: 'space-between', flexWrap: 'wrap', gap: '8px', borderBottom: '1px solid #F1F5F9', paddingBottom: '6px', marginBottom: '6px' }}>
+                                <strong>{idx + 1}. {o.vecino?.nombre} {o.vecino?.apellido} ({o.vecino_id})</strong>
+                                <span className="badge badge-success" style={{ fontSize: '0.75rem', backgroundColor: 'var(--color-highlight)', color: 'var(--color-primary)', fontWeight: 'bold' }}>
+                                  🎤 Habló ({dur})
+                                </span>
+                              </div>
+                              <div style={{ fontSize: '0.85rem', color: 'var(--color-text-muted)', marginBottom: '4px' }}>
+                                <strong>Tema Original:</strong> {o.tema_original || 'Sin registrar.'}
+                              </div>
+                              <div style={{ fontSize: '0.85rem', color: 'var(--color-primary)' }}>
+                                <strong>Minuta Efectiva:</strong> {o.tema_efectivo || 'Sin minuta registrada.'}
+                              </div>
+                            </div>
+                          );
+                        })}
+                    </div>
+                  )}
+                </div>
+
               </div>
             )}
           </div>

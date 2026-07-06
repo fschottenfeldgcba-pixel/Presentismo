@@ -1,9 +1,28 @@
-import React, { useState, useEffect } from 'react';
-import { ArrowLeft, Save, Shield, User, FileText, Check, AlertCircle, Mic, RefreshCw } from 'lucide-react';
+import React, { useState, useEffect, useRef } from 'react';
+import { ArrowLeft, Save, Shield, User, FileText, Check, AlertCircle, Mic, RefreshCw, Trash2 } from 'lucide-react';
 import { TIPOS_REUNION } from '../data/mockData';
-import { updateReunion, getOradores, updateOradorDetails } from '../services/supabaseService';
+import { updateReunion, getOradores, updateOradorDetails, deleteReunionCompleta } from '../services/supabaseService';
+import { supabase } from '../lib/supabaseClient';
 
-const COMUNAS = Array.from({ length: 15 }, (_, i) => `Comuna ${i + 1}`);
+const COMUNAS = [
+  "Comuna 1",
+  "Comuna 1 Norte",
+  "Comuna 1 Sur",
+  "Comuna 2",
+  "Comuna 3",
+  "Comuna 4",
+  "Comuna 5",
+  "Comuna 6",
+  "Comuna 7",
+  "Comuna 8",
+  "Comuna 9",
+  "Comuna 10",
+  "Comuna 11",
+  "Comuna 12",
+  "Comuna 13",
+  "Comuna 14",
+  "Comuna 15"
+];
 
 const BARRIOS = [
   "Convocatoria Comunal",
@@ -66,8 +85,86 @@ export default function AdministrarReunion({ reunion, onBack, onSaveSuccess }) {
   const [tipoReunion, setTipoReunion] = useState(reunion.tipo_reunion || '');
   const [comuna, setComuna] = useState(reunion.comuna || 'Comuna 1');
   const [barrio, setBarrio] = useState(reunion.barrio || 'Convocatoria Comunal');
-  const [observaciones, setObservaciones] = useState(reunion.observaciones || '');
   const [arreglo1, setArreglo1] = useState(reunion.arreglo_1 || '');
+  const [tema, setTema] = useState(reunion.tema || '');
+
+  // Estados para funcionarios y autocompletado
+  const [funcionariosList, setFuncionariosList] = useState([]);
+  const [selectedFuncionarios, setSelectedFuncionarios] = useState([]);
+  const [showFuncDropdown, setShowFuncDropdown] = useState(false);
+  const dropdownRef = useRef(null);
+
+  // Cargar funcionarios de Supabase e inicializar seleccionados
+  useEffect(() => {
+    const fetchFuncionarios = async () => {
+      try {
+        const { data, error } = await supabase
+          .from('funcionarios')
+          .select('*')
+          .order('nombre_completo', { ascending: true });
+        if (!error && data) {
+          setFuncionariosList(data);
+          
+          // Inicializar funcionarios ya seleccionados para esta reunión
+          if (reunion.funcionario) {
+            const currentNames = reunion.funcionario.split(' / ').map(n => n.trim());
+            const preselected = data.filter(f => currentNames.includes(f.nombre_completo));
+            
+            // Ordenar los preseleccionados en el orden en que venían en la base de datos
+            const orderedPreselected = [];
+            currentNames.forEach(name => {
+              const matched = preselected.find(f => f.nombre_completo === name);
+              if (matched) {
+                orderedPreselected.push(matched);
+              }
+            });
+            setSelectedFuncionarios(orderedPreselected);
+          }
+        }
+      } catch (err) {
+        console.error(err);
+      }
+    };
+    fetchFuncionarios();
+  }, [reunion.funcionario]);
+
+  // Cerrar dropdown al hacer click fuera
+  useEffect(() => {
+    const handleClickOutside = (event) => {
+      if (dropdownRef.current && !dropdownRef.current.contains(event.target)) {
+        setShowFuncDropdown(false);
+      }
+    };
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => {
+      document.removeEventListener("mousedown", handleClickOutside);
+    };
+  }, [dropdownRef]);
+
+  // Autocompletar el nombre de la reunión
+  useEffect(() => {
+    const displayFecha = fecha ? fecha.split('-').reverse().join('/') : '';
+    const displayTipo = tipoReunion || '';
+    
+    // Unir nombres de funcionarios seleccionados
+    const displayFuncionarios = selectedFuncionarios.length > 0 
+      ? selectedFuncionarios.map(f => f.nombre_completo).join(' / ') 
+      : '';
+      
+    const displayComunaBarrio = barrio && barrio !== 'Convocatoria Comunal'
+      ? `${comuna} - ${barrio}`
+      : comuna;
+
+    // Si tiene tema y es Temática o Procesos Participativos, lo anexamos al tipo
+    const displayTipoConTema = tema && (tipoReunion === TIPOS_REUNION.TEMATICA || tipoReunion === TIPOS_REUNION.PROCESOS_PARTICIPATIVOS)
+      ? `${displayTipo} (${tema})`
+      : displayTipo;
+
+    const parts = [displayFecha, displayTipoConTema, displayFuncionarios, displayComunaBarrio].filter(Boolean);
+    const autocompletedName = parts.join(' - ');
+    setNombre(autocompletedName);
+    setFuncionario(displayFuncionarios);
+  }, [fecha, tipoReunion, selectedFuncionarios, comuna, barrio, tema]);
 
   // Estados de carga y guardado
   const [savingReunion, setSavingReunion] = useState(false);
@@ -80,7 +177,7 @@ export default function AdministrarReunion({ reunion, onBack, onSaveSuccess }) {
   const [savingOradorId, setSavingOradorId] = useState(null);
   const [savingAllOradores, setSavingAllOradores] = useState(false);
 
-  const isCafeOrEncuentro = tipoReunion === TIPOS_REUNION.CAFE || tipoReunion === TIPOS_REUNION.ENCUENTRO;
+  const isCafeOrEncuentro = tipoReunion !== TIPOS_REUNION.UNO_A_UNO;
 
   // Cargar oradores asociados
   const loadOradores = async () => {
@@ -124,7 +221,7 @@ export default function AdministrarReunion({ reunion, onBack, onSaveSuccess }) {
       tipo_reunion: tipoReunion,
       comuna,
       barrio: barrio === 'Convocatoria Comunal' ? null : barrio,
-      observaciones: observaciones.trim() || null,
+      tema: (tipoReunion === TIPOS_REUNION.TEMATICA || tipoReunion === TIPOS_REUNION.PROCESOS_PARTICIPATIVOS) ? tema.trim() : null,
       arreglo_1: arreglo1.trim() || null
     });
     setSavingReunion(false);
@@ -134,6 +231,30 @@ export default function AdministrarReunion({ reunion, onBack, onSaveSuccess }) {
     } else {
       alert('¡Datos de la reunión guardados con éxito!');
       if (onSaveSuccess) onSaveSuccess();
+    }
+  };
+
+  const handleDeleteReunion = async () => {
+    const confirmText1 = `¿Estás completamente seguro de que querés eliminar permanentemente la reunión "${reunion.nombre}"?\n\nEsta acción eliminará la reunión de la base de datos, así como todos los inscriptos, asistencias y oradores asociados.`;
+    if (!await window.confirm(confirmText1)) return;
+
+    const confirmText2 = `⚠️ ¡ATENCIÓN!\nEsta acción es irreversible. ¿Realmente querés eliminarla?`;
+    if (!await window.confirm(confirmText2)) return;
+
+    setSavingReunion(true);
+    try {
+      const { error } = await deleteReunionCompleta(reunion.id);
+      if (error) {
+        alert(`Error al eliminar la reunión: ${error.message}`);
+      } else {
+        alert('¡La reunión ha sido eliminada con éxito!');
+        if (onBack) onBack();
+      }
+    } catch (err) {
+      console.error(err);
+      alert('Error de conexión al eliminar la reunión.');
+    } finally {
+      setSavingReunion(false);
     }
   };
 
@@ -272,30 +393,6 @@ export default function AdministrarReunion({ reunion, onBack, onSaveSuccess }) {
             </h3>
 
             <form onSubmit={handleSaveReunion}>
-              <div className="form-group">
-                <label htmlFor="nombre">Nombre de la Reunión *</label>
-                <input
-                  type="text"
-                  id="nombre"
-                  className="form-control"
-                  value={nombre}
-                  onChange={(e) => setNombre(e.target.value)}
-                  required
-                />
-              </div>
-
-              <div className="form-group">
-                <label htmlFor="funcionario">Funcionario a Cargo</label>
-                <input
-                  type="text"
-                  id="funcionario"
-                  className="form-control"
-                  placeholder="Ej: Gabriela Ricardes"
-                  value={funcionario}
-                  onChange={(e) => setFuncionario(e.target.value)}
-                />
-              </div>
-
               <div className="grid-2" style={{ gap: '1rem' }}>
                 <div className="form-group">
                   <label htmlFor="fecha">Fecha *</label>
@@ -321,9 +418,44 @@ export default function AdministrarReunion({ reunion, onBack, onSaveSuccess }) {
                     <option value={TIPOS_REUNION.SEGURIDAD}>{TIPOS_REUNION.SEGURIDAD}</option>
                     <option value={TIPOS_REUNION.TEMATICA}>{TIPOS_REUNION.TEMATICA}</option>
                     <option value={TIPOS_REUNION.UNO_A_UNO}>{TIPOS_REUNION.UNO_A_UNO}</option>
+                    <option value={TIPOS_REUNION.PROCESOS_PARTICIPATIVOS}>{TIPOS_REUNION.PROCESOS_PARTICIPATIVOS}</option>
                   </select>
                 </div>
               </div>
+
+              {tipoReunion === TIPOS_REUNION.TEMATICA && (
+                <div className="form-group">
+                  <label htmlFor="tema">Tema de la Reunión *</label>
+                  <select
+                    id="tema"
+                    className="form-control"
+                    value={tema}
+                    onChange={(e) => setTema(e.target.value)}
+                    required
+                  >
+                    <option value="">-- Seleccionar Tema --</option>
+                    <option value="Seguridad">Seguridad</option>
+                    <option value="Educacion">Educacion</option>
+                    <option value="Salud">Salud</option>
+                    <option value="Ciudad Atractiva">Ciudad Atractiva</option>
+                  </select>
+                </div>
+              )}
+
+              {tipoReunion === TIPOS_REUNION.PROCESOS_PARTICIPATIVOS && (
+                <div className="form-group">
+                  <label htmlFor="tema">Tema de la Reunión (Campo Libre) *</label>
+                  <input
+                    type="text"
+                    id="tema"
+                    className="form-control"
+                    placeholder="Ej: Presupuesto Participativo, Plan de Obras..."
+                    value={tema}
+                    onChange={(e) => setTema(e.target.value)}
+                    required
+                  />
+                </div>
+              )}
 
               <div className="form-group">
                 <label htmlFor="lugar">Lugar / Dirección *</label>
@@ -367,26 +499,135 @@ export default function AdministrarReunion({ reunion, onBack, onSaveSuccess }) {
               </div>
 
               <div className="form-group">
-                <label htmlFor="arreglo_1">Logística / Arreglo 1</label>
-                <input
-                  type="text"
+                <label htmlFor="arreglo_1">Observaciones / Arreglo Histórico</label>
+                <textarea
                   id="arreglo_1"
                   className="form-control"
-                  placeholder="Ej: Parlantes, Proyector, Micrófonos..."
+                  rows="2"
+                  placeholder="Notas internas y agenda histórica de coordinación..."
                   value={arreglo1}
                   onChange={(e) => setArreglo1(e.target.value)}
                 />
               </div>
 
+              {/* Campo desplegable con Selección Múltiple de Funcionarios */}
+              <div className="form-group" style={{ position: 'relative' }} ref={dropdownRef}>
+                <label>Funcionario/s a Cargo (Selección Múltiple)</label>
+                <div 
+                  className="form-control" 
+                  onClick={() => setShowFuncDropdown(!showFuncDropdown)}
+                  style={{ 
+                    minHeight: '38px', 
+                    height: 'auto', 
+                    cursor: 'pointer', 
+                    display: 'flex', 
+                    flexWrap: 'wrap', 
+                    gap: '4px', 
+                    alignItems: 'center',
+                    padding: '4px 8px',
+                    backgroundColor: '#FFFFFF'
+                  }}
+                >
+                  {selectedFuncionarios.length === 0 ? (
+                    <span style={{ color: 'var(--color-text-muted)', fontSize: '0.85rem' }}>Seleccioná uno o más funcionarios...</span>
+                  ) : (
+                    selectedFuncionarios.map(f => (
+                      <span 
+                        key={f.id} 
+                        style={{ 
+                          backgroundColor: '#E0F2FE', 
+                          color: '#0369A1', 
+                          padding: '2px 8px', 
+                          borderRadius: '12px', 
+                          fontSize: '0.75rem', 
+                          fontWeight: '600', 
+                          display: 'inline-flex', 
+                          alignItems: 'center', 
+                          gap: '4px' 
+                        }}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setSelectedFuncionarios(prev => prev.filter(x => x.id !== f.id));
+                        }}
+                      >
+                        {f.nombre_completo}
+                        <span style={{ cursor: 'pointer', marginLeft: '2px', fontWeight: 'bold' }}>×</span>
+                      </span>
+                    ))
+                  )}
+                </div>
+                
+                {showFuncDropdown && (
+                  <div 
+                    style={{ 
+                      position: 'absolute', 
+                      top: '100%', 
+                      left: 0, 
+                      right: 0, 
+                      backgroundColor: '#FFFFFF', 
+                      border: '1px solid var(--color-border)', 
+                      borderRadius: 'var(--border-radius)', 
+                      boxShadow: '0 4px 6px rgba(0,0,0,0.1)', 
+                      zIndex: 50, 
+                      maxHeight: '150px', 
+                      overflowY: 'auto',
+                      marginTop: '4px'
+                    }}
+                  >
+                    {funcionariosList.map(f => {
+                      const isSelected = selectedFuncionarios.some(x => x.id === f.id);
+                      return (
+                        <div 
+                          key={f.id} 
+                          onClick={() => {
+                            if (isSelected) {
+                              setSelectedFuncionarios(prev => prev.filter(x => x.id !== f.id));
+                            } else {
+                              setSelectedFuncionarios(prev => [...prev, f]);
+                            }
+                          }}
+                          style={{ 
+                            padding: '8px 12px', 
+                            cursor: 'pointer', 
+                            display: 'flex', 
+                            alignItems: 'center', 
+                            justifyContent: 'space-between',
+                            backgroundColor: isSelected ? '#F0F9FF' : 'transparent',
+                            borderBottom: '1px solid #F1F5F9',
+                            fontSize: '0.85rem'
+                          }}
+                        >
+                          <div>
+                            <strong>{f.nombre_completo}</strong>
+                            <span style={{ fontSize: '0.75rem', color: 'var(--color-text-muted)', marginLeft: '6px' }}>
+                              ({f.cargo})
+                            </span>
+                          </div>
+                          <input 
+                            type="checkbox" 
+                            checked={isSelected} 
+                            readOnly 
+                            style={{ cursor: 'pointer' }}
+                          />
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+
+              {/* Nombre de la reunión abajo de todo, autocompletado */}
               <div className="form-group">
-                <label htmlFor="observaciones">Observaciones</label>
-                <textarea
-                  id="observaciones"
+                <label htmlFor="nombre" style={{ fontWeight: '600', color: 'var(--color-primary)' }}>Nombre de la Reunión (Autocompletado) *</label>
+                <input
+                  type="text"
+                  id="nombre"
                   className="form-control"
-                  rows="3"
-                  placeholder="Detalles logísticos u observaciones especiales..."
-                  value={observaciones}
-                  onChange={(e) => setObservaciones(e.target.value)}
+                  placeholder="Se autocompleta con los campos de arriba..."
+                  value={nombre}
+                  onChange={(e) => setNombre(e.target.value)}
+                  required
+                  style={{ backgroundColor: '#F8FAFC', fontWeight: '600', color: 'var(--color-primary)' }}
                 />
               </div>
 
@@ -397,6 +638,15 @@ export default function AdministrarReunion({ reunion, onBack, onSaveSuccess }) {
                 disabled={savingReunion}
               >
                 {savingReunion ? 'Guardando...' : <><Save size={18} /> Guardar Cambios Generales</>}
+              </button>
+              <button 
+                type="button" 
+                className="btn btn-danger" 
+                style={{ width: '100%', marginTop: '0.75rem', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px', border: '1px solid #EF4444', color: '#B91C1C', backgroundColor: '#FEF2F2' }}
+                onClick={handleDeleteReunion}
+                disabled={savingReunion}
+              >
+                <Trash2 size={18} /> Eliminar Reunión Permanentemente
               </button>
             </form>
           </div>

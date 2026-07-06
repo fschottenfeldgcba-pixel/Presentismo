@@ -1,10 +1,29 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { Calendar, MapPin, User, FileText, Upload, AlertCircle, ArrowLeft, Check, FileSpreadsheet } from 'lucide-react';
 import { TIPOS_REUNION } from '../data/mockData';
 import { createReunion, upsertVecino, guardarAsistencia, normalizeComuna, normalizeCanalDifusion } from '../services/supabaseService';
+import { supabase } from '../lib/supabaseClient';
 import * as XLSX from 'xlsx';
 
-const COMUNAS = Array.from({ length: 15 }, (_, i) => `Comuna ${i + 1}`);
+const COMUNAS = [
+  "Comuna 1",
+  "Comuna 1 Norte",
+  "Comuna 1 Sur",
+  "Comuna 2",
+  "Comuna 3",
+  "Comuna 4",
+  "Comuna 5",
+  "Comuna 6",
+  "Comuna 7",
+  "Comuna 8",
+  "Comuna 9",
+  "Comuna 10",
+  "Comuna 11",
+  "Comuna 12",
+  "Comuna 13",
+  "Comuna 14",
+  "Comuna 15"
+];
 
 const BARRIOS = [
   "Convocatoria Comunal",
@@ -67,6 +86,69 @@ export default function ABMReuniones({ onBack, onSaveSuccess }) {
   const [funcionario, setFuncionario] = useState('');
   const [tipoReunion, setTipoReunion] = useState(TIPOS_REUNION.ENCUENTRO);
   const [arreglo1, setArreglo1] = useState('');
+  const [tema, setTema] = useState('');
+  
+  // Estados para funcionarios y autocompletado
+  const [funcionariosList, setFuncionariosList] = useState([]);
+  const [selectedFuncionarios, setSelectedFuncionarios] = useState([]);
+  const [showFuncDropdown, setShowFuncDropdown] = useState(false);
+  const dropdownRef = useRef(null);
+
+  // Cargar funcionarios de Supabase
+  useEffect(() => {
+    const fetchFuncionarios = async () => {
+      try {
+        const { data, error } = await supabase
+          .from('funcionarios')
+          .select('*')
+          .order('nombre_completo', { ascending: true });
+        if (!error && data) {
+          setFuncionariosList(data);
+        }
+      } catch (err) {
+        console.error(err);
+      }
+    };
+    fetchFuncionarios();
+  }, []);
+
+  // Cerrar dropdown al hacer click fuera
+  useEffect(() => {
+    const handleClickOutside = (event) => {
+      if (dropdownRef.current && !dropdownRef.current.contains(event.target)) {
+        setShowFuncDropdown(false);
+      }
+    };
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => {
+      document.removeEventListener("mousedown", handleClickOutside);
+    };
+  }, [dropdownRef]);
+
+  // Autocompletar el nombre de la reunión
+  useEffect(() => {
+    const displayFecha = fecha ? fecha.split('-').reverse().join('/') : '';
+    const displayTipo = tipoReunion || '';
+    
+    // Unir nombres de funcionarios seleccionados
+    const displayFuncionarios = selectedFuncionarios.length > 0 
+      ? selectedFuncionarios.map(f => f.nombre_completo).join(' / ') 
+      : '';
+      
+    const displayComunaBarrio = barrio && barrio !== 'Convocatoria Comunal'
+      ? `${comuna} - ${barrio}`
+      : comuna;
+
+    // Si tiene tema y es Temática o Procesos Participativos, lo anexamos al tipo
+    const displayTipoConTema = tema && (tipoReunion === TIPOS_REUNION.TEMATICA || tipoReunion === TIPOS_REUNION.PROCESOS_PARTICIPATIVOS)
+      ? `${displayTipo} (${tema})`
+      : displayTipo;
+
+    const parts = [displayFecha, displayTipoConTema, displayFuncionarios, displayComunaBarrio].filter(Boolean);
+    const autocompletedName = parts.join(' - ');
+    setNombre(autocompletedName);
+    setFuncionario(displayFuncionarios);
+  }, [fecha, tipoReunion, selectedFuncionarios, comuna, barrio, tema]);
   
   // Estados para importación de Orión (Real + Drag and Drop)
   const [isDragging, setIsDragging] = useState(false);
@@ -288,6 +370,7 @@ export default function ABMReuniones({ onBack, onSaveSuccess }) {
       barrio: barrio === 'Convocatoria Comunal' ? null : barrio,
       funcionario: funcionario.trim() || null,
       tipo_reunion: tipoReunion,
+      tema: (tipoReunion === TIPOS_REUNION.TEMATICA || tipoReunion === TIPOS_REUNION.PROCESOS_PARTICIPATIVOS) ? tema.trim() : null,
       arreglo_1: arreglo1.trim() || null,
       funcionario_inicio: null,
       funcionario_cierre: null,
@@ -372,19 +455,6 @@ export default function ABMReuniones({ onBack, onSaveSuccess }) {
                   Datos Logísticos de la Reunión
                 </h3>
 
-                <div className="form-group">
-                  <label htmlFor="nombre">Nombre de la Reunión *</label>
-                  <input
-                    type="text"
-                    id="nombre"
-                    className="form-control"
-                    placeholder="Ej: Reunión Temática de Seguridad en Comuna 12"
-                    value={nombre}
-                    onChange={(e) => setNombre(e.target.value)}
-                    required
-                  />
-                </div>
-
                 <div className="grid-2" style={{ gap: '1rem' }}>
                   <div className="form-group">
                     <label htmlFor="fecha">Fecha *</label>
@@ -411,6 +481,40 @@ export default function ABMReuniones({ onBack, onSaveSuccess }) {
                     </select>
                   </div>
                 </div>
+
+                {tipoReunion === TIPOS_REUNION.TEMATICA && (
+                  <div className="form-group">
+                    <label htmlFor="tema">Tema de la Reunión *</label>
+                    <select
+                      id="tema"
+                      className="form-control"
+                      value={tema}
+                      onChange={(e) => setTema(e.target.value)}
+                      required
+                    >
+                      <option value="">-- Seleccionar Tema --</option>
+                      <option value="Seguridad">Seguridad</option>
+                      <option value="Educacion">Educacion</option>
+                      <option value="Salud">Salud</option>
+                      <option value="Ciudad Atractiva">Ciudad Atractiva</option>
+                    </select>
+                  </div>
+                )}
+
+                {tipoReunion === TIPOS_REUNION.PROCESOS_PARTICIPATIVOS && (
+                  <div className="form-group">
+                    <label htmlFor="tema">Tema de la Reunión (Campo Libre) *</label>
+                    <input
+                      type="text"
+                      id="tema"
+                      className="form-control"
+                      placeholder="Ej: Presupuesto Participativo, Plan de Obras..."
+                      value={tema}
+                      onChange={(e) => setTema(e.target.value)}
+                      required
+                    />
+                  </div>
+                )}
 
                 <div className="form-group">
                   <label htmlFor="lugar">Lugar de Encuentro</label>
@@ -453,16 +557,110 @@ export default function ABMReuniones({ onBack, onSaveSuccess }) {
                   </div>
                 </div>
 
-                <div className="form-group">
-                  <label htmlFor="funcionario">Funcionario a Cargo (Orador Central)</label>
-                  <input
-                    type="text"
-                    id="funcionario"
-                    className="form-control"
-                    placeholder="Ej: Jorge Macri"
-                    value={funcionario}
-                    onChange={(e) => setFuncionario(e.target.value)}
-                  />
+                {/* Campo desplegable con Selección Múltiple de Funcionarios */}
+                <div className="form-group" style={{ position: 'relative' }} ref={dropdownRef}>
+                  <label>Funcionario/s a Cargo (Selección Múltiple)</label>
+                  <div 
+                    className="form-control" 
+                    onClick={() => setShowFuncDropdown(!showFuncDropdown)}
+                    style={{ 
+                      minHeight: '38px', 
+                      height: 'auto', 
+                      cursor: 'pointer', 
+                      display: 'flex', 
+                      flexWrap: 'wrap', 
+                      gap: '4px', 
+                      alignItems: 'center',
+                      padding: '4px 8px',
+                      backgroundColor: '#FFFFFF'
+                    }}
+                  >
+                    {selectedFuncionarios.length === 0 ? (
+                      <span style={{ color: 'var(--color-text-muted)', fontSize: '0.85rem' }}>Seleccioná uno o más funcionarios...</span>
+                    ) : (
+                      selectedFuncionarios.map(f => (
+                        <span 
+                          key={f.id} 
+                          style={{ 
+                            backgroundColor: '#E0F2FE', 
+                            color: '#0369A1', 
+                            padding: '2px 8px', 
+                            borderRadius: '12px', 
+                            fontSize: '0.75rem', 
+                            fontWeight: '600', 
+                            display: 'inline-flex', 
+                            alignItems: 'center', 
+                            gap: '4px' 
+                          }}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setSelectedFuncionarios(prev => prev.filter(x => x.id !== f.id));
+                          }}
+                        >
+                          {f.nombre_completo}
+                          <span style={{ cursor: 'pointer', marginLeft: '2px', fontWeight: 'bold' }}>×</span>
+                        </span>
+                      ))
+                    )}
+                  </div>
+                  
+                  {showFuncDropdown && (
+                    <div 
+                      style={{ 
+                        position: 'absolute', 
+                        top: '100%', 
+                        left: 0, 
+                        right: 0, 
+                        backgroundColor: '#FFFFFF', 
+                        border: '1px solid var(--color-border)', 
+                        borderRadius: 'var(--border-radius)', 
+                        boxShadow: '0 4px 6px rgba(0,0,0,0.1)', 
+                        zIndex: 50, 
+                        maxHeight: '180px', 
+                        overflowY: 'auto',
+                        marginTop: '4px'
+                      }}
+                    >
+                      {funcionariosList.map(f => {
+                        const isSelected = selectedFuncionarios.some(x => x.id === f.id);
+                        return (
+                          <div 
+                            key={f.id} 
+                            onClick={() => {
+                              if (isSelected) {
+                                setSelectedFuncionarios(prev => prev.filter(x => x.id !== f.id));
+                              } else {
+                                setSelectedFuncionarios(prev => [...prev, f]);
+                              }
+                            }}
+                            style={{ 
+                              padding: '8px 12px', 
+                              cursor: 'pointer', 
+                              display: 'flex', 
+                              alignItems: 'center', 
+                              justifyContent: 'space-between',
+                              backgroundColor: isSelected ? '#F0F9FF' : 'transparent',
+                              borderBottom: '1px solid #F1F5F9',
+                              fontSize: '0.85rem'
+                            }}
+                          >
+                            <div>
+                              <strong>{f.nombre_completo}</strong>
+                              <span style={{ fontSize: '0.75rem', color: 'var(--color-text-muted)', marginLeft: '6px' }}>
+                                ({f.cargo})
+                              </span>
+                            </div>
+                            <input 
+                              type="checkbox" 
+                              checked={isSelected} 
+                              readOnly 
+                              style={{ cursor: 'pointer' }}
+                            />
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
                 </div>
 
                 <div className="form-group">
@@ -470,10 +668,25 @@ export default function ABMReuniones({ onBack, onSaveSuccess }) {
                   <textarea
                     id="observaciones"
                     className="form-control"
-                    rows="3"
+                    rows="2"
                     placeholder="Notas internas y agenda histórica de coordinación..."
                     value={arreglo1}
                     onChange={(e) => setArreglo1(e.target.value)}
+                  />
+                </div>
+
+                {/* Nombre de la reunión abajo de todo, autocompletado */}
+                <div className="form-group">
+                  <label htmlFor="nombre" style={{ fontWeight: '600', color: 'var(--color-primary)' }}>Nombre de la Reunión (Autocompletado) *</label>
+                  <input
+                    type="text"
+                    id="nombre"
+                    className="form-control"
+                    placeholder="Se autocompleta con los campos de arriba..."
+                    value={nombre}
+                    onChange={(e) => setNombre(e.target.value)}
+                    required
+                    style={{ backgroundColor: '#F8FAFC', fontWeight: '600', color: 'var(--color-primary)' }}
                   />
                 </div>
               </div>

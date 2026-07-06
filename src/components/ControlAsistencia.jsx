@@ -15,7 +15,25 @@ import PreguntasTematicas from './PreguntasTematicas';
 import Cronometro1a1 from './Cronometro1a1';
 import { supabase } from '../lib/supabaseClient';
 
-const COMUNAS = Array.from({ length: 15 }, (_, i) => `Comuna ${i + 1}`);
+const COMUNAS = [
+  "Comuna 1",
+  "Comuna 1 Norte",
+  "Comuna 1 Sur",
+  "Comuna 2",
+  "Comuna 3",
+  "Comuna 4",
+  "Comuna 5",
+  "Comuna 6",
+  "Comuna 7",
+  "Comuna 8",
+  "Comuna 9",
+  "Comuna 10",
+  "Comuna 11",
+  "Comuna 12",
+  "Comuna 13",
+  "Comuna 14",
+  "Comuna 15"
+];
 
 const BARRIOS = [
   "Convocatoria Comunal",
@@ -120,7 +138,7 @@ export default function ControlAsistencia({ reunion, onBack }) {
   const [selectedVecinoDni, setSelectedVecinoDni] = useState(null);
   const [seguridadProblemática, setSeguridadProblemática] = useState('');
 
-  const isCafeOrEncuentro = reunion.tipo_reunion === TIPOS_REUNION.CAFE || reunion.tipo_reunion === TIPOS_REUNION.ENCUENTRO;
+  const isCafeOrEncuentro = reunion.tipo_reunion !== TIPOS_REUNION.UNO_A_UNO;
   const isUnoAUno = reunion.tipo_reunion === TIPOS_REUNION.UNO_A_UNO;
   const isTematica = reunion.tipo_reunion === TIPOS_REUNION.TEMATICA;
 
@@ -271,13 +289,6 @@ export default function ControlAsistencia({ reunion, onBack }) {
 
   // Acción: Marcar Presente (Nivel 1 o Nivel 2)
   const handleGivePresence = async (vecinoDni, isAlreadyInscribed) => {
-    if (reunion.tipo_reunion === TIPOS_REUNION.SEGURIDAD) {
-      setSelectedVecinoDni(vecinoDni);
-      setSeguridadProblemática('');
-      setShowSeguridadModal(true);
-      return;
-    }
-
     setIsSaving(true);
     try {
       const extra = isAlreadyInscribed ? {} : { estado_convocatoria: 'walk_in', como_se_entero: 'Otro' };
@@ -303,7 +314,7 @@ export default function ControlAsistencia({ reunion, onBack }) {
 
   // Quitar presente
   const handleRemovePresence = async (vecinoDni) => {
-    if (!window.confirm('¿Está seguro de quitar el presente a este vecino?')) return;
+    if (!await window.confirm('¿Está seguro de quitar el presente a este vecino?')) return;
     
     setIsSaving(true);
     try {
