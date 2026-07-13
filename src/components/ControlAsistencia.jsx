@@ -581,6 +581,7 @@ export default function ControlAsistencia({ reunion, onBack }) {
           const { data } = await getAsistentesPorReunion(reunion.id);
           if (data) setAsistencias(data);
         }} 
+        onBack={onBack}
       />
     );
   }

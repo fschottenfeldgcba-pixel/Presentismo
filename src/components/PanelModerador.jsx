@@ -1,7 +1,9 @@
 import React, { useState, useEffect } from 'react';
-import { ArrowLeft, Save, Mic, Users, Trash2, ArrowUp, ArrowDown, Share2, Clipboard, Check, RefreshCw, Plus } from 'lucide-react';
+import { ArrowLeft, Save, Mic, Users, Trash2, ArrowUp, ArrowDown, Share2, Clipboard, Check, RefreshCw, Plus, Clock, MessageSquare, Award } from 'lucide-react';
 import { updateReunion, getOradores, updateOradorDetails, getAsistentesPorReunion, registrarOrador, guardarAsistencia } from '../services/supabaseService';
 import { supabase } from '../lib/supabaseClient';
+import { TIPOS_REUNION } from '../data/mockData';
+import PreguntasTematicas from './PreguntasTematicas';
 
 const SEMAFORO_MAP = {
   verde: { label: '🟢 Verde - Sin riesgo', waLabel: '🟢 sin riesgo' },
@@ -15,16 +17,18 @@ const CLIMA_MAP = {
   alto: { label: '🔥 Clima caliente', waLabel: 'caliente' }
 };
 
-export default function PanelModerador({ reunion, onBack }) {
+export default function PanelModerador({ reunion: initialReunion, onBack }) {
+  const [reunion, setReunion] = useState(initialReunion);
+
   // Datos cualitativos de la reunión
-  const [clima, setClima] = useState(reunion.clima || 'bajo');
-  const [semaforoPolitico, setSemaforoPolitico] = useState(reunion.semaforo_politico || 'verde');
-  const [sintesisCualitativa, setSintesisCualitativa] = useState(reunion.sintesis_cualitativa || '');
+  const [clima, setClima] = useState(initialReunion.clima || 'bajo');
+  const [semaforoPolitico, setSemaforoPolitico] = useState(initialReunion.semaforo_politico || 'verde');
+  const [sintesisCualitativa, setSintesisCualitativa] = useState(initialReunion.sintesis_cualitativa || '');
   const [gestionPresente, setGestionPresente] = useState(
-    reunion.gestion_presente || `- ${reunion.funcionario || 'Funcionario'}\n`
+    initialReunion.gestion_presente || `- ${initialReunion.funcionario || 'Funcionario'}\n`
   );
-  const [horaInicioReal, setHoraInicioReal] = useState(reunion.hora_inicio_real || '');
-  const [horaFinReal, setHoraFinReal] = useState(reunion.hora_fin_real || '');
+  const [horaInicioReal, setHoraInicioReal] = useState(initialReunion.hora_inicio_real || '');
+  const [horaFinReal, setHoraFinReal] = useState(initialReunion.hora_fin_real || '');
   const [savingReunion, setSavingReunion] = useState(false);
 
   // Datos de asistencia de inscriptos
@@ -66,6 +70,17 @@ export default function PanelModerador({ reunion, onBack }) {
   const [editingFinishedId, setEditingFinishedId] = useState(null);
   const [editingFinishedText, setEditingFinishedText] = useState('');
 
+  // Estados para Procesos Participativos - Co Creación
+  const [cantMesas, setCantMesas] = useState(1);
+  const [mesas, setMesas] = useState([]);
+  const [mesasInitialized, setMesasInitialized] = useState(false);
+  const [userChangedCantMesas, setUserChangedCantMesas] = useState(false);
+
+  // Formato de reunión reactivo sobre la marcha
+  const [reunionType, setReunionType] = useState(reunion.tipo_reunion);
+  // Modo de Café (cola: lista estricta, libre: mesa colaborativa)
+  const [cafeFormatMode, setCafeFormatMode] = useState('cola');
+
   // Cargar datos de asistencia
   const loadHistoricalStatsForVecinos = async (dnis) => {
     if (!dnis || dnis.length === 0) return;
@@ -73,7 +88,7 @@ export default function PanelModerador({ reunion, onBack }) {
       // 1. Obtener asistencias históricas
       const { data: asistencias, error: errAsist } = await supabase
         .from('inscripciones_asistencias')
-        .select('vecino_id, asistio')
+        .select('vecino_id, asistio, reunion:reuniones(nombre)')
         .in('vecino_id', dnis);
 
       if (errAsist) throw errAsist;
@@ -81,7 +96,7 @@ export default function PanelModerador({ reunion, onBack }) {
       // 2. Obtener oratorias históricas (excluyendo la reunión actual)
       const { data: oradoresHist, error: errOrad } = await supabase
         .from('oradores')
-        .select('vecino_id, reunion_id')
+        .select('vecino_id, reunion_id, reunion:reuniones(nombre)')
         .eq('estado', 'hablo')
         .neq('reunion_id', reunion.id)
         .in('vecino_id', dnis);
@@ -94,6 +109,9 @@ export default function PanelModerador({ reunion, onBack }) {
       });
 
       asistencias?.forEach(asis => {
+        const name = asis.reunion?.nombre?.toLowerCase() || '';
+        if (name.includes('test') || name.includes('prueba')) return;
+
         if (asis.asistio) {
           if (!statsMap[asis.vecino_id]) statsMap[asis.vecino_id] = { asistencias: 0, orador: 0 };
           statsMap[asis.vecino_id].asistencias = (statsMap[asis.vecino_id].asistencias || 0) + 1;
@@ -101,6 +119,9 @@ export default function PanelModerador({ reunion, onBack }) {
       });
 
       oradoresHist?.forEach(orad => {
+        const name = orad.reunion?.nombre?.toLowerCase() || '';
+        if (name.includes('test') || name.includes('prueba')) return;
+
         if (!statsMap[orad.vecino_id]) statsMap[orad.vecino_id] = { asistencias: 0, orador: 0 };
         statsMap[orad.vecino_id].orador = (statsMap[orad.vecino_id].orador || 0) + 1;
       });
@@ -164,6 +185,197 @@ export default function PanelModerador({ reunion, onBack }) {
       console.error('Error al cargar oradores:', err);
     } finally {
       setLoadingOradores(false);
+    }
+  };
+
+  // Inicialización de Mesas de Co-Creación
+  useEffect(() => {
+    if (reunion.tipo_reunion === TIPOS_REUNION.PROCESOS_CO_CREACION && !mesasInitialized) {
+      let initializedFromDb = false;
+      try {
+        if (reunion.gestion_presente) {
+          const parsed = JSON.parse(reunion.gestion_presente);
+          if (parsed && Array.isArray(parsed.mesas)) {
+            setMesas(parsed.mesas);
+            setCantMesas(parsed.mesas.length);
+            initializedFromDb = true;
+            setMesasInitialized(true);
+          }
+        }
+      } catch (err) {
+        console.warn('Error parsing gestion_presente for Co-Creacion:', err);
+      }
+
+      if (!initializedFromDb && asistentes.length > 0) {
+        const presentes = asistentes.filter(a => a.asistio);
+        const suggested = Math.ceil(presentes.length / 10) || 1;
+        setCantMesas(suggested);
+        const initialMesas = Array.from({ length: suggested }, (_, i) => ({
+          id: i + 1,
+          minuta: '',
+          vecinos: []
+        }));
+        setMesas(initialMesas);
+        setMesasInitialized(true);
+      }
+    }
+  }, [reunion.gestion_presente, asistentes, mesasInitialized]);
+
+  const handleCantMesasChange = (newVal) => {
+    setUserChangedCantMesas(true);
+    const count = parseInt(newVal) || 1;
+    setCantMesas(count);
+    
+    setMesas(prev => {
+      if (prev.length < count) {
+        // Agregar mesas
+        const added = Array.from({ length: count - prev.length }, (_, i) => ({
+          id: prev.length + i + 1,
+          minuta: '',
+          vecinos: []
+        }));
+        return [...prev, ...added];
+      } else if (prev.length > count) {
+        // Quitar mesas y pasar los vecinos de las mesas eliminadas a la Mesa 1
+        const removedMesas = prev.slice(count);
+        const unassignedDnis = [];
+        removedMesas.forEach(m => unassignedDnis.push(...m.vecinos));
+        
+        const newMesas = prev.slice(0, count).map((m, idx) => {
+          if (idx === 0) {
+            return { ...m, vecinos: [...m.vecinos, ...unassignedDnis] };
+          }
+          return m;
+        });
+        return newMesas;
+      }
+      return prev;
+    });
+  };
+
+  // Actualizar de forma reactiva la sugerencia de mesas según asistan vecinos
+  useEffect(() => {
+    if (reunion.tipo_reunion === TIPOS_REUNION.PROCESOS_CO_CREACION && !reunion.gestion_presente && !userChangedCantMesas && asistentes.length > 0) {
+      const presentes = asistentes.filter(a => a.asistio);
+      const suggested = Math.ceil(presentes.length / 10) || 1;
+      if (suggested !== cantMesas) {
+        setCantMesas(suggested);
+        setMesas(prev => {
+          if (prev.length === 0) {
+            return Array.from({ length: suggested }, (_, i) => ({
+              id: i + 1,
+              minuta: '',
+              vecinos: []
+            }));
+          }
+          if (prev.length < suggested) {
+            const added = Array.from({ length: suggested - prev.length }, (_, i) => ({
+              id: prev.length + i + 1,
+              minuta: '',
+              vecinos: []
+            }));
+            return [...prev, ...added];
+          } else if (prev.length > suggested) {
+            const removedMesas = prev.slice(suggested);
+            const unassignedDnis = [];
+            removedMesas.forEach(m => unassignedDnis.push(...m.vecinos));
+            return prev.slice(0, suggested).map((m, idx) => {
+              if (idx === 0) {
+                return { ...m, vecinos: [...m.vecinos, ...unassignedDnis] };
+              }
+              return m;
+            });
+          }
+          return prev;
+        });
+      }
+    }
+  }, [asistentes, reunion.gestion_presente, userChangedCantMesas, cantMesas]);
+
+  const handleAutoAssign = () => {
+    const presentes = asistentes.filter(a => a.asistio).map(a => a.vecino_id);
+    if (presentes.length === 0) {
+      alert('No hay vecinos registrados como presentes en la asistencia para asignar.');
+      return;
+    }
+
+    setMesas(prev => {
+      const cleanMesas = prev.map(m => ({ ...m, vecinos: [] }));
+      presentes.forEach((dni, idx) => {
+        const mesaIdx = idx % cleanMesas.length;
+        cleanMesas[mesaIdx].vecinos.push(dni);
+      });
+      return cleanMesas;
+    });
+  };
+
+  const handleMoveNeighbor = (dni, targetTableId) => {
+    setMesas(prev => {
+      return prev.map(m => {
+        const cleanVecinos = m.vecinos.filter(id => id !== dni);
+        if (targetTableId !== "" && m.id === parseInt(targetTableId)) {
+          cleanVecinos.push(dni);
+        }
+        return { ...m, vecinos: cleanVecinos };
+      });
+    });
+  };
+
+  const handleMesaMinutaChange = (mesaId, text) => {
+    setMesas(prev => prev.map(m => {
+      if (m.id === mesaId) {
+        return { ...m, minuta: text };
+      }
+      return m;
+    }));
+  };
+
+  // Cargar modo de café guardado
+  useEffect(() => {
+    if (reunionType === TIPOS_REUNION.CAFE && reunion.gestion_presente) {
+      try {
+        const parsed = JSON.parse(reunion.gestion_presente);
+        if (parsed && parsed.cafeFormatMode) {
+          setCafeFormatMode(parsed.cafeFormatMode);
+        }
+      } catch (err) {
+        // Ignorar
+      }
+    }
+  }, [reunionType, reunion.gestion_presente]);
+
+  const handleToggleCafeMode = async (newMode) => {
+    setCafeFormatMode(newMode);
+    try {
+      const payload = { cafeFormatMode: newMode };
+      await updateReunion(reunion.id, {
+        gestion_presente: JSON.stringify(payload)
+      });
+    } catch (err) {
+      console.error('Error al guardar el modo de café:', err);
+    }
+  };
+
+  const handleAddFreeIntervention = async (dni) => {
+    if (oradores.some(o => o.vecino_id === dni)) {
+      alert('Este vecino ya tiene una intervención registrada. Podés editar su nota directamente en la lista.');
+      return;
+    }
+    
+    const maxOrden = oradores.reduce((max, o) => Math.max(max, o.orden || 0), 0);
+    const newOrador = {
+      reunion_id: reunion.id,
+      vecino_id: dni,
+      estado: 'hablo',
+      orden: maxOrden + 1,
+      tema_original: 'Intervención en Mesa de Café'
+    };
+    
+    const { data, error } = await registrarOrador(newOrador);
+    if (!error) {
+      await loadOradores();
+    } else {
+      alert(`Error al registrar la intervención: ${error.message}`);
     }
   };
 
@@ -293,10 +505,33 @@ export default function PanelModerador({ reunion, onBack }) {
     }
   };
 
+  const loadReunionDetails = async () => {
+    try {
+      const { data, error } = await supabase
+        .from('reuniones')
+        .select('*')
+        .eq('id', initialReunion.id)
+        .single();
+      if (!error && data) {
+        setReunion(data);
+        setReunionType(data.tipo_reunion);
+        setClima(data.clima || 'bajo');
+        setSemaforoPolitico(data.semaforo_politico || 'verde');
+        setSintesisCualitativa(data.sintesis_cualitativa || '');
+        setGestionPresente(data.gestion_presente || `- ${data.funcionario || 'Funcionario'}\n`);
+        setHoraInicioReal(data.hora_inicio_real || '');
+        setHoraFinReal(data.hora_fin_real || '');
+      }
+    } catch (err) {
+      console.error('Error cargando detalles actualizados de la reunión:', err);
+    }
+  };
+
   useEffect(() => {
+    loadReunionDetails();
     loadAsistenciaStats();
     loadOradores();
-  }, [reunion.id]);
+  }, [initialReunion.id]);
 
   // Manejo del cronómetro del orador activo
   useEffect(() => {
@@ -323,17 +558,20 @@ export default function PanelModerador({ reunion, onBack }) {
   const handleSaveCualitativos = async () => {
     setSavingReunion(true);
     try {
-      const { error } = await updateReunion(reunion.id, {
+      const isCoCreacion = reunion.tipo_reunion === TIPOS_REUNION.PROCESOS_CO_CREACION;
+      const payload = {
         clima: clima,
         semaforo_politico: semaforoPolitico,
         sintesis_cualitativa: sintesisCualitativa.trim() || null,
-        gestion_presente: gestionPresente.trim() || null,
+        gestion_presente: isCoCreacion ? JSON.stringify({ mesas }) : (gestionPresente.trim() || null),
         hora_inicio_real: horaInicioReal || null,
         hora_fin_real: horaFinReal || null
-      });
+      };
+
+      const { error } = await updateReunion(reunion.id, payload);
 
       if (error) throw error;
-      alert('¡Datos cualitativos guardados con éxito en la base de datos!');
+      alert(isCoCreacion ? '¡Datos de mesas y minutas de co-creación guardados con éxito!' : '¡Datos cualitativos guardados con éxito en la base de datos!');
     } catch (err) {
       console.error(err);
       alert(`Error al guardar cambios de la reunión: ${err.message}`);
@@ -657,28 +895,387 @@ ${oradoresEfectivos.length > 0
       </div>
 
       {/* Tarjeta de Información General */}
-      <div className="card" style={{ marginBottom: '1.5rem', backgroundColor: 'var(--bg-header)', color: '#ffffff', border: 'none' }}>
+      <div className="card" style={{ marginBottom: '1.5rem', background: 'linear-gradient(135deg, #0F172A, #1E293B)', color: '#ffffff', border: 'none', padding: '1.5rem', boxShadow: '0 4px 6px -1px rgba(0,0,0,0.1), 0 2px 4px -1px rgba(0,0,0,0.06)' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', flexWrap: 'wrap', gap: '15px' }}>
           <div>
-            <h3 style={{ fontSize: '1.4rem', margin: '0 0 4px 0', fontWeight: '700', color: 'var(--color-highlight)' }}>
+            <h3 style={{ fontSize: '1.4rem', margin: '0 0 8px 0', fontWeight: '700', color: '#38BDF8' }}>
               {reunion.nombre}
             </h3>
-            <p style={{ margin: 0, fontSize: '0.9rem', opacity: 0.9 }}>
-              Lugar: <strong>{reunion.lugar}</strong> | Fecha: <strong>{reunion.fecha}</strong>
+            <p style={{ margin: 0, fontSize: '0.9rem', color: '#E2E8F0' }}>
+              Lugar: <strong style={{ color: '#ffffff' }}>{reunion.lugar}</strong> | Fecha: <strong style={{ color: '#ffffff' }}>{reunion.fecha}</strong>
             </p>
           </div>
           <div style={{ textAlign: 'right' }}>
-            <span className="badge" style={{ backgroundColor: 'rgba(255,255,255,0.15)', color: '#ffffff', fontSize: '0.8rem', padding: '6px 12px' }}>
-              {reunion.tipo_reunion}
-            </span>
-            <div style={{ marginTop: '8px', fontSize: '0.8rem', opacity: 0.9 }}>
-              Comuna: <strong>{reunion.comuna}</strong>
+            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '4px' }}>
+              <span style={{ fontSize: '0.65rem', color: '#94A3B8', textTransform: 'uppercase', fontWeight: 'bold' }}>Formato de Reunión:</span>
+              <select
+                value={reunionType}
+                onChange={async (e) => {
+                  const newType = e.target.value;
+                  const confirmChange = await window.confirm(`¿Estás seguro de que quieres cambiar el formato de la reunión a "${newType}" sobre la marcha?\nEsto modificará los controles y la vista de inmediato.`);
+                  if (confirmChange) {
+                    const { error } = await updateReunion(reunion.id, { tipo_reunion: newType });
+                    if (!error) {
+                      setReunionType(newType);
+                    } else {
+                      alert(`Error al cambiar el formato de la reunión: ${error.message}`);
+                    }
+                  }
+                }}
+                style={{
+                  backgroundColor: '#1E293B',
+                  color: '#ffffff',
+                  border: '1px solid #475569',
+                  borderRadius: '6px',
+                  padding: '6px 12px',
+                  fontSize: '0.8rem',
+                  fontWeight: '700',
+                  cursor: 'pointer',
+                  outline: 'none',
+                  textAlign: 'right'
+                }}
+              >
+                {[
+                  { value: TIPOS_REUNION.ENCUENTRO, label: 'Formato Reunion con Vecinos Tradicional' },
+                  { value: TIPOS_REUNION.CAFE, label: 'Formato Cafe' },
+                  { value: TIPOS_REUNION.PROCESOS_CO_CREACION, label: 'Formato Co-Creación' }
+                ].map(item => (
+                  <option key={item.value} value={item.value} style={{ color: '#ffffff', backgroundColor: '#0F172A', textAlign: 'left' }}>
+                    {item.label}
+                  </option>
+                ))}
+                {![TIPOS_REUNION.ENCUENTRO, TIPOS_REUNION.CAFE, TIPOS_REUNION.PROCESOS_CO_CREACION].includes(reunionType) && (
+                  <option value={reunionType} style={{ color: '#ffffff', backgroundColor: '#0F172A', textAlign: 'left' }}>
+                    {reunionType}
+                  </option>
+                )}
+              </select>
+            </div>
+            <div style={{ marginTop: '8px', fontSize: '0.85rem', color: '#E2E8F0' }}>
+              Comuna: <strong style={{ color: '#ffffff' }}>{reunion.comuna}</strong>
             </div>
           </div>
         </div>
       </div>
 
-      {/* AGREGAR ORADORES DE ÚLTIMO MOMENTO */}
+      {/* Selector de modo para Formato Café */}
+      {reunionType === TIPOS_REUNION.CAFE && (
+        <div className="card" style={{ marginBottom: '1.5rem', padding: '12px 16px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', backgroundColor: '#F8FAFC', border: '1px solid var(--color-border)', flexDirection: 'row', flexWrap: 'wrap', gap: '10px' }}>
+          <span style={{ fontSize: '0.9rem', fontWeight: '700', color: 'var(--color-primary)' }}>
+            ☕ Configuración de Formato Café:
+          </span>
+          <div style={{ display: 'flex', gap: '8px', backgroundColor: '#E2E8F0', padding: '4px', borderRadius: '8px' }}>
+            <button
+              className={`btn btn-sm ${cafeFormatMode === 'cola' ? 'btn-primary' : 'btn-secondary'}`}
+              onClick={() => handleToggleCafeMode('cola')}
+              style={{ padding: '6px 12px', fontSize: '0.8rem', fontWeight: '600', border: 'none', borderRadius: '6px' }}
+            >
+              Lista Estricta
+            </button>
+            <button
+              className={`btn btn-sm ${cafeFormatMode === 'libre' ? 'btn-primary' : 'btn-secondary'}`}
+              onClick={() => handleToggleCafeMode('libre')}
+              style={{ padding: '6px 12px', fontSize: '0.8rem', fontWeight: '600', border: 'none', borderRadius: '6px' }}
+            >
+              Minuta Libre
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* ------------------ VISTA POLIMÓRFICA SEGÚN TIPO DE REUNIÓN ------------------ */}
+      {reunionType === TIPOS_REUNION.TEMATICA ? (
+        /* VISTA DE REUNIÓN TEMÁTICA (PREGUNTAS DE WHATSAPP / QR) */
+        <div style={{ marginBottom: '1.5rem' }}>
+          <PreguntasTematicas reunion={reunion} asistencias={asistentes} />
+        </div>
+      ) : reunionType === TIPOS_REUNION.PROCESOS_CO_CREACION ? (
+        /* VISTA DE PROCESOS PARTICIPATIVOS - CO-CREACIÓN (MESAS DE TRABAJO) */
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem', marginBottom: '1.5rem' }}>
+          {/* Card de Configuración de Mesas */}
+          <div className="card" style={{ margin: 0 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '10px', borderBottom: '1px solid var(--color-border)', paddingBottom: '12px', marginBottom: '16px' }}>
+              <h3 style={{ fontSize: '1.2rem', color: 'var(--color-primary)', margin: 0, display: 'flex', alignItems: 'center', gap: '8px', fontWeight: '700' }}>
+                <Users size={20} style={{ color: 'var(--color-highlight)' }} />
+                Mesas de Co-Creación
+              </h3>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <label htmlFor="cant-mesas" style={{ fontSize: '0.85rem', fontWeight: '600', color: 'var(--color-text)', margin: 0 }}>Cant. de Mesas:</label>
+                  <input
+                    type="number"
+                    id="cant-mesas"
+                    className="form-control form-control-sm"
+                    min="1"
+                    max="30"
+                    value={cantMesas}
+                    onChange={(e) => handleCantMesasChange(e.target.value)}
+                    style={{ width: '60px', padding: '4px 8px', fontSize: '0.85rem' }}
+                  />
+                </div>
+                <button 
+                  className="btn btn-secondary btn-sm"
+                  onClick={handleAutoAssign}
+                  style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.8rem' }}
+                >
+                  Distribuir Vecinos Automáticamente
+                </button>
+              </div>
+            </div>
+
+            <p style={{ fontSize: '0.85rem', color: 'var(--color-text-muted)', margin: '0 0 16px 0' }}>
+              Sugerencia por asistentes presentes: <strong>1 mesa cada 10 vecinos presentes</strong> (Basado en {asistentes.filter(a => a.asistio).length} presentes, sugerido: <strong>{Math.ceil(asistentes.filter(a => a.asistio).length / 10) || 1} mesas</strong>).
+            </p>
+
+            {/* Listado de Vecinos Sin Mesa */}
+            {(() => {
+              const getAssignedTableId = (dni) => {
+                const found = mesas.find(m => m.vecinos.includes(dni));
+                return found ? found.id : null;
+              };
+              const unassigned = asistentes.filter(a => a.asistio && !getAssignedTableId(a.vecino_id));
+
+              if (unassigned.length > 0) {
+                return (
+                  <div style={{ backgroundColor: '#EFF6FF', border: '1px solid #BFDBFE', borderRadius: '8px', padding: '12px', marginBottom: '16px' }}>
+                    <strong style={{ fontSize: '0.85rem', color: '#1E40AF', display: 'block', marginBottom: '8px' }}>
+                      ⚠️ Vecinos presentes sin mesa asignada ({unassigned.length}):
+                    </strong>
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', maxHeight: '120px', overflowY: 'auto' }}>
+                      {unassigned.map(v => (
+                        <div key={v.vecino_id} style={{ backgroundColor: '#FFFFFF', border: '1px solid #DBEAFE', borderRadius: '6px', padding: '6px 10px', fontSize: '0.75rem', display: 'flex', alignItems: 'center', gap: '8px', boxShadow: '0 1px 2px rgba(0,0,0,0.05)' }}>
+                          <span style={{ fontWeight: '500', color: '#1E293B' }}>{v.vecino?.nombre} {v.vecino?.apellido}</span>
+                          <select 
+                            onChange={(e) => handleMoveNeighbor(v.vecino_id, e.target.value)}
+                            style={{ fontSize: '0.75rem', padding: '3px 6px', border: '1px solid #CBD5E1', borderRadius: '4px', color: '#475569', cursor: 'pointer', backgroundColor: '#F8FAFC' }}
+                            defaultValue=""
+                          >
+                            <option value="" disabled>Asignar a...</option>
+                            {mesas.map(m => (
+                              <option key={m.id} value={m.id}>Mesa {m.id}</option>
+                            ))}
+                          </select>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                );
+              }
+              return (
+                <div style={{ backgroundColor: '#F0FDF4', border: '1px solid #BBF7D0', borderRadius: '8px', padding: '12px', marginBottom: '16px', color: '#166534', fontSize: '0.85rem', fontWeight: '500' }}>
+                  ✅ ¡Todos los vecinos presentes han sido asignados a una mesa!
+                </div>
+              );
+            })()}
+          </div>
+
+          {/* Cards de cada Mesa */}
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(380px, 1fr))', gap: '1.5rem' }}>
+            {mesas.map(m => {
+              const getAssignedTableId = (dni) => {
+                const found = mesas.find(tbl => tbl.vecinos.includes(dni));
+                return found ? found.id : null;
+              };
+
+              return (
+                <div className="card" key={m.id} style={{ margin: 0, display: 'flex', flexDirection: 'column', borderTop: '3px solid var(--color-highlight)' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid #F1F5F9', paddingBottom: '8px', marginBottom: '12px' }}>
+                    <h4 style={{ margin: 0, color: 'var(--color-primary)', fontWeight: '700', fontSize: '1rem' }}>
+                      Mesa {m.id}
+                    </h4>
+                    <span className="badge badge-info" style={{ fontSize: '0.75rem', padding: '3px 8px' }}>
+                      {m.vecinos.length} vecinos asignados
+                    </span>
+                  </div>
+
+                  {/* Selector rápido para añadir/mover vecinos a esta mesa */}
+                  <div style={{ marginBottom: '12px' }}>
+                    <select
+                      onChange={(e) => {
+                        if (e.target.value) {
+                          handleMoveNeighbor(e.target.value, m.id);
+                          e.target.value = ""; // Reset
+                        }
+                      }}
+                      style={{ 
+                        width: '100%', 
+                        fontSize: '0.8rem', 
+                        padding: '8px 10px', 
+                        borderRadius: '6px', 
+                        border: '1px solid #CBD5E1',
+                        backgroundColor: '#FFFFFF',
+                        cursor: 'pointer',
+                        outline: 'none',
+                        color: '#475569',
+                        fontWeight: '500'
+                      }}
+                      defaultValue=""
+                    >
+                      <option value="" disabled>➕ Agregar / Mover vecino a Mesa {m.id}...</option>
+                      {asistentes
+                        .filter(a => a.asistio)
+                        .map(a => {
+                          const currentTableId = getAssignedTableId(a.vecino_id);
+                          if (currentTableId === m.id) return null;
+                          const suffix = currentTableId ? ` (Mesa ${currentTableId})` : ' (Sin mesa)';
+                          return (
+                            <option key={a.vecino_id} value={a.vecino_id}>
+                              {a.vecino?.nombre} {a.vecino?.apellido} {suffix}
+                            </option>
+                          );
+                        })}
+                    </select>
+                  </div>
+
+                  {/* Minuta de Mesa */}
+                  <div className="form-group" style={{ marginBottom: '12px' }}>
+                    <label style={{ fontSize: '0.8rem', fontWeight: '600', display: 'block', marginBottom: '4px' }}>Minuta / Notas de la Mesa {m.id}</label>
+                    <textarea
+                      className="form-control"
+                      rows={4}
+                      placeholder="Escribí los puntos principales debatidos en esta mesa..."
+                      value={m.minuta || ''}
+                      onChange={(e) => handleMesaMinutaChange(m.id, e.target.value)}
+                      style={{ fontSize: '0.8rem', lineHeight: '1.4' }}
+                    />
+                  </div>
+
+                  {/* Vecinos en la mesa */}
+                  <div style={{ marginTop: 'auto' }}>
+                    <label style={{ fontSize: '0.75rem', fontWeight: '600', color: 'var(--color-text-muted)', display: 'block', marginBottom: '6px' }}>Vecinos en esta mesa:</label>
+                    {m.vecinos.length === 0 ? (
+                      <span style={{ fontSize: '0.75rem', color: 'var(--color-text-muted)', fontStyle: 'italic' }}>Sin vecinos asignados</span>
+                    ) : (
+                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', maxHeight: '100px', overflowY: 'auto' }}>
+                        {m.vecinos.map(dni => {
+                          const att = asistentes.find(a => a.vecino_id === dni);
+                          return (
+                            <div key={dni} style={{ 
+                              backgroundColor: '#F8FAFC', 
+                              borderRadius: '6px', 
+                              padding: '4px 8px', 
+                              fontSize: '0.75rem', 
+                              display: 'inline-flex', 
+                              alignItems: 'center', 
+                              gap: '6px', 
+                              border: '1px solid #E2E8F0',
+                              boxShadow: '0 1px 2px rgba(0,0,0,0.02)'
+                            }}>
+                              <span style={{ fontWeight: '500', color: '#1E293B' }}>
+                                {att?.vecino?.nombre || 'Vecino'} {att?.vecino?.apellido || ''}
+                              </span>
+                              <button
+                                onClick={() => handleMoveNeighbor(dni, "")}
+                                style={{ 
+                                  background: 'none', 
+                                  border: 'none', 
+                                  padding: 0, 
+                                  cursor: 'pointer', 
+                                  color: '#94A3B8', 
+                                  display: 'flex', 
+                                  alignItems: 'center',
+                                  transition: 'color 0.2s'
+                                }}
+                                onMouseEnter={(e) => e.target.style.color = '#EF4444'}
+                                onMouseLeave={(e) => e.target.style.color = '#94A3B8'}
+                                title="Quitar de esta mesa"
+                              >
+                                <Trash2 size={12} />
+                              </button>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      ) : (reunionType === TIPOS_REUNION.CAFE && cafeFormatMode === 'libre') ? (
+        /* VISTA DE FORMATO CAFÉ EN MODO MINUTA LIBRE / MESA COLABORATIVA */
+        <div className="card" style={{ marginBottom: '1.5rem', padding: '16px' }}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+            <p style={{ fontSize: '0.85rem', color: 'var(--color-text-muted)', margin: 0, lineHeight: '1.4' }}>
+              Mesa libre colaborativa: los vecinos conversan libremente sin turnos estrictos. Elige el nombre de un vecino del listado de presentes para registrar su opinión y tomar notas.
+            </p>
+
+            <div style={{ marginTop: '8px' }}>
+              <select
+                onChange={(e) => {
+                  if (e.target.value) {
+                    handleAddFreeIntervention(e.target.value);
+                    e.target.value = ""; // Reset
+                  }
+                }}
+                style={{ width: '100%', fontSize: '0.85rem', padding: '10px', borderRadius: '6px', border: '1px solid #CBD5E1', backgroundColor: '#FFFFFF', cursor: 'pointer', outline: 'none', fontWeight: '500', color: '#475569' }}
+                defaultValue=""
+              >
+                <option value="" disabled>➕ Registrar / Tomar nota de intervención de vecino...</option>
+                {asistentes
+                  .filter(a => a.asistio)
+                  .map(a => {
+                    const alreadyAdded = oradores.some(o => o.vecino_id === a.vecino_id);
+                    return (
+                      <option key={a.vecino_id} value={a.vecino_id} disabled={alreadyAdded}>
+                        {a.vecino?.nombre} {a.vecino?.apellido} {alreadyAdded ? ' (Ya registrado)' : ''}
+                      </option>
+                    );
+                  })}
+              </select>
+            </div>
+
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', marginTop: '12px' }}>
+              <h4 style={{ fontSize: '0.95rem', color: 'var(--color-primary)', margin: '0 0 4px 0', fontWeight: '700' }}>
+                Intervenciones y Notas ({oradores.length})
+              </h4>
+              {oradores.length === 0 ? (
+                <div style={{ textAlign: 'center', padding: '2rem 1rem', color: 'var(--color-text-muted)', fontSize: '0.85rem', border: '1px dashed #CBD5E1', borderRadius: '8px' }}>
+                  Aún no hay intervenciones registradas. Elige un vecino de la lista para comenzar a tomar nota.
+                </div>
+              ) : (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                  {oradores.map((item, idx) => (
+                    <div className="card" key={item.id} style={{ margin: 0, padding: '14px', borderLeft: '4px solid var(--color-highlight)', backgroundColor: '#FFFFFF' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+                        <strong style={{ fontSize: '0.9rem', color: 'var(--color-primary)' }}>
+                          {idx + 1}. {item.vecino?.nombre} {item.vecino?.apellido} ({item.vecino_id})
+                        </strong>
+                        <button
+                          className="btn btn-secondary btn-sm"
+                          onClick={() => handleEliminarOrador(item.id, `${item.vecino?.nombre} ${item.vecino?.apellido}`)}
+                          style={{ padding: '4px', color: '#EF4444', border: '1px solid #FCA5A5', display: 'flex', alignItems: 'center', borderRadius: '4px' }}
+                          title="Quitar intervención"
+                        >
+                          <Trash2 size={12} />
+                        </button>
+                      </div>
+                      <textarea
+                        className="form-control"
+                        rows={3}
+                        placeholder="Escribí los comentarios de este vecino o la devolución de la mesa aquí..."
+                        value={item.tema_efectivo || item.tema_original || ''}
+                        onChange={(e) => {
+                          const text = e.target.value;
+                          setOradores(prev => prev.map(o => o.id === item.id ? { ...o, tema_efectivo: text } : o));
+                        }}
+                        onBlur={async (e) => {
+                          await updateOradorDetails(item.id, { tema_efectivo: e.target.value });
+                        }}
+                        style={{ fontSize: '0.85rem', lineHeight: '1.4' }}
+                      />
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      ) : (
+        /* VISTA POR DEFECTO CON COLA DE ORADORES TRADICIONAL */
+        <>
+          {/* AGREGAR ORADORES DE ÚLTIMO MOMENTO */}
       <div className="card" style={{ marginBottom: '1.5rem', padding: '16px', backgroundColor: '#F8FAFC', border: '1px dashed var(--color-border)' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px', flexWrap: 'wrap', gap: '8px' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
@@ -1061,8 +1658,6 @@ ${oradoresEfectivos.length > 0
         </div>
       </div>
 
-      {/* STACK VERTICAL DE COMPONENTES AL 100% ANCHO (SECCIÓN INFERIOR) */}
-      <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
         
         {/* 3. HISTORIAL / FINALIZADOS (100% WIDTH) */}
         <div className="card" style={{ margin: 0, backgroundColor: '#F8FAFC' }}>
@@ -1147,6 +1742,35 @@ ${oradoresEfectivos.length > 0
                   </div>
                 </div>
               ))}
+              
+              {/* Promedio de duración para Uno a Uno */}
+              {reunion.tipo_reunion === TIPOS_REUNION.UNO_A_UNO && (() => {
+                const finishedHablo = queueFinished.filter(o => o.estado === 'hablo');
+                const totalSeconds = finishedHablo.reduce((sum, o) => sum + (o.duracion_segundos || 0), 0);
+                const avgSeconds = finishedHablo.length > 0 ? Math.round(totalSeconds / finishedHablo.length) : 0;
+                return (
+                  <div style={{
+                    marginTop: '1rem',
+                    padding: '12px 16px',
+                    backgroundColor: '#E0F2FE',
+                    border: '1px solid #BAE6FD',
+                    borderRadius: '8px',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    fontSize: '0.85rem',
+                    color: '#0369A1'
+                  }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontWeight: '700' }}>
+                      <Clock size={16} />
+                      <span>Tiempo Promedio de Atención (Vecinos):</span>
+                    </div>
+                    <strong style={{ fontSize: '1rem', fontFamily: 'monospace' }}>
+                      {formatSpeakerTime(avgSeconds)}
+                    </strong>
+                  </div>
+                );
+              })()}
             </div>
           ) : (
             <div style={{ textAlign: 'center', padding: '1.25rem', color: 'var(--color-text-muted)', fontSize: '0.8rem' }}>
@@ -1154,7 +1778,10 @@ ${oradoresEfectivos.length > 0
             </div>
           )}
         </div>
-
+      </>
+    )}
+      {/* STACK VERTICAL DE COMPONENTES AL 100% ANCHO (SECCIÓN INFERIOR) */}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem', marginTop: '1.5rem' }}>
         {/* 4. VARIABLES CUALITATIVAS (AL FINAL) (100% WIDTH) */}
         <div className="card" style={{ margin: 0 }}>
           <h3 style={{ fontSize: '1.15rem', color: 'var(--color-primary)', marginTop: 0, marginBottom: '1rem', display: 'flex', alignItems: 'center', gap: '8px', borderBottom: '1px solid var(--color-border)', paddingBottom: '8px', fontWeight: '700' }}>

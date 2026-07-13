@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { BarChart3, Plus, Download, Calendar, MapPin, Users, Award, ChevronRight, FileSpreadsheet, Settings, Search, Edit3, Save, Activity, Mic, MessageSquare, Check, TrendingUp, AlertTriangle, Trash2, UserCog } from 'lucide-react';
+import { BarChart3, Plus, Download, Calendar, MapPin, Users, Award, ChevronRight, FileSpreadsheet, Settings, Search, Edit3, Save, Activity, Mic, MessageSquare, Check, TrendingUp, AlertTriangle, Trash2, UserCog, User } from 'lucide-react';
 import { getReuniones, getAsistentesPorReunion, getOradores, upsertVecino, normalizeComuna, normalizeCanalDifusion, guardarAsistencia, registrarOrador, eliminarTodosLosInscriptos } from '../services/supabaseService';
 import { supabase } from '../lib/supabaseClient';
 import * as XLSX from 'xlsx';
@@ -15,8 +15,10 @@ const SEMAFORO_MAP = {
   amarillo: { label: '🟡 Amarillo (Neutral/Mixto)', waLabel: 'amarillo 🟡' },
   rojo: { label: '🔴 Rojo (Tenso/Reclamos)', waLabel: 'rojo 🔴' }
 };
+import { TIPOS_REUNION } from '../data/mockData';
 import EstadisticasFuncionario from './EstadisticasFuncionario';
 import ABMFuncionarios from './ABMFuncionarios';
+import CentralInformes from './CentralInformes';
 
 const COMUNAS = [
   "Comuna 1",
@@ -90,8 +92,7 @@ const BARRIOS = [
   "Villa Urquiza"
 ];
 
-export default function DashboardAdmin({ user, onSelectReunion, onManageReunion, onModerarReunion, onCreateMeetingClick }) {
-  const [activeDashboardTab, setActiveDashboardTab] = useState('reuniones'); // 'reuniones' | 'padron'
+export default function DashboardAdmin({ user, onSelectReunion, onManageReunion, onModerarReunion, onCreateMeetingClick, activeDashboardTab, setActiveDashboardTab }) {
   const [reuniones, setReuniones] = useState([]);
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
@@ -102,7 +103,8 @@ export default function DashboardAdmin({ user, onSelectReunion, onManageReunion,
     totalInscriptos: 0,
     totalAsistentes: 0,
     promedioAsistencia: 0,
-    walkIns: 0
+    walkIns: 0,
+    vecinosUnicos: 0
   });
 
   // Estados de Búsqueda y Edición de Padrón Central
@@ -493,6 +495,22 @@ ${oradoresEfectivos.length > 0
 
     setReuniones(reunionesConAsistencias.length > 0 ? reunionesConAsistencias : (list || []));
 
+    let totalVecinosUnicos = 0;
+    try {
+      const { count, error: countErr } = await supabase
+        .from('vecinos')
+        .select('*', { count: 'exact', head: true })
+        .not('nombre', 'ilike', '%test%')
+        .not('nombre', 'ilike', '%prueba%')
+        .not('apellido', 'ilike', '%test%')
+        .not('apellido', 'ilike', '%prueba%');
+      if (!countErr && count !== null) {
+        totalVecinosUnicos = count;
+      }
+    } catch (err) {
+      console.error('Error al obtener total de vecinos únicos:', err);
+    }
+
     const promedio = totalInsc > 0 ? Math.round((totalAsis / totalInsc) * 100) : 0;
 
     setStats({
@@ -500,7 +518,8 @@ ${oradoresEfectivos.length > 0
       totalInscriptos: totalInsc,
       totalAsistentes: totalAsis,
       promedioAsistencia: promedio,
-      walkIns: walkInCount
+      walkIns: walkInCount,
+      vecinosUnicos: totalVecinosUnicos
     });
     setLoading(false);
   };
@@ -633,9 +652,25 @@ ${oradoresEfectivos.length > 0
 
       if (errPreguntas) throw errPreguntas;
 
+      // Filtrar reuniones de test/prueba
+      const filteredAsistencias = asistencias?.filter(asis => {
+        const name = asis.reunion?.nombre?.toLowerCase() || '';
+        return !name.includes('test') && !name.includes('prueba');
+      }) || [];
+
+      const filteredOradores = oradores?.filter(orad => {
+        const name = orad.reunion?.nombre?.toLowerCase() || '';
+        return !name.includes('test') && !name.includes('prueba');
+      }) || [];
+
+      const filteredPreguntas = preguntas?.filter(preg => {
+        const name = preg.reunion?.nombre?.toLowerCase() || '';
+        return !name.includes('test') && !name.includes('prueba');
+      }) || [];
+
       const timelineMap = {};
 
-      asistencias?.forEach(asis => {
+      filteredAsistencias.forEach(asis => {
         if (!asis.reunion) return;
         timelineMap[asis.reunion_id] = {
           reunion: asis.reunion,
@@ -649,7 +684,7 @@ ${oradoresEfectivos.length > 0
         };
       });
 
-      oradores?.forEach(orad => {
+      filteredOradores.forEach(orad => {
         if (!orad.reunion) return;
         if (!timelineMap[orad.reunion_id]) {
           timelineMap[orad.reunion_id] = {
@@ -670,7 +705,7 @@ ${oradoresEfectivos.length > 0
         };
       });
 
-      preguntas?.forEach(preg => {
+      filteredPreguntas.forEach(preg => {
         if (!preg.reunion) return;
         if (!timelineMap[preg.reunion_id]) {
           timelineMap[preg.reunion_id] = {
@@ -721,31 +756,61 @@ ${oradoresEfectivos.length > 0
         .select('*');
 
       if (!viewError && viewData) {
-        setTopVecinos(viewData);
+        // Doble seguridad: filtrar vecinos de prueba del resultado de la vista por si no actualizaron el SQL
+        const filtered = viewData.filter(v => {
+          const name = (v.nombre || '').toLowerCase();
+          const lastName = (v.apellido || '').toLowerCase();
+          return !name.includes('test') && !name.includes('prueba') && !lastName.includes('test') && !lastName.includes('prueba');
+        });
+        setTopVecinos(filtered);
       } else {
-        // Fallback en JS si no se ha creado la vista
+        // Fallback en JS si no se ha creado la vista o falla
         console.warn('La vista top_10_vecinos no existe. Usando fallback en JS...');
-        const { data: vecinosData, error: vecError } = await supabase
-          .from('vecinos')
-          .select('dni, nombre, apellido, celular, email, comuna, barrio, inscripciones_asistencias(count)');
+        const { data: rawAsistencias, error: errAsist } = await supabase
+          .from('inscripciones_asistencias')
+          .select('vecino_id, reunion:reuniones(nombre)');
 
-        if (!vecError && vecinosData) {
-          const processed = vecinosData
-            .map(v => ({
-              dni: v.dni,
-              nombre: v.nombre,
-              apellido: v.apellido,
-              celular: v.celular,
-              email: v.email,
-              comuna: v.comuna,
-              barrio: v.barrio,
-              total_inscripciones: v.inscripciones_asistencias?.[0]?.count || 0
-            }))
-            .filter(v => v.total_inscripciones > 0)
-            .sort((a, b) => b.total_inscripciones - a.total_inscripciones)
-            .slice(0, 10);
+        if (!errAsist && rawAsistencias) {
+          // Filtrar reuniones test/prueba
+          const validAsistencias = rawAsistencias.filter(item => {
+            const name = item.reunion?.nombre?.toLowerCase() || '';
+            return !name.includes('test') && !name.includes('prueba');
+          });
 
-          setTopVecinos(processed);
+          // Contar por vecino
+          const counts = {};
+          validAsistencias.forEach(item => {
+            counts[item.vecino_id] = (counts[item.vecino_id] || 0) + 1;
+          });
+
+          // Obtener los perfiles de vecinos correspondientes
+          const { data: vecinosList, error: vecError } = await supabase
+            .from('vecinos')
+            .select('dni, nombre, apellido, celular, email, comuna, barrio');
+
+          if (!vecError && vecinosList) {
+            const processed = vecinosList
+              .filter(v => {
+                const name = (v.nombre || '').toLowerCase();
+                const lastName = (v.apellido || '').toLowerCase();
+                return !name.includes('test') && !name.includes('prueba') && !lastName.includes('test') && !lastName.includes('prueba');
+              })
+              .map(v => ({
+                dni: v.dni,
+                nombre: v.nombre,
+                apellido: v.apellido,
+                celular: v.celular,
+                email: v.email,
+                comuna: v.comuna,
+                barrio: v.barrio,
+                total_inscripciones: counts[v.dni] || 0
+              }))
+              .filter(v => v.total_inscripciones > 0)
+              .sort((a, b) => b.total_inscripciones - a.total_inscripciones)
+              .slice(0, 10);
+
+            setTopVecinos(processed);
+          }
         }
       }
     } catch (err) {
@@ -1665,6 +1730,12 @@ ${oradoresEfectivos.length > 0
         >
           <UserCog size={16} /> Funcionarios
         </div>
+        <div 
+          className={`tab ${activeDashboardTab === 'central_informes' ? 'active' : ''}`}
+          onClick={() => setActiveDashboardTab('central_informes')}
+        >
+          <FileSpreadsheet size={16} /> Central de Informes
+        </div>
       </div>
 
       {activeDashboardTab === 'reuniones' ? (
@@ -1690,7 +1761,7 @@ ${oradoresEfectivos.length > 0
 
           {/* Cartas de Estadísticas */}
           {isCercaniaOrGerencia && (
-            <div className="grid-4" style={{ marginBottom: '2.5rem' }}>
+            <div className="grid-5" style={{ marginBottom: '2.5rem' }}>
               <div className="card" style={{ display: 'flex', alignItems: 'center', gap: '16px', margin: 0 }}>
                 <div style={{ padding: '12px', borderRadius: '8px', backgroundColor: '#F1F5F9', color: 'var(--color-primary)' }}>
                   <Calendar size={24} />
@@ -1708,6 +1779,16 @@ ${oradoresEfectivos.length > 0
                 <div>
                   <div style={{ fontSize: '0.85rem', color: 'var(--color-text-muted)', fontWeight: '600' }}>TOTAL CONVOCADOS</div>
                   <div style={{ fontSize: '1.5rem', fontWeight: '700', color: 'var(--color-primary)' }}>{stats.totalInscriptos}</div>
+                </div>
+              </div>
+
+              <div className="card" style={{ display: 'flex', alignItems: 'center', gap: '16px', margin: 0 }}>
+                <div style={{ padding: '12px', borderRadius: '8px', backgroundColor: '#E0F2FE', color: '#0369A1' }}>
+                  <User size={24} />
+                </div>
+                <div>
+                  <div style={{ fontSize: '0.85rem', color: 'var(--color-text-muted)', fontWeight: '600' }}>VECINOS ÚNICOS</div>
+                  <div style={{ fontSize: '1.5rem', fontWeight: '700', color: 'var(--color-primary)' }}>{stats.vecinosUnicos}</div>
                 </div>
               </div>
 
@@ -2496,6 +2577,9 @@ ${oradoresEfectivos.length > 0
       ) : activeDashboardTab === 'estadisticas_funcionario' ? (
         /* VISTA DE ESTADÍSTICAS POR FUNCIONARIO (BI) */
         <EstadisticasFuncionario />
+      ) : activeDashboardTab === 'central_informes' ? (
+        /* VISTA DE CENTRAL DE INFORMES */
+        <CentralInformes user={user} />
       ) : (
         /* VISTA DE ABM DE FUNCIONARIOS */
         <ABMFuncionarios />
@@ -2812,52 +2896,103 @@ ${oradoresEfectivos.length > 0
                     </p>
                   </div>
 
-                  <div style={{ padding: '10px', backgroundColor: '#F1F5F9', borderRadius: '8px' }}>
-                    <span style={{ fontSize: '0.8rem', color: 'var(--color-text-muted)', fontWeight: '600', display: 'block', marginBottom: '4px' }}>Gestión Presente</span>
-                    <p style={{ margin: 0, fontSize: '0.85rem', whiteSpace: 'pre-wrap', lineHeight: '1.4' }}>
-                      {selectedReunionInforme.gestion_presente || 'No se registraron funcionarios presentes.'}
-                    </p>
-                  </div>
-                </div>
+                  {selectedReunionInforme.tipo_reunion === TIPOS_REUNION.PROCESOS_CO_CREACION ? (() => {
+                    let mesasData = [];
+                    try {
+                      if (selectedReunionInforme.gestion_presente) {
+                        const parsed = JSON.parse(selectedReunionInforme.gestion_presente);
+                        if (parsed && Array.isArray(parsed.mesas)) {
+                          mesasData = parsed.mesas;
+                        }
+                      }
+                    } catch (err) {
+                      console.warn('Error parsing co-creacion mesas in report:', err);
+                    }
 
-                {/* 3. MINUTAS DE LOS ORADORES */}
-                <div className="card" style={{ margin: 0, padding: '1.25rem' }}>
-                  <h4 style={{ fontSize: '1rem', color: 'var(--color-primary)', marginTop: 0, marginBottom: '1rem', borderBottom: '1px solid var(--color-border)', paddingBottom: '6px', fontWeight: '700' }}>
-                    3. Minutas de los Oradores
-                  </h4>
-
-                  {informeOradores.filter(o => o.estado === 'hablo').length === 0 ? (
-                    <div style={{ padding: '1.5rem', textAlign: 'center', color: 'var(--color-text-muted)', fontSize: '0.85rem' }}>
-                      No se registraron exposiciones efectivas en esta reunión.
-                    </div>
-                  ) : (
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-                      {informeOradores
-                        .filter(o => o.estado === 'hablo')
-                        .map((o, idx) => {
-                          const mins = Math.floor((o.duracion_segundos || 0) / 60);
-                          const secs = (o.duracion_segundos || 0) % 60;
-                          const dur = `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
-                          return (
-                            <div key={o.id} style={{ border: '1px solid var(--color-border)', borderRadius: '8px', padding: '10px' }}>
-                              <div style={{ display: 'flex', justifyContent: 'space-between', flexWrap: 'wrap', gap: '8px', borderBottom: '1px solid #F1F5F9', paddingBottom: '6px', marginBottom: '6px' }}>
-                                <strong>{idx + 1}. {o.vecino?.nombre} {o.vecino?.apellido} ({o.vecino_id})</strong>
-                                <span className="badge badge-success" style={{ fontSize: '0.75rem', backgroundColor: 'var(--color-highlight)', color: 'var(--color-primary)', fontWeight: 'bold' }}>
-                                  🎤 Habló ({dur})
-                                </span>
+                    return (
+                      <div style={{ marginTop: '1rem', padding: '12px', backgroundColor: '#F8FAFC', borderRadius: '8px', border: '1px solid var(--color-border)' }}>
+                        <span style={{ fontSize: '0.8rem', color: 'var(--color-text-muted)', fontWeight: '600', display: 'block', marginBottom: '8px' }}>Mesas de Co-Creación</span>
+                        {mesasData.length === 0 ? (
+                          <p style={{ margin: 0, fontSize: '0.85rem', color: 'var(--color-text-muted)', fontStyle: 'italic' }}>
+                            No se registraron mesas ni minutas en esta reunión de co-creación.
+                          </p>
+                        ) : (
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+                            {mesasData.map(m => (
+                              <div key={m.id} style={{ border: '1px solid #E2E8F0', borderRadius: '6px', padding: '10px', backgroundColor: '#FFFFFF' }}>
+                                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid #F1F5F9', paddingBottom: '4px', marginBottom: '6px' }}>
+                                  <strong style={{ color: 'var(--color-primary)', fontSize: '0.85rem' }}>Mesa {m.id}</strong>
+                                  <span className="badge badge-info" style={{ fontSize: '0.7rem', padding: '2px 6px' }}>
+                                    {m.vecinos?.length || 0} vecinos
+                                  </span>
+                                </div>
+                                <div style={{ fontSize: '0.8rem', color: '#334155', lineHeight: '1.4' }}>
+                                  <strong>Minuta de Mesa:</strong>
+                                  <p style={{ margin: '2px 0 0 0', whiteSpace: 'pre-wrap', fontStyle: 'italic' }}>
+                                    {m.minuta || 'Sin minuta registrada.'}
+                                  </p>
+                                </div>
+                                {m.vecinos && m.vecinos.length > 0 && (
+                                  <div style={{ fontSize: '0.7rem', color: 'var(--color-text-muted)', marginTop: '4px' }}>
+                                    <strong>Vecinos:</strong> {m.vecinos.join(', ')}
+                                  </div>
+                                )}
                               </div>
-                              <div style={{ fontSize: '0.85rem', color: 'var(--color-text-muted)', marginBottom: '4px' }}>
-                                <strong>Tema Original:</strong> {o.tema_original || 'Sin registrar.'}
-                              </div>
-                              <div style={{ fontSize: '0.85rem', color: 'var(--color-primary)' }}>
-                                <strong>Minuta Efectiva:</strong> {o.tema_efectivo || 'Sin minuta registrada.'}
-                              </div>
-                            </div>
-                          );
-                        })}
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })() : (
+                    <div style={{ padding: '10px', backgroundColor: '#F1F5F9', borderRadius: '8px' }}>
+                      <span style={{ fontSize: '0.8rem', color: 'var(--color-text-muted)', fontWeight: '600', display: 'block', marginBottom: '4px' }}>Gestión Presente</span>
+                      <p style={{ margin: 0, fontSize: '0.85rem', whiteSpace: 'pre-wrap', lineHeight: '1.4' }}>
+                        {selectedReunionInforme.gestion_presente || 'No se registraron funcionarios presentes.'}
+                      </p>
                     </div>
                   )}
                 </div>
+
+                {/* 3. MINUTAS DE LOS ORADORES */}
+                {selectedReunionInforme.tipo_reunion !== TIPOS_REUNION.PROCESOS_CO_CREACION && (
+                  <div className="card" style={{ margin: 0, padding: '1.25rem' }}>
+                    <h4 style={{ fontSize: '1rem', color: 'var(--color-primary)', marginTop: 0, marginBottom: '1rem', borderBottom: '1px solid var(--color-border)', paddingBottom: '6px', fontWeight: '700' }}>
+                      3. Minutas de los Oradores
+                    </h4>
+
+                    {informeOradores.filter(o => o.estado === 'hablo').length === 0 ? (
+                      <div style={{ padding: '1.5rem', textAlign: 'center', color: 'var(--color-text-muted)', fontSize: '0.85rem' }}>
+                        No se registraron exposiciones efectivas en esta reunión.
+                      </div>
+                    ) : (
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                        {informeOradores
+                          .filter(o => o.estado === 'hablo')
+                          .map((o, idx) => {
+                            const mins = Math.floor((o.duracion_segundos || 0) / 60);
+                            const secs = (o.duracion_segundos || 0) % 60;
+                            const dur = `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+                            return (
+                              <div key={o.id} style={{ border: '1px solid var(--color-border)', borderRadius: '8px', padding: '10px' }}>
+                                <div style={{ display: 'flex', justifyContent: 'space-between', flexWrap: 'wrap', gap: '8px', borderBottom: '1px solid #F1F5F9', paddingBottom: '6px', marginBottom: '6px' }}>
+                                  <strong>{idx + 1}. {o.vecino?.nombre} {o.vecino?.apellido} ({o.vecino_id})</strong>
+                                  <span className="badge badge-success" style={{ fontSize: '0.75rem', backgroundColor: 'var(--color-highlight)', color: 'var(--color-primary)', fontWeight: 'bold' }}>
+                                    🎤 Habló ({dur})
+                                  </span>
+                                </div>
+                                <div style={{ fontSize: '0.85rem', color: 'var(--color-text-muted)', marginBottom: '4px' }}>
+                                  <strong>Tema Original:</strong> {o.tema_original || 'Sin registrar.'}
+                                </div>
+                                <div style={{ fontSize: '0.85rem', color: 'var(--color-primary)' }}>
+                                  <strong>Minuta Efectiva:</strong> {o.tema_efectivo || 'Sin minuta registrada.'}
+                                </div>
+                              </div>
+                            );
+                          })}
+                      </div>
+                    )}
+                  </div>
+                )}
 
               </div>
             )}

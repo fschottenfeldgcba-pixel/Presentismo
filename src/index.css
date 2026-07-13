@@ -386,9 +386,15 @@ h1, h2, h3, h4, h5, h6 {
   gap: 1rem;
 }
 
+.grid-5 {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 1rem;
+}
+
 /* Responsive / Mobile-First */
 @media (max-width: 768px) {
-  .grid-2, .grid-3, .grid-4 {
+  .grid-2, .grid-3, .grid-4, .grid-5 {
     grid-template-columns: 1fr;
     gap: 1rem;
   }
@@ -505,4 +511,207 @@ input:checked + .slider:before {
 @keyframes spin {
   0% { transform: rotate(0deg); }
   100% { transform: rotate(360deg); }
+}
+
+/* --- ESTILOS DE SIDEBAR --- */
+.sidebar-container {
+  width: 260px;
+  background-color: var(--color-primary);
+  color: #ffffff;
+  min-height: calc(100vh - 60px);
+  display: flex;
+  flex-direction: column;
+  border-right: 3px solid var(--color-highlight);
+  flex-shrink: 0;
+  transition: var(--transition);
+}
+
+.sidebar-header {
+  padding: 1.5rem;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.sidebar-menu {
+  padding: 1.5rem 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+  flex-grow: 1;
+  overflow-y: auto;
+}
+
+.sidebar-section {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.sidebar-section-title {
+  padding: 0 1.5rem;
+  font-size: 0.75rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--color-highlight);
+  margin-bottom: 0.5rem;
+  opacity: 0.8;
+}
+
+.sidebar-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0.75rem 1.5rem;
+  color: rgba(255, 255, 255, 0.75);
+  font-size: 0.9rem;
+  font-weight: 500;
+  cursor: pointer;
+  border-left: 4px solid transparent;
+  transition: var(--transition);
+}
+
+.sidebar-item:hover {
+  background-color: rgba(255, 255, 255, 0.04);
+  color: #ffffff;
+  border-left-color: rgba(37, 194, 185, 0.4);
+}
+
+.sidebar-item.active {
+  background-color: rgba(37, 194, 185, 0.1);
+  color: #ffffff;
+  font-weight: 600;
+  border-left-color: var(--color-highlight);
+}
+
+/* Responsive sidebar */
+@media (max-width: 768px) {
+  .sidebar-container {
+    width: 70px;
+  }
+  .sidebar-section-title {
+    display: none;
+  }
+  .sidebar-item span {
+    display: none;
+  }
+  .sidebar-item {
+    padding: 0.75rem;
+    justify-content: center;
+    border-left: none;
+    border-bottom: 4px solid transparent;
+  }
+  .sidebar-item.active {
+    border-bottom-color: var(--color-highlight);
+    background-color: rgba(37, 194, 185, 0.1);
+  }
+}
+
+/* --- ESTILOS DE IMPRESIÓN --- */
+@media print {
+  @page {
+    size: A4 landscape;
+    margin: 1cm;
+  }
+
+  body {
+    background-color: #ffffff !important;
+    background: none !important;
+    color: #000000 !important;
+    font-size: 8pt !important;
+  }
+
+  /* Ocultar elementos innecesarios */
+  .app-header,
+  .sidebar-container,
+  .btn,
+  .no-print,
+  .tabs,
+  .filters-container,
+  .pagination-container,
+  .hide-on-print,
+  footer {
+    display: none !important;
+  }
+
+  /* Expandir contenedor principal */
+  .app-container {
+    display: block !important;
+    min-height: auto !important;
+    background: none !important;
+    background-color: #ffffff !important;
+  }
+
+  .container {
+    width: 100% !important;
+    max-width: 100% !important;
+    padding: 0 !important;
+    margin: 0 !important;
+  }
+
+  .card {
+    border: none !important;
+    box-shadow: none !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    background-color: transparent !important;
+  }
+
+  /* Títulos e información institucional */
+  .print-header {
+    display: block !important;
+    margin-bottom: 1.5rem;
+    border-bottom: 2px solid #000000;
+    padding-bottom: 0.5rem;
+  }
+
+  .print-header h1 {
+    font-size: 14pt !important;
+    color: #000000 !important;
+    margin: 0 0 4px 0 !important;
+  }
+
+  .print-header p {
+    font-size: 8pt !important;
+    color: #555555 !important;
+    margin: 0 !important;
+  }
+
+  /* Tabla optimizada para impresión */
+  table {
+    width: 100% !important;
+    border-collapse: collapse !important;
+    page-break-inside: auto !important;
+    margin-top: 1rem;
+  }
+
+  tr {
+    page-break-inside: avoid !important;
+    page-break-after: auto !important;
+  }
+
+  th, td {
+    border: 1px solid #000000 !important;
+    padding: 4px 6px !important;
+    font-size: 8pt !important;
+    color: #000000 !important;
+    word-break: break-word !important;
+  }
+
+  th {
+    background-color: #f2f2f2 !important;
+    font-weight: bold !important;
+    text-transform: uppercase;
+  }
+
+  /* Tags/badges para imprimir */
+  .badge, .role-badge, .tag-interes {
+    border: 1px solid #000000 !important;
+    background-color: transparent !important;
+    color: #000000 !important;
+    padding: 1px 4px !important;
+    font-size: 7pt !important;
+    border-radius: 4px !important;
+    display: inline-block !important;
+    margin: 1px !important;
+  }
 }

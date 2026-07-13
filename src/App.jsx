@@ -1,17 +1,56 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import Login from './components/Login';
 import DashboardAdmin from './components/DashboardAdmin';
 import ABMReuniones from './components/ABMReuniones';
 import ControlAsistencia from './components/ControlAsistencia';
 import AdministrarReunion from './components/AdministrarReunion';
 import PanelModerador from './components/PanelModerador';
-import { LogOut, Users2, ShieldCheck } from 'lucide-react';
+import { LogOut, ShieldCheck } from 'lucide-react';
 
 export default function App() {
-  const [user, setUser] = useState(null);
-  const [currentView, setCurrentView] = useState('login'); // 'login' | 'dashboard' | 'create_reunion' | 'asistencia'
-  const [selectedReunion, setSelectedReunion] = useState(null);
+  const [user, setUser] = useState(() => {
+    const saved = sessionStorage.getItem('presentismo_user');
+    return saved ? JSON.parse(saved) : null;
+  });
+  const [currentView, setCurrentView] = useState(() => {
+    const saved = sessionStorage.getItem('presentismo_view');
+    return saved || 'login';
+  });
+  const [selectedReunion, setSelectedReunion] = useState(() => {
+    const saved = sessionStorage.getItem('presentismo_selected_reunion');
+    return saved ? JSON.parse(saved) : null;
+  });
+  const [activeDashboardTab, setActiveDashboardTab] = useState(() => {
+    const saved = sessionStorage.getItem('presentismo_dashboard_tab');
+    return saved || 'reuniones';
+  });
   const [dialog, setDialog] = useState(null);
+
+  // Guardar estado en sessionStorage para tolerar F5 (refrescos de navegador)
+  useEffect(() => {
+    sessionStorage.setItem('presentismo_dashboard_tab', activeDashboardTab);
+  }, [activeDashboardTab]);
+
+  // Guardar estado en sessionStorage para tolerar F5 (refrescos de navegador)
+  React.useEffect(() => {
+    if (user) {
+      sessionStorage.setItem('presentismo_user', JSON.stringify(user));
+    } else {
+      sessionStorage.removeItem('presentismo_user');
+    }
+  }, [user]);
+
+  React.useEffect(() => {
+    sessionStorage.setItem('presentismo_view', currentView);
+  }, [currentView]);
+
+  React.useEffect(() => {
+    if (selectedReunion) {
+      sessionStorage.setItem('presentismo_selected_reunion', JSON.stringify(selectedReunion));
+    } else {
+      sessionStorage.removeItem('presentismo_selected_reunion');
+    }
+  }, [selectedReunion]);
 
   // Sobrescribir popups nativos del navegador por modales web
   React.useEffect(() => {
@@ -102,6 +141,8 @@ export default function App() {
               setCurrentView('moderar_reunion');
             }}
             onCreateMeetingClick={() => setCurrentView('create_reunion')}
+            activeDashboardTab={activeDashboardTab}
+            setActiveDashboardTab={setActiveDashboardTab}
           />
         )}
 

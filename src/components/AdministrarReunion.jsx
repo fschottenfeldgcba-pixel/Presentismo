@@ -156,7 +156,7 @@ export default function AdministrarReunion({ reunion, onBack, onSaveSuccess }) {
       : comuna;
 
     // Si tiene tema y es Temática o Procesos Participativos, lo anexamos al tipo
-    const displayTipoConTema = tema && (tipoReunion === TIPOS_REUNION.TEMATICA || tipoReunion === TIPOS_REUNION.PROCESOS_PARTICIPATIVOS)
+    const displayTipoConTema = tema && (tipoReunion === TIPOS_REUNION.TEMATICA || tipoReunion === TIPOS_REUNION.PROCESOS_CO_CREACION || tipoReunion === TIPOS_REUNION.PROCESOS_INFORMATIVA)
       ? `${displayTipo} (${tema})`
       : displayTipo;
 
@@ -221,7 +221,7 @@ export default function AdministrarReunion({ reunion, onBack, onSaveSuccess }) {
       tipo_reunion: tipoReunion,
       comuna,
       barrio: barrio === 'Convocatoria Comunal' ? null : barrio,
-      tema: (tipoReunion === TIPOS_REUNION.TEMATICA || tipoReunion === TIPOS_REUNION.PROCESOS_PARTICIPATIVOS) ? tema.trim() : null,
+      tema: (tipoReunion === TIPOS_REUNION.TEMATICA || tipoReunion === TIPOS_REUNION.PROCESOS_CO_CREACION || tipoReunion === TIPOS_REUNION.PROCESOS_INFORMATIVA) ? tema.trim() : null,
       arreglo_1: arreglo1.trim() || null
     });
     setSavingReunion(false);
@@ -418,7 +418,8 @@ export default function AdministrarReunion({ reunion, onBack, onSaveSuccess }) {
                     <option value={TIPOS_REUNION.SEGURIDAD}>{TIPOS_REUNION.SEGURIDAD}</option>
                     <option value={TIPOS_REUNION.TEMATICA}>{TIPOS_REUNION.TEMATICA}</option>
                     <option value={TIPOS_REUNION.UNO_A_UNO}>{TIPOS_REUNION.UNO_A_UNO}</option>
-                    <option value={TIPOS_REUNION.PROCESOS_PARTICIPATIVOS}>{TIPOS_REUNION.PROCESOS_PARTICIPATIVOS}</option>
+                    <option value={TIPOS_REUNION.PROCESOS_CO_CREACION}>{TIPOS_REUNION.PROCESOS_CO_CREACION}</option>
+                    <option value={TIPOS_REUNION.PROCESOS_INFORMATIVA}>{TIPOS_REUNION.PROCESOS_INFORMATIVA}</option>
                   </select>
                 </div>
               </div>
@@ -442,7 +443,7 @@ export default function AdministrarReunion({ reunion, onBack, onSaveSuccess }) {
                 </div>
               )}
 
-              {tipoReunion === TIPOS_REUNION.PROCESOS_PARTICIPATIVOS && (
+              {(tipoReunion === TIPOS_REUNION.PROCESOS_CO_CREACION || tipoReunion === TIPOS_REUNION.PROCESOS_INFORMATIVA) && (
                 <div className="form-group">
                   <label htmlFor="tema">Tema de la Reunión (Campo Libre) *</label>
                   <input

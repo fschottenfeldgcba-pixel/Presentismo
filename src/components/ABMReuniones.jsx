@@ -140,7 +140,7 @@ export default function ABMReuniones({ onBack, onSaveSuccess }) {
       : comuna;
 
     // Si tiene tema y es Temática o Procesos Participativos, lo anexamos al tipo
-    const displayTipoConTema = tema && (tipoReunion === TIPOS_REUNION.TEMATICA || tipoReunion === TIPOS_REUNION.PROCESOS_PARTICIPATIVOS)
+    const displayTipoConTema = tema && (tipoReunion === TIPOS_REUNION.TEMATICA || tipoReunion === TIPOS_REUNION.PROCESOS_CO_CREACION || tipoReunion === TIPOS_REUNION.PROCESOS_INFORMATIVA)
       ? `${displayTipo} (${tema})`
       : displayTipo;
 
@@ -370,7 +370,7 @@ export default function ABMReuniones({ onBack, onSaveSuccess }) {
       barrio: barrio === 'Convocatoria Comunal' ? null : barrio,
       funcionario: funcionario.trim() || null,
       tipo_reunion: tipoReunion,
-      tema: (tipoReunion === TIPOS_REUNION.TEMATICA || tipoReunion === TIPOS_REUNION.PROCESOS_PARTICIPATIVOS) ? tema.trim() : null,
+      tema: (tipoReunion === TIPOS_REUNION.TEMATICA || tipoReunion === TIPOS_REUNION.PROCESOS_CO_CREACION || tipoReunion === TIPOS_REUNION.PROCESOS_INFORMATIVA) ? tema.trim() : null,
       arreglo_1: arreglo1.trim() || null,
       funcionario_inicio: null,
       funcionario_cierre: null,
@@ -414,6 +414,7 @@ export default function ABMReuniones({ onBack, onSaveSuccess }) {
 
           await guardarAsistencia(created.id, vecino.dni, false, {
             estado_convocatoria: estadoConvocatoria,
+            horario_bloque_asignado: block,
             como_se_entero: normalizeCanalDifusion(vecino.como_se_entero),
             invitado_por: vecino.invitado_por || null,
             tema_previo: vecino.tema_previo || null,
@@ -501,7 +502,7 @@ export default function ABMReuniones({ onBack, onSaveSuccess }) {
                   </div>
                 )}
 
-                {tipoReunion === TIPOS_REUNION.PROCESOS_PARTICIPATIVOS && (
+                {(tipoReunion === TIPOS_REUNION.PROCESOS_CO_CREACION || tipoReunion === TIPOS_REUNION.PROCESOS_INFORMATIVA) && (
                   <div className="form-group">
                     <label htmlFor="tema">Tema de la Reunión (Campo Libre) *</label>
                     <input
