@@ -69,6 +69,7 @@ export default function PanelModerador({ reunion: initialReunion, onBack }) {
   // Edición de minutas de oradores finalizados
   const [editingFinishedId, setEditingFinishedId] = useState(null);
   const [editingFinishedText, setEditingFinishedText] = useState('');
+  const [editingFinishedDuration, setEditingFinishedDuration] = useState('');
 
   // Estados para Procesos Participativos - Co Creación
   const [cantMesas, setCantMesas] = useState(1);
@@ -795,15 +796,41 @@ export default function PanelModerador({ reunion: initialReunion, onBack }) {
   };
   const handleSaveFinishedMinuta = async (oradorId) => {
     try {
-      const { error } = await updateOradorDetails(oradorId, {
+      let duracionSegundos = null;
+      if (editingFinishedDuration && editingFinishedDuration.trim() !== '') {
+        const parts = editingFinishedDuration.trim().split(':');
+        if (parts.length === 2) {
+          const m = parseInt(parts[0], 10);
+          const s = parseInt(parts[1], 10);
+          if (!isNaN(m) && !isNaN(s)) {
+            duracionSegundos = m * 60 + s;
+          }
+        } else if (parts.length === 1) {
+          const s = parseInt(parts[0], 10);
+          if (!isNaN(s)) {
+            duracionSegundos = s;
+          }
+        }
+      }
+
+      const updates = {
         tema_efectivo: editingFinishedText
-      });
+      };
+      if (duracionSegundos !== null) {
+        updates.duracion_segundos = duracionSegundos;
+      }
+
+      const { error } = await updateOradorDetails(oradorId, updates);
 
       if (error) throw error;
 
       setOradores(prev => prev.map(o => {
         if (o.id === oradorId) {
-          return { ...o, tema_efectivo: editingFinishedText };
+          const res = { ...o, tema_efectivo: editingFinishedText };
+          if (duracionSegundos !== null) {
+            res.duracion_segundos = duracionSegundos;
+          }
+          return res;
         }
         return o;
       }));
@@ -1682,6 +1709,19 @@ ${oradoresEfectivos.length > 0
 
                     {editingFinishedId === item.id ? (
                       <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', marginTop: '6px' }}>
+                        {item.estado === 'hablo' && (
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '2px' }}>
+                            <span style={{ fontSize: '0.75rem', color: 'var(--color-text-muted)', fontWeight: '600' }}>Tiempo Hablado (MM:SS):</span>
+                            <input
+                              type="text"
+                              className="form-control form-control-sm"
+                              value={editingFinishedDuration}
+                              onChange={(e) => setEditingFinishedDuration(e.target.value)}
+                              placeholder="MM:SS"
+                              style={{ width: '80px', padding: '2px 6px', fontSize: '0.8rem', height: '26px' }}
+                            />
+                          </div>
+                        )}
                         <textarea
                           className="form-control form-control-sm"
                           rows={2}
@@ -1702,6 +1742,7 @@ ${oradoresEfectivos.length > 0
                           onClick={() => {
                             setEditingFinishedId(item.id);
                             setEditingFinishedText(item.tema_efectivo || item.tema_original || '');
+                            setEditingFinishedDuration(formatSpeakerTime(item.duracion_segundos || 0));
                           }}
                           title="Click para editar minuta"
                         >
@@ -1718,6 +1759,7 @@ ${oradoresEfectivos.length > 0
                         onClick={() => {
                           setEditingFinishedId(item.id);
                           setEditingFinishedText(item.tema_efectivo || item.tema_original || '');
+                          setEditingFinishedDuration(formatSpeakerTime(item.duracion_segundos || 0));
                         }}
                         style={{ padding: '4px 8px', fontSize: '0.75rem', fontWeight: '600' }}
                       >

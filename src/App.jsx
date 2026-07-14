@@ -157,6 +157,7 @@ export default function App() {
           <ControlAsistencia 
             reunion={selectedReunion}
             user={user}
+            mode="asistencia"
             onBack={() => {
               setSelectedReunion(null);
               setCurrentView('dashboard');
@@ -179,13 +180,25 @@ export default function App() {
         )}
 
         {currentView === 'moderar_reunion' && user && selectedReunion && (
-          <PanelModerador 
-            reunion={selectedReunion}
-            onBack={() => {
-              setSelectedReunion(null);
-              setCurrentView('dashboard');
-            }}
-          />
+          selectedReunion.tipo_reunion === 'Uno a Uno' ? (
+            <ControlAsistencia 
+              reunion={selectedReunion}
+              user={user}
+              mode="moderacion"
+              onBack={() => {
+                setSelectedReunion(null);
+                setCurrentView('dashboard');
+              }}
+            />
+          ) : (
+            <PanelModerador 
+              reunion={selectedReunion}
+              onBack={() => {
+                setSelectedReunion(null);
+                setCurrentView('dashboard');
+              }}
+            />
+          )
         )}
       </main>
 

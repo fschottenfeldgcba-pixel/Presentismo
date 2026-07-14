@@ -87,10 +87,11 @@ const BARRIOS = [
   "Villa Urquiza"
 ];
 
-export default function ControlAsistencia({ reunion, onBack }) {
+export default function ControlAsistencia({ reunion, onBack, mode = 'asistencia' }) {
   const [activeTab, setActiveTab] = useState('asistencia'); // 'asistencia' | 'modulo_especial'
   const [asistencias, setAsistencias] = useState([]); // Usado principalmente en Uno a Uno
   const [searchQuery, setSearchQuery] = useState('');
+  const [filterQuery, setFilterQuery] = useState('');
   const [lastSearchTerm, setLastSearchTerm] = useState('');
   const searchInputRef = useRef(null);
   
@@ -573,17 +574,147 @@ export default function ControlAsistencia({ reunion, onBack }) {
 
   // Renderizar contenido según reunión Uno a Uno o General
   if (isUnoAUno) {
-    return (
-      <Cronometro1a1 
-        reunion={reunion} 
-        initialAsistencias={asistencias} 
-        onUpdate={async () => {
-          const { data } = await getAsistentesPorReunion(reunion.id);
-          if (data) setAsistencias(data);
-        }} 
-        onBack={onBack}
-      />
-    );
+    if (mode === 'moderacion') {
+      return (
+        <Cronometro1a1 
+          reunion={reunion} 
+          initialAsistencias={asistencias} 
+          onUpdate={async () => {
+            const { data } = await getAsistentesPorReunion(reunion.id);
+            if (data) setAsistencias(data);
+          }} 
+          onBack={onBack}
+        />
+      );
+    } else {
+      // Toma de asistencia simplificada para el agente de territorio
+      const convocadosAsistencia = asistencias
+        .filter(item => {
+          const estado = item.estado_convocatoria;
+          return estado === 'citado' || estado === 'walk_in';
+        })
+        .sort((a, b) => (a.horario_bloque_asignado || '').localeCompare(b.horario_bloque_asignado || ''));
+
+      const filteredConvocadosAsistencia = convocadosAsistencia.filter(item => {
+        const term = filterQuery.toLowerCase();
+        const nombreCompleto = `${item.vecino?.nombre} ${item.vecino?.apellido}`.toLowerCase();
+        return (
+          item.vecino_id.includes(term) ||
+          nombreCompleto.includes(term) ||
+          (item.horario_bloque_asignado || '').toLowerCase().includes(term)
+        );
+      });
+
+      return (
+        <div className="container">
+          {/* Botón Volver */}
+          <div style={{ marginBottom: '1.5rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <button className="btn btn-secondary btn-sm" onClick={onBack}>
+              <ArrowLeft size={16} /> Volver al Tablero
+            </button>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <span className="badge badge-info" style={{ textTransform: 'uppercase' }}>Toma de Asistencia</span>
+            </div>
+          </div>
+
+          {/* Encabezado */}
+          <div style={{
+            background: 'linear-gradient(135deg, #0c2333 0%, #081a26 100%)',
+            color: '#ffffff',
+            borderRadius: '12px',
+            padding: '1.5rem',
+            marginBottom: '2rem',
+            boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06)'
+          }}>
+            <h2 style={{ margin: '0 0 0.5rem 0', fontSize: '1.5rem', fontWeight: '700' }}>{reunion.nombre}</h2>
+            <div style={{ display: 'flex', gap: '20px', flexWrap: 'wrap', fontSize: '0.9rem', opacity: '0.9' }}>
+              <div><strong>📅 Fecha:</strong> {reunion.fecha}</div>
+              <div><strong>📍 Lugar:</strong> {reunion.lugar}</div>
+              <div><strong>👤 Funcionario:</strong> {reunion.funcionario || 'No asignado'}</div>
+            </div>
+          </div>
+
+          {/* Buscador */}
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.5rem', flexWrap: 'wrap', gap: '12px' }}>
+            <div className="search-container" style={{ maxWidth: '400px', flexGrow: 1 }}>
+              <input
+                type="text"
+                className="form-control"
+                placeholder="Buscar vecino por DNI, Nombre o Horario..."
+                value={filterQuery}
+                onChange={(e) => setFilterQuery(e.target.value)}
+              />
+            </div>
+            <div style={{ fontSize: '0.95rem', fontWeight: '600', color: 'var(--color-primary)' }}>
+              👥 Presentes: <span style={{ color: 'var(--color-success)', fontSize: '1.1rem' }}>{convocadosAsistencia.filter(x => x.asistio).length}</span> / {convocadosAsistencia.length}
+            </div>
+          </div>
+
+          {/* Tabla Simplificada */}
+          <div className="table-responsive">
+            <table className="table">
+              <thead>
+                <tr>
+                  <th style={{ width: '150px' }}>Horario Bloque</th>
+                  <th>Vecino (Nombre y DNI)</th>
+                  <th>Tema</th>
+                  <th style={{ width: '120px', textAlign: 'center' }}>¿Asistió?</th>
+                </tr>
+              </thead>
+              <tbody>
+                {filteredConvocadosAsistencia.length === 0 ? (
+                  <tr>
+                    <td colSpan={4} style={{ textAlign: 'center', color: 'var(--color-text-muted)', padding: '2rem' }}>
+                      No se encontraron vecinos citados en la Lista de Atención.
+                    </td>
+                  </tr>
+                ) : (
+                  filteredConvocadosAsistencia.map(item => {
+                    return (
+                      <tr key={item.id} style={{
+                        backgroundColor: item.asistio ? '#F0FDF4' : 'inherit'
+                      }}>
+                        <td>
+                          <span className="badge badge-info" style={{ fontFamily: 'monospace', fontSize: '0.85rem' }}>
+                            ⏰ {item.horario_bloque_asignado || 'Sin asignar'}
+                          </span>
+                        </td>
+                        <td>
+                          <div style={{ fontWeight: '600' }}>{item.vecino?.nombre} {item.vecino?.apellido}</div>
+                          <div style={{ fontSize: '0.75rem', color: 'var(--color-text-muted)' }}>DNI: {item.vecino_id}</div>
+                        </td>
+                        <td style={{ fontSize: '0.85rem', color: 'var(--color-text-dark)' }}>
+                          {item.tema_previo || <span style={{ fontStyle: 'italic', color: 'var(--color-text-muted)' }}>Sin tema cargado</span>}
+                        </td>
+                        <td style={{ textAlign: 'center', verticalAlign: 'middle' }}>
+                          <label style={{ display: 'inline-flex', alignItems: 'center', cursor: 'pointer', margin: 0 }}>
+                            <input
+                              type="checkbox"
+                              checked={!!item.asistio}
+                              onChange={async () => {
+                                await guardarAsistencia(reunion.id, item.vecino_id, !item.asistio);
+                                const { data } = await getAsistentesPorReunion(reunion.id);
+                                if (data) setAsistencias(data);
+                              }}
+                              style={{
+                                width: '24px',
+                                height: '24px',
+                                accentColor: '#10B981',
+                                cursor: 'pointer'
+                              }}
+                            />
+                          </label>
+                        </td>
+                      </tr>
+                    );
+                  })
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      );
+    }
   }
 
   return (

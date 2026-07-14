@@ -180,13 +180,88 @@ export default function DashboardAdmin({ user, onSelectReunion, onManageReunion,
         }
       }
 
-      const oradoresAnotados = oradores.length;
-      const oradoresEfectivos = oradores.filter(o => o.estado === 'hablo');
-      const inscriptosCount = asistentes.length;
-      const presentesCount = asistentes.filter(a => a.asistio).length;
-      const ratioAsistencia = inscriptosCount > 0 ? Math.round((presentesCount / inscriptosCount) * 100) : 0;
+      let txt = '';
+      if (reunion.tipo_reunion === 'Uno a Uno') {
+        let timeRecords = {};
+        let estimatedStart = '--:--';
+        let estimatedEnd = '--:--';
+        try {
+          const configData = reunion.config_uno_a_uno || (reunion.gestion_presente && reunion.gestion_presente.startsWith('{') ? reunion.gestion_presente : null);
+          if (configData) {
+            const parsed = typeof configData === 'string' ? JSON.parse(configData) : configData;
+            if (parsed && parsed.timeRecords) {
+              timeRecords = parsed.timeRecords;
+            }
+            if (parsed && parsed.estimatedStart) {
+              estimatedStart = parsed.estimatedStart;
+            }
+            if (parsed && parsed.estimatedEnd) {
+              estimatedEnd = parsed.estimatedEnd;
+            }
+          }
+        } catch(e) {}
 
-      const txt = `👨‍👩‍👧‍👦 RDV | *${reunion.funcionario || reunion.nombre}* - ${reunion.comuna}
+        const totalInscriptos = asistentes.filter(item => item.estado_convocatoria !== 'citado' && item.estado_convocatoria !== 'walk_in').length;
+        const presentesCount = asistentes.filter(a => a.asistio).length;
+        
+        const cited = asistentes.filter(item => item.estado_convocatoria === 'citado' || item.estado_convocatoria === 'walk_in');
+        const ratioAsistencia = cited.length > 0 ? Math.round((presentesCount / cited.length) * 100) : 0;
+        const atendidos = cited.filter(item => timeRecords[item.vecino_id]?.horaSalida);
+
+        let totalSeconds = 0;
+        let finishedCount = 0;
+        Object.keys(timeRecords).forEach(k => {
+          const dur = timeRecords[k]?.duracion;
+          if (dur) {
+            const cleanDur = dur.replace(' min', '').trim();
+            if (cleanDur.includes(':')) {
+              const [mins, secs] = cleanDur.split(':').map(Number);
+              if (!isNaN(mins) && !isNaN(secs)) {
+                totalSeconds += mins * 60 + secs;
+                finishedCount++;
+              }
+            }
+          }
+        });
+        const averageSeconds = finishedCount > 0 ? Math.round(totalSeconds / finishedCount) : 0;
+        const avgMins = Math.floor(averageSeconds / 60);
+        const avgSecs = averageSeconds % 60;
+        const displayAvg = `${avgMins.toString().padStart(2, '0')}:${avgSecs.toString().padStart(2, '0')} min`;
+
+        txt = `👨‍👩‍👧‍👦 1a1 | *${reunion.funcionario || reunion.nombre}* - ${reunion.comuna}
+📅 ${displayFecha || 'Fecha'} | 🕠 ${displayHora}
+⏰ Inicio: ${estimatedStart} hs | Finalizó: ${estimatedEnd} hs
+
+📋 Inscriptos totales: ${totalInscriptos}
+⏰ Vecinos citados: ${cited.length}
+👥 Vecinos presentes: ${presentesCount} (${ratioAsistencia}%)
+🎤 Vecinos atendidos: ${atendidos.length}
+⏱️ Tiempo de atención prom: ${displayAvg}
+
+🔥 Clima ${CLIMA_MAP[reunion.clima]?.waLabel || reunion.clima || 'bajo'}
+🚦 Semáforo político: ${SEMAFORO_MAP[reunion.semaforo_politico]?.waLabel || reunion.semaforo_politico || 'verde'}
+
+*📝 Síntesis cualitativa:*
+${(reunion.sintesis_cualitativa || '').trim() || 'La reunión se desarrolló con normalidad.'}
+
+*🏛️ Minutas de los Vecinos:*
+${cited.length > 0 
+  ? cited.map((c, idx) => {
+      const status = timeRecords[c.vecino_id]?.horaSalida 
+        ? `✅ Atendido (${timeRecords[c.vecino_id].duracion})` 
+        : (c.asistio ? '⏳ En espera (Presente)' : '❌ Ausente');
+      return `${idx + 1}. *${c.vecino?.nombre || ''} ${c.vecino?.apellido || ''}* - ${c.horario_bloque_asignado || 'Sin hora'}\nTema: ${c.tema_previo || 'Sin tema registrado.'}\nEstado: ${status}`;
+    }).join('\n\n')
+  : 'No se registraron vecinos citados.'
+}`;
+      } else {
+        const oradoresAnotados = oradores.length;
+        const oradoresEfectivos = oradores.filter(o => o.estado === 'hablo');
+        const inscriptosCount = asistentes.length;
+        const presentesCount = asistentes.filter(a => a.asistio).length;
+        const ratioAsistencia = inscriptosCount > 0 ? Math.round((presentesCount / inscriptosCount) * 100) : 0;
+
+        txt = `👨‍👩‍👧‍👦 RDV | *${reunion.funcionario || reunion.nombre}* - ${reunion.comuna}
 📅 ${displayFecha || 'Fecha'} | 🕠 ${displayHora}
 ⏰ Inicio: ${reunion.hora_inicio_real || '--:--'} hs | Finalizó: ${reunion.hora_fin_real || '--:--'} hs
 
@@ -212,6 +287,7 @@ ${oradoresEfectivos.length > 0
     }).join('\n\n')
   : 'No se registraron oradores efectivos.'
 }`;
+      }
 
       navigator.clipboard.writeText(txt);
       alert('¡Resumen de WhatsApp copiado con éxito al portapapeles!');
@@ -392,7 +468,7 @@ ${oradoresEfectivos.length > 0
                             >
                               <Settings size={12} style={{ color: 'var(--color-primary)' }} /> Editar
                             </button>
-                            {isMicMeeting && (
+                            {isMicMeeting ? (
                               <>
                                 <button 
                                   className="btn btn-secondary btn-sm" 
@@ -406,6 +482,25 @@ ${oradoresEfectivos.length > 0
                                   className="btn btn-secondary btn-sm" 
                                   onClick={() => handleOpenInformeFinal(r)}
                                   title="Ver informe final y resumen cualitativo/cuantitativo"
+                                  style={{ padding: '3px 6px', display: 'flex', alignItems: 'center', gap: '3px', fontSize: '0.7rem', border: '1px solid var(--color-highlight)', color: 'var(--color-primary)' }}
+                                >
+                                  <Activity size={12} style={{ color: 'var(--color-highlight)' }} /> Informe
+                                </button>
+                              </>
+                            ) : (
+                              <>
+                                <button 
+                                  className="btn btn-secondary btn-sm" 
+                                  onClick={() => onModerarReunion(r)}
+                                  title="Panel de moderador y cronómetro (Uno a Uno)"
+                                  style={{ padding: '3px 6px', display: 'flex', alignItems: 'center', gap: '3px', fontSize: '0.7rem' }}
+                                >
+                                  <Mic size={12} style={{ color: 'var(--color-highlight)' }} /> Moderar
+                                </button>
+                                <button 
+                                  className="btn btn-secondary btn-sm" 
+                                  onClick={() => handleOpenInformeFinal(r)}
+                                  title="Ver informe final y resumen cualitativo/cuantitativo (Uno a Uno)"
                                   style={{ padding: '3px 6px', display: 'flex', alignItems: 'center', gap: '3px', fontSize: '0.7rem', border: '1px solid var(--color-highlight)', color: 'var(--color-primary)' }}
                                 >
                                   <Activity size={12} style={{ color: 'var(--color-highlight)' }} /> Informe
@@ -463,7 +558,13 @@ ${oradoresEfectivos.length > 0
           const { data: oradores } = resultsOrad[idx];
           const listAsis = asistencias || [];
           const listOrad = oradores || [];
-          totalInsc += listAsis.length;
+          
+          const isUnoAUno = r.tipo_reunion === 'Uno a Uno';
+          const denominator = isUnoAUno 
+            ? listAsis.filter(a => a.estado_convocatoria === 'citado' || a.estado_convocatoria === 'walk_in').length
+            : listAsis.length;
+
+          totalInsc += denominator;
           
           let presentes = 0;
           listAsis.forEach(a => {
@@ -482,7 +583,7 @@ ${oradoresEfectivos.length > 0
 
           reunionesConAsistencias.push({
             ...r,
-            totalInscriptos: listAsis.length,
+            totalInscriptos: denominator,
             totalPresentes: presentes,
             totalOradoresEfectivos: oradoresEfectivos,
             totalOradoresEnEspera: oradoresEnEspera
@@ -2831,37 +2932,105 @@ ${oradoresEfectivos.length > 0
                     1. Variables Cuantitativas
                   </h4>
                   <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: '1rem' }}>
-                    <div style={{ backgroundColor: '#FFFFFF', padding: '10px', borderRadius: '8px', border: '1px solid var(--color-border)', textAlign: 'center' }}>
-                      <div style={{ fontSize: '0.75rem', color: 'var(--color-text-muted)', fontWeight: '600', marginBottom: '4px' }}>Inscriptos</div>
-                      <div style={{ fontSize: '1.25rem', fontWeight: '700', color: 'var(--color-primary)' }}>{informeAsistentes.length}</div>
-                    </div>
-                    <div style={{ backgroundColor: '#FFFFFF', padding: '10px', borderRadius: '8px', border: '1px solid var(--color-border)', textAlign: 'center' }}>
-                      <div style={{ fontSize: '0.75rem', color: 'var(--color-text-muted)', fontWeight: '600', marginBottom: '4px' }}>Asistencia</div>
-                      <div style={{ fontSize: '1.25rem', fontWeight: '700', color: 'var(--color-success)' }}>
-                        {informeAsistentes.filter(a => a.asistio).length} <span style={{ fontSize: '0.85rem', fontWeight: 'normal', color: 'var(--color-text-muted)' }}>({informeAsistentes.length > 0 ? Math.round((informeAsistentes.filter(a => a.asistio).length / informeAsistentes.length) * 100) : 0}%)</span>
+                  {selectedReunionInforme.tipo_reunion === 'Uno a Uno' ? (() => {
+                    let timeRecords = {};
+                    try {
+                      const configData = selectedReunionInforme.config_uno_a_uno || (selectedReunionInforme.gestion_presente && selectedReunionInforme.gestion_presente.startsWith('{') ? selectedReunionInforme.gestion_presente : null);
+                      if (configData) {
+                        const parsed = typeof configData === 'string' ? JSON.parse(configData) : configData;
+                        if (parsed && parsed.timeRecords) {
+                          timeRecords = parsed.timeRecords;
+                        }
+                      }
+                    } catch(e) {}
+
+                    const totalInscriptos = informeAsistentes.filter(item => item.estado_convocatoria !== 'citado' && item.estado_convocatoria !== 'walk_in').length;
+                    const presentesCount = informeAsistentes.filter(a => a.asistio).length;
+                    const cited = informeAsistentes.filter(item => item.estado_convocatoria === 'citado' || item.estado_convocatoria === 'walk_in');
+                    const ratioAsistencia = cited.length > 0 ? Math.round((presentesCount / cited.length) * 100) : 0;
+                    const atendidosCount = cited.filter(item => timeRecords[item.vecino_id]?.horaSalida).length;
+
+                    let totalSeconds = 0;
+                    let finishedCount = 0;
+                    Object.keys(timeRecords).forEach(k => {
+                      const dur = timeRecords[k]?.duracion;
+                      if (dur) {
+                        const cleanDur = dur.replace(' min', '').trim();
+                        if (cleanDur.includes(':')) {
+                          const [mins, secs] = cleanDur.split(':').map(Number);
+                          if (!isNaN(mins) && !isNaN(secs)) {
+                            totalSeconds += mins * 60 + secs;
+                            finishedCount++;
+                          }
+                        }
+                      }
+                    });
+                    const averageSeconds = finishedCount > 0 ? Math.round(totalSeconds / finishedCount) : 0;
+                    const avgMins = Math.floor(averageSeconds / 60);
+                    const avgSecs = averageSeconds % 60;
+                    const displayAvg = `${avgMins.toString().padStart(2, '0')}:${avgSecs.toString().padStart(2, '0')}`;
+
+                    return (
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: '1rem' }}>
+                        <div style={{ backgroundColor: '#FFFFFF', padding: '10px', borderRadius: '8px', border: '1px solid var(--color-border)', textAlign: 'center' }}>
+                          <div style={{ fontSize: '0.75rem', color: 'var(--color-text-muted)', fontWeight: '600', marginBottom: '4px' }}>Inscriptos Totales</div>
+                          <div style={{ fontSize: '1.25rem', fontWeight: '700', color: 'var(--color-primary)' }}>{totalInscriptos}</div>
+                        </div>
+                        <div style={{ backgroundColor: '#FFFFFF', padding: '10px', borderRadius: '8px', border: '1px solid var(--color-border)', textAlign: 'center' }}>
+                          <div style={{ fontSize: '0.75rem', color: 'var(--color-text-muted)', fontWeight: '600', marginBottom: '4px' }}>Asistencia</div>
+                          <div style={{ fontSize: '1.25rem', fontWeight: '700', color: 'var(--color-success)' }}>
+                            {presentesCount} <span style={{ fontSize: '0.85rem', fontWeight: 'normal', color: 'var(--color-text-muted)' }}>({ratioAsistencia}%)</span>
+                          </div>
+                        </div>
+                        <div style={{ backgroundColor: '#FFFFFF', padding: '10px', borderRadius: '8px', border: '1px solid var(--color-border)', textAlign: 'center' }}>
+                          <div style={{ fontSize: '0.75rem', color: 'var(--color-text-muted)', fontWeight: '600', marginBottom: '4px' }}>Vecinos Citados</div>
+                          <div style={{ fontSize: '1.25rem', fontWeight: '700', color: 'var(--color-primary)' }}>{cited.length}</div>
+                        </div>
+                        <div style={{ backgroundColor: '#FFFFFF', padding: '10px', borderRadius: '8px', border: '1px solid var(--color-border)', textAlign: 'center' }}>
+                          <div style={{ fontSize: '0.75rem', color: 'var(--color-text-muted)', fontWeight: '600', marginBottom: '4px' }}>Vecinos Atendidos</div>
+                          <div style={{ fontSize: '1.25rem', fontWeight: '700', color: 'var(--color-success)' }}>{atendidosCount}</div>
+                        </div>
+                        <div style={{ backgroundColor: '#FFFFFF', padding: '10px', borderRadius: '8px', border: '1px solid var(--color-border)', textAlign: 'center' }}>
+                          <div style={{ fontSize: '0.75rem', color: 'var(--color-text-muted)', fontWeight: '600', marginBottom: '4px' }}>Tiempos de Atención (Prom)</div>
+                          <div style={{ fontSize: '1.25rem', fontWeight: '700', color: 'var(--color-highlight)' }}>{displayAvg}</div>
+                        </div>
+                      </div>
+                    );
+                  })() : (
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: '1rem' }}>
+                      <div style={{ backgroundColor: '#FFFFFF', padding: '10px', borderRadius: '8px', border: '1px solid var(--color-border)', textAlign: 'center' }}>
+                        <div style={{ fontSize: '0.75rem', color: 'var(--color-text-muted)', fontWeight: '600', marginBottom: '4px' }}>Inscriptos</div>
+                        <div style={{ fontSize: '1.25rem', fontWeight: '700', color: 'var(--color-primary)' }}>{informeAsistentes.length}</div>
+                      </div>
+                      <div style={{ backgroundColor: '#FFFFFF', padding: '10px', borderRadius: '8px', border: '1px solid var(--color-border)', textAlign: 'center' }}>
+                        <div style={{ fontSize: '0.75rem', color: 'var(--color-text-muted)', fontWeight: '600', marginBottom: '4px' }}>Asistencia</div>
+                        <div style={{ fontSize: '1.25rem', fontWeight: '700', color: 'var(--color-success)' }}>
+                          {informeAsistentes.filter(a => a.asistio).length} <span style={{ fontSize: '0.85rem', fontWeight: 'normal', color: 'var(--color-text-muted)' }}>({informeAsistentes.length > 0 ? Math.round((informeAsistentes.filter(a => a.asistio).length / informeAsistentes.length) * 100) : 0}%)</span>
+                        </div>
+                      </div>
+                      <div style={{ backgroundColor: '#FFFFFF', padding: '10px', borderRadius: '8px', border: '1px solid var(--color-border)', textAlign: 'center' }}>
+                        <div style={{ fontSize: '0.75rem', color: 'var(--color-text-muted)', fontWeight: '600', marginBottom: '4px' }}>Oradores Anotados</div>
+                        <div style={{ fontSize: '1.25rem', fontWeight: '700', color: 'var(--color-primary)' }}>{informeOradores.length}</div>
+                      </div>
+                      <div style={{ backgroundColor: '#FFFFFF', padding: '10px', borderRadius: '8px', border: '1px solid var(--color-border)', textAlign: 'center' }}>
+                        <div style={{ fontSize: '0.75rem', color: 'var(--color-text-muted)', fontWeight: '600', marginBottom: '4px' }}>Oradores Efectivos</div>
+                        <div style={{ fontSize: '1.25rem', fontWeight: '700', color: 'var(--color-success)' }}>{informeOradores.filter(o => o.estado === 'hablo').length}</div>
+                      </div>
+                      <div style={{ backgroundColor: '#FFFFFF', padding: '10px', borderRadius: '8px', border: '1px solid var(--color-border)', textAlign: 'center' }}>
+                        <div style={{ fontSize: '0.75rem', color: 'var(--color-text-muted)', fontWeight: '600', marginBottom: '4px' }}>Tiempos de Habla (Promedio)</div>
+                        <div style={{ fontSize: '1.25rem', fontWeight: '700', color: 'var(--color-highlight)' }}>
+                          {(() => {
+                            const oradHablan = informeOradores.filter(o => o.estado === 'hablo');
+                            const secsTotal = oradHablan.reduce((acc, o) => acc + (o.duracion_segundos || 0), 0);
+                            const secsProm = oradHablan.length > 0 ? Math.round(secsTotal / oradHablan.length) : 0;
+                            const m = Math.floor(secsProm / 60);
+                            const s = secsProm % 60;
+                            return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
+                          })()}
+                        </div>
                       </div>
                     </div>
-                    <div style={{ backgroundColor: '#FFFFFF', padding: '10px', borderRadius: '8px', border: '1px solid var(--color-border)', textAlign: 'center' }}>
-                      <div style={{ fontSize: '0.75rem', color: 'var(--color-text-muted)', fontWeight: '600', marginBottom: '4px' }}>Oradores Anotados</div>
-                      <div style={{ fontSize: '1.25rem', fontWeight: '700', color: 'var(--color-primary)' }}>{informeOradores.length}</div>
-                    </div>
-                    <div style={{ backgroundColor: '#FFFFFF', padding: '10px', borderRadius: '8px', border: '1px solid var(--color-border)', textAlign: 'center' }}>
-                      <div style={{ fontSize: '0.75rem', color: 'var(--color-text-muted)', fontWeight: '600', marginBottom: '4px' }}>Oradores Efectivos</div>
-                      <div style={{ fontSize: '1.25rem', fontWeight: '700', color: 'var(--color-success)' }}>{informeOradores.filter(o => o.estado === 'hablo').length}</div>
-                    </div>
-                    <div style={{ backgroundColor: '#FFFFFF', padding: '10px', borderRadius: '8px', border: '1px solid var(--color-border)', textAlign: 'center' }}>
-                      <div style={{ fontSize: '0.75rem', color: 'var(--color-text-muted)', fontWeight: '600', marginBottom: '4px' }}>Tiempos de Habla (Promedio)</div>
-                      <div style={{ fontSize: '1.25rem', fontWeight: '700', color: 'var(--color-highlight)' }}>
-                        {(() => {
-                          const oradHablan = informeOradores.filter(o => o.estado === 'hablo');
-                          const secsTotal = oradHablan.reduce((acc, o) => acc + (o.duracion_segundos || 0), 0);
-                          const secsProm = oradHablan.length > 0 ? Math.round(secsTotal / oradHablan.length) : 0;
-                          const m = Math.floor(secsProm / 60);
-                          const s = secsProm % 60;
-                          return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
-                        })()}
-                      </div>
-                    </div>
+                  )}
                   </div>
                 </div>
 
@@ -2870,24 +3039,48 @@ ${oradoresEfectivos.length > 0
                   <h4 style={{ fontSize: '1rem', color: 'var(--color-primary)', marginTop: 0, marginBottom: '1rem', borderBottom: '1px solid var(--color-border)', paddingBottom: '6px', fontWeight: '700' }}>
                     2. Variables Cualitativas
                   </h4>
-                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '1rem', marginBottom: '1rem' }}>
-                    <div>
-                      <span style={{ fontSize: '0.8rem', color: 'var(--color-text-muted)', fontWeight: '600', display: 'block', marginBottom: '2px' }}>Inicio Real</span>
-                      <strong style={{ fontSize: '0.9rem' }}>{selectedReunionInforme.hora_inicio_real || '--:--'} hs</strong>
-                    </div>
-                    <div>
-                      <span style={{ fontSize: '0.8rem', color: 'var(--color-text-muted)', fontWeight: '600', display: 'block', marginBottom: '2px' }}>Cierre Real</span>
-                      <strong style={{ fontSize: '0.9rem' }}>{selectedReunionInforme.hora_fin_real || '--:--'} hs</strong>
-                    </div>
-                    <div>
-                      <span style={{ fontSize: '0.8rem', color: 'var(--color-text-muted)', fontWeight: '600', display: 'block', marginBottom: '2px' }}>Clima de la Reunión</span>
-                      <strong style={{ fontSize: '0.9rem' }}>{CLIMA_MAP[selectedReunionInforme.clima]?.label || 'Bajo'}</strong>
-                    </div>
-                    <div>
-                      <span style={{ fontSize: '0.8rem', color: 'var(--color-text-muted)', fontWeight: '600', display: 'block', marginBottom: '2px' }}>Semáforo Político</span>
-                      <strong style={{ fontSize: '0.9rem' }}>{SEMAFORO_MAP[selectedReunionInforme.semaforo_politico]?.label || 'Verde'}</strong>
-                    </div>
-                  </div>
+                  {(() => {
+                    let estimatedStart = null;
+                    let estimatedEnd = null;
+                    if (selectedReunionInforme.tipo_reunion === 'Uno a Uno') {
+                      try {
+                        const configData = selectedReunionInforme.config_uno_a_uno || (selectedReunionInforme.gestion_presente && selectedReunionInforme.gestion_presente.startsWith('{') ? selectedReunionInforme.gestion_presente : null);
+                        if (configData) {
+                          const parsed = typeof configData === 'string' ? JSON.parse(configData) : configData;
+                          estimatedStart = parsed?.estimatedStart;
+                          estimatedEnd = parsed?.estimatedEnd;
+                        }
+                      } catch(e) {}
+                    }
+                    
+                    const showInicio = (selectedReunionInforme.tipo_reunion === 'Uno a Uno' && estimatedStart) 
+                      ? estimatedStart 
+                      : selectedReunionInforme.hora_inicio_real;
+                    const showFin = (selectedReunionInforme.tipo_reunion === 'Uno a Uno' && estimatedEnd) 
+                      ? estimatedEnd 
+                      : selectedReunionInforme.hora_fin_real;
+
+                    return (
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '1rem', marginBottom: '1rem' }}>
+                        <div>
+                          <span style={{ fontSize: '0.8rem', color: 'var(--color-text-muted)', fontWeight: '600', display: 'block', marginBottom: '2px' }}>Inicio Real</span>
+                          <strong style={{ fontSize: '0.9rem' }}>{showInicio || '--:--'} hs</strong>
+                        </div>
+                        <div>
+                          <span style={{ fontSize: '0.8rem', color: 'var(--color-text-muted)', fontWeight: '600', display: 'block', marginBottom: '2px' }}>Cierre Real</span>
+                          <strong style={{ fontSize: '0.9rem' }}>{showFin || '--:--'} hs</strong>
+                        </div>
+                        <div>
+                          <span style={{ fontSize: '0.8rem', color: 'var(--color-text-muted)', fontWeight: '600', display: 'block', marginBottom: '2px' }}>Clima de la Reunión</span>
+                          <strong style={{ fontSize: '0.9rem' }}>{CLIMA_MAP[selectedReunionInforme.clima]?.label || 'Bajo'}</strong>
+                        </div>
+                        <div>
+                          <span style={{ fontSize: '0.8rem', color: 'var(--color-text-muted)', fontWeight: '600', display: 'block', marginBottom: '2px' }}>Semáforo Político</span>
+                          <strong style={{ fontSize: '0.9rem' }}>{SEMAFORO_MAP[selectedReunionInforme.semaforo_politico]?.label || 'Verde'}</strong>
+                        </div>
+                      </div>
+                    );
+                  })()}
 
                   <div style={{ marginBottom: '1rem', padding: '10px', backgroundColor: '#F1F5F9', borderRadius: '8px' }}>
                     <span style={{ fontSize: '0.8rem', color: 'var(--color-text-muted)', fontWeight: '600', display: 'block', marginBottom: '4px' }}>Síntesis Cualitativa</span>
@@ -2947,14 +3140,79 @@ ${oradoresEfectivos.length > 0
                     <div style={{ padding: '10px', backgroundColor: '#F1F5F9', borderRadius: '8px' }}>
                       <span style={{ fontSize: '0.8rem', color: 'var(--color-text-muted)', fontWeight: '600', display: 'block', marginBottom: '4px' }}>Gestión Presente</span>
                       <p style={{ margin: 0, fontSize: '0.85rem', whiteSpace: 'pre-wrap', lineHeight: '1.4' }}>
-                        {selectedReunionInforme.gestion_presente || 'No se registraron funcionarios presentes.'}
+                        {selectedReunionInforme.tipo_reunion === 'Uno a Uno' 
+                          ? (selectedReunionInforme.funcionario || 'No asignado')
+                          : (selectedReunionInforme.gestion_presente || 'No se registraron funcionarios presentes.')
+                        }
                       </p>
                     </div>
                   )}
                 </div>
 
-                {/* 3. MINUTAS DE LOS ORADORES */}
-                {selectedReunionInforme.tipo_reunion !== TIPOS_REUNION.PROCESOS_CO_CREACION && (
+                {/* 3. MINUTAS DE LOS ORADORES O VECINOS CITADOS */}
+                {selectedReunionInforme.tipo_reunion === 'Uno a Uno' ? (() => {
+                  let timeRecords = {};
+                  try {
+                    const configData = selectedReunionInforme.config_uno_a_uno || (selectedReunionInforme.gestion_presente && selectedReunionInforme.gestion_presente.startsWith('{') ? selectedReunionInforme.gestion_presente : null);
+                    if (configData) {
+                      const parsed = typeof configData === 'string' ? JSON.parse(configData) : configData;
+                      if (parsed && parsed.timeRecords) {
+                        timeRecords = parsed.timeRecords;
+                      }
+                    }
+                  } catch(e) {}
+
+                  const cited = informeAsistentes.filter(item => item.estado_convocatoria === 'citado' || item.estado_convocatoria === 'walk_in');
+
+                  return (
+                    <div className="card" style={{ margin: 0, padding: '1.25rem' }}>
+                      <h4 style={{ fontSize: '1rem', color: 'var(--color-primary)', marginTop: 0, marginBottom: '1rem', borderBottom: '1px solid var(--color-border)', paddingBottom: '6px', fontWeight: '700' }}>
+                        3. Minutas de los Vecinos Citados (Uno a Uno)
+                      </h4>
+
+                      {cited.length === 0 ? (
+                        <div style={{ padding: '1.5rem', textAlign: 'center', color: 'var(--color-text-muted)', fontSize: '0.85rem' }}>
+                          No se registraron vecinos citados en esta reunión.
+                        </div>
+                      ) : (
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                          {cited.map((c, idx) => {
+                            const record = timeRecords[c.vecino_id];
+                            const status = record?.horaSalida 
+                              ? `✅ Atendido (${record.duracion})` 
+                              : (c.asistio ? '⏳ En espera (Presente)' : '❌ Ausente');
+                            
+                            return (
+                              <div key={c.id} style={{ border: '1px solid var(--color-border)', borderRadius: '8px', padding: '10px', backgroundColor: record?.horaSalida ? '#F0FDF4' : 'inherit' }}>
+                                <div style={{ display: 'flex', justifyContent: 'space-between', flexWrap: 'wrap', gap: '8px', borderBottom: '1px solid #F1F5F9', paddingBottom: '6px', marginBottom: '6px' }}>
+                                  <strong>{idx + 1}. {c.vecino?.nombre} {c.vecino?.apellido} ({c.vecino_id})</strong>
+                                  <span className="badge" style={{ 
+                                    fontSize: '0.75rem', 
+                                    backgroundColor: record?.horaSalida ? 'var(--color-success)' : (c.asistio ? 'var(--color-highlight)' : '#E2E8F0'), 
+                                    color: record?.horaSalida ? '#FFFFFF' : 'var(--color-primary)', 
+                                    fontWeight: 'bold',
+                                    padding: '2px 8px',
+                                    borderRadius: '4px'
+                                  }}>
+                                    {status}
+                                  </span>
+                                </div>
+                                <div style={{ fontSize: '0.85rem', color: 'var(--color-primary)' }}>
+                                  <strong>Consulta/Tema:</strong> {c.tema_previo || 'Sin tema registrado.'}
+                                </div>
+                                {record?.horaIngreso && (
+                                  <div style={{ fontSize: '0.75rem', color: 'var(--color-text-muted)', marginTop: '4px' }}>
+                                    ⏰ Horario de atención: {record.horaIngreso} hs - {record.horaSalida || '--:--'} hs
+                                  </div>
+                                )}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })() : selectedReunionInforme.tipo_reunion !== TIPOS_REUNION.PROCESOS_CO_CREACION && (
                   <div className="card" style={{ margin: 0, padding: '1.25rem' }}>
                     <h4 style={{ fontSize: '1rem', color: 'var(--color-primary)', marginTop: 0, marginBottom: '1rem', borderBottom: '1px solid var(--color-border)', paddingBottom: '6px', fontWeight: '700' }}>
                       3. Minutas de los Oradores
