@@ -156,6 +156,8 @@ export default function ABMReuniones({ onBack, onSaveSuccess }) {
   const [importedNeighbors, setImportedNeighbors] = useState([]);
   const [importStatus, setImportStatus] = useState(''); // '', 'loading', 'success', 'error'
   const [importedCount, setImportedCount] = useState(0);
+  const [duplicateCount, setDuplicateCount] = useState(0);
+  const [tempDniCount, setTempDniCount] = useState(0);
   const fileInputRef = useRef(null);
   const [saving, setSaving] = useState(false);
 
@@ -237,14 +239,16 @@ export default function ABMReuniones({ onBack, onSaveSuccess }) {
         }
 
         // Parsear filas
-        const parsed = parseRows2D(rows);
+        const { parsedData, dupCount, tempDniCount: tdCount } = parseRows2D(rows);
         
-        if (parsed.length === 0) {
+        if (parsedData.length === 0) {
           throw new Error('No se encontraron vecinos válidos en las filas.');
         }
 
-        setImportedNeighbors(parsed);
-        setImportedCount(parsed.length);
+        setImportedNeighbors(parsedData);
+        setImportedCount(parsedData.length);
+        setDuplicateCount(dupCount);
+        setTempDniCount(tdCount);
         setImportStatus('success');
       } catch (err) {
         console.error(err);
@@ -287,6 +291,9 @@ export default function ABMReuniones({ onBack, onSaveSuccess }) {
     const idxAccesibilidad = findIndex(['accesibilidad', 'acceso', 'discapacidad']);
 
     const parsedData = [];
+    const seenDnis = {}; // { [dni]: { nombre, apellido, count } }
+    let dupCount = 0;
+    let tempDniCount = 0;
 
     for (let i = 1; i < rows.length; i++) {
       const cols = rows[i];
@@ -298,11 +305,35 @@ export default function ABMReuniones({ onBack, onSaveSuccess }) {
         return val === '' ? null : val;
       };
 
-      const dni = getValue(idxDni);
-      if (!dni) continue;
-
       const vNombre = getValue(idxNombre) || 'Vecino';
       const vApellido = getValue(idxApellido) || 'Desconocido';
+
+      let dni = getValue(idxDni);
+      let isTemp = false;
+
+      if (!dni) {
+        isTemp = true;
+        const randomId = Math.floor(1000 + Math.random() * 9000);
+        dni = `SIN-DNI-${i}-${randomId}`;
+      }
+
+      if (seenDnis[dni]) {
+        const prev = seenDnis[dni];
+        if (prev.nombre === vNombre && prev.apellido === vApellido) {
+          dupCount++;
+          continue;
+        } else {
+          isTemp = true;
+          prev.count = (prev.count || 0) + 1;
+          dni = `${dni}-TEMP-${prev.count}`;
+        }
+      } else {
+        seenDnis[dni] = { nombre: vNombre, apellido: vApellido, count: 0 };
+      }
+
+      if (isTemp) {
+        tempDniCount++;
+      }
 
       parsedData.push({
         dni,
@@ -320,7 +351,7 @@ export default function ABMReuniones({ onBack, onSaveSuccess }) {
       });
     }
 
-    return parsedData;
+    return { parsedData, dupCount, tempDniCount };
   };
 
   const handleDragOver = (e) => {
@@ -771,19 +802,46 @@ export default function ABMReuniones({ onBack, onSaveSuccess }) {
                   )}
 
                   {importStatus === 'success' && (
-                    <div style={{
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: '8px',
-                      backgroundColor: '#DEF7EC',
-                      color: '#03543F',
-                      padding: '8px 16px',
-                      borderRadius: '8px',
-                      fontSize: '0.85rem',
-                      fontWeight: '600',
-                      marginTop: '12px'
-                    }}>
-                      <Check size={16} /> ¡Cargados {importedCount} inscriptos del archivo!
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginTop: '12px' }}>
+                      <div style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '8px',
+                        backgroundColor: '#DEF7EC',
+                        color: '#03543F',
+                        padding: '8px 16px',
+                        borderRadius: '8px',
+                        fontSize: '0.85rem',
+                        fontWeight: '600'
+                      }}>
+                        <Check size={16} /> ¡Cargados {importedCount} vecinos únicos del archivo!
+                      </div>
+                      {duplicateCount > 0 && (
+                        <div style={{
+                          fontSize: '0.75rem',
+                          color: '#B91C1C',
+                          backgroundColor: '#FEF2F2',
+                          padding: '6px 12px',
+                          borderRadius: '6px',
+                          border: '1px solid #FCA5A5',
+                          fontWeight: '500'
+                        }}>
+                          ⚠️ Se omitieron {duplicateCount} filas duplicadas idénticas.
+                        </div>
+                      )}
+                      {tempDniCount > 0 && (
+                        <div style={{
+                          fontSize: '0.75rem',
+                          color: '#B45309',
+                          backgroundColor: '#FFFBEB',
+                          padding: '6px 12px',
+                          borderRadius: '6px',
+                          border: '1px solid #FCD34D',
+                          fontWeight: '500'
+                        }}>
+                          ℹ️ Se generaron {tempDniCount} DNI temporales (ausentes o con DNI compartido del agente).
+                        </div>
+                      )}
                     </div>
                   )}
                 </div>

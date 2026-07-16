@@ -5,6 +5,7 @@ import {
   getAsistentesPorReunion, 
   guardarAsistencia, 
   upsertVecino, 
+  cambiarDniVecino,
   updateReunion, 
   getOradores, 
   registrarOrador, 
@@ -127,6 +128,7 @@ export default function ControlAsistencia({ reunion, onBack, mode = 'asistencia'
   // Estado de edición rápida de vecinos en caliente (Requisito 1)
   const [showEditModal, setShowEditModal] = useState(false);
   const [editDni, setEditDni] = useState('');
+  const [tempEditDni, setTempEditDni] = useState('');
   const [editNombre, setEditNombre] = useState('');
   const [editApellido, setEditApellido] = useState('');
   const [editCelular, setEditCelular] = useState('');
@@ -456,6 +458,7 @@ export default function ControlAsistencia({ reunion, onBack, mode = 'asistencia'
   // Apertura y Guardado de Edición en Caliente (Requisito 1)
   const handleOpenEditModal = (vecino) => {
     setEditDni(vecino.dni);
+    setTempEditDni(vecino.dni);
     setEditNombre(vecino.nombre || '');
     setEditApellido(vecino.apellido || '');
     setEditCelular(vecino.celular || '');
@@ -471,21 +474,39 @@ export default function ControlAsistencia({ reunion, onBack, mode = 'asistencia'
       alert('Nombre y Apellido son obligatorios.');
       return;
     }
+    const cleanTempDni = tempEditDni.trim();
+    if (!cleanTempDni) {
+      alert('El DNI es obligatorio.');
+      return;
+    }
 
     setIsSaving(true);
     try {
-      const { error } = await upsertVecino({
-        dni: editDni,
-        nombre: editNombre.trim(),
-        apellido: editApellido.trim(),
-        celular: editCelular.trim() || null,
-        email: editEmail.trim() || null,
-        comuna: editComuna,
-        barrio: editBarrio === 'Convocatoria Comunal' ? null : editBarrio
-      });
+      if (editDni !== cleanTempDni) {
+        // Actualización de clave primaria mediante copiar + re-vincular + borrar
+        const { error } = await cambiarDniVecino(editDni, cleanTempDni, {
+          nombre: editNombre.trim(),
+          apellido: editApellido.trim(),
+          celular: editCelular.trim() || null,
+          email: editEmail.trim() || null,
+          comuna: editComuna,
+          barrio: editBarrio === 'Convocatoria Comunal' ? null : editBarrio
+        });
+        if (error) throw error;
+      } else {
+        // Actualización normal
+        const { error } = await upsertVecino({
+          dni: editDni,
+          nombre: editNombre.trim(),
+          apellido: editApellido.trim(),
+          celular: editCelular.trim() || null,
+          email: editEmail.trim() || null,
+          comuna: editComuna,
+          barrio: editBarrio === 'Convocatoria Comunal' ? null : editBarrio
+        });
+        if (error) throw error;
+      }
 
-      if (error) throw error;
-      
       alert('¡Datos del vecino actualizados con éxito!');
       setShowEditModal(false);
       await triggerSearchRefresh();
@@ -1290,15 +1311,25 @@ export default function ControlAsistencia({ reunion, onBack, mode = 'asistencia'
             </div>
 
             <form onSubmit={handleSaveEditVecino}>
-              <div className="form-group">
-                <label>DNI (No editable)</label>
+               <div className="form-group">
+                <label>DNI</label>
                 <input
                   type="text"
                   className="form-control"
-                  value={editDni}
-                  disabled
-                  style={{ backgroundColor: '#F1F5F9' }}
+                  value={tempEditDni}
+                  onChange={(e) => setTempEditDni(e.target.value.trim())}
+                  placeholder="Ej: 12345678"
+                  style={{
+                    backgroundColor: (editDni.startsWith('SIN-DNI-') || editDni.includes('-TEMP-')) ? '#FFFBEB' : '#FFFFFF',
+                    border: (editDni.startsWith('SIN-DNI-') || editDni.includes('-TEMP-')) ? '1px solid #D97706' : '1px solid var(--color-border)',
+                    outline: 'none'
+                  }}
                 />
+                {(editDni.startsWith('SIN-DNI-') || editDni.includes('-TEMP-')) && (
+                  <span style={{ fontSize: '0.72rem', color: '#B45309', display: 'block', marginTop: '4px', fontWeight: '500' }}>
+                    ⚠️ Este es un DNI temporal asignado automáticamente. Por favor, corregilo por el DNI real del vecino.
+                  </span>
+                )}
               </div>
 
               <div className="grid-2" style={{ gap: '1rem' }}>

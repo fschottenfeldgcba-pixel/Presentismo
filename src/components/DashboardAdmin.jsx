@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { BarChart3, Plus, Download, Calendar, MapPin, Users, Award, ChevronRight, FileSpreadsheet, Settings, Search, Edit3, Save, Activity, Mic, MessageSquare, Check, TrendingUp, AlertTriangle, Trash2, UserCog, User } from 'lucide-react';
+import { BarChart3, Plus, Download, Calendar, MapPin, Users, Award, ChevronRight, FileSpreadsheet, Settings, Search, Edit3, Save, Activity, Mic, MessageSquare, Check, TrendingUp, AlertTriangle, Trash2, UserCog, User, UserPlus } from 'lucide-react';
 import { getReuniones, getAsistentesPorReunion, getOradores, upsertVecino, normalizeComuna, normalizeCanalDifusion, guardarAsistencia, registrarOrador, eliminarTodosLosInscriptos } from '../services/supabaseService';
 import { supabase } from '../lib/supabaseClient';
 import * as XLSX from 'xlsx';
@@ -133,6 +133,15 @@ export default function DashboardAdmin({ user, onSelectReunion, onManageReunion,
   const [inscriptosList, setInscriptosList] = useState([]);
   const [loadingInscriptos, setLoadingInscriptos] = useState(false);
   const [inscriptosSearch, setInscriptosSearch] = useState('');
+  const [showVentanaModal, setShowVentanaModal] = useState(false);
+  const [vetDni, setVetDni] = useState('');
+  const [vetNombre, setVetNombre] = useState('');
+  const [vetApellido, setVetApellido] = useState('');
+  const [vetCelular, setVetCelular] = useState('');
+  const [vetEmail, setVetEmail] = useState('');
+  const [vetBloque, setVetBloque] = useState('');
+  const [tempSelectedDnis, setTempSelectedDnis] = useState({});
+  const [savingConvocados, setSavingConvocados] = useState(false);
   
   // Estados para Modal de Informe Final
   const [showInformeModal, setShowInformeModal] = useState(false);
@@ -302,6 +311,8 @@ ${oradoresEfectivos.length > 0
   const [modalFileName, setModalFileName] = useState('');
   const [modalImportedNeighbors, setModalImportedNeighbors] = useState([]);
   const [modalImportStatus, setModalImportStatus] = useState('idle'); // 'idle' | 'loading' | 'success' | 'saving'
+  const [modalDuplicateCount, setModalDuplicateCount] = useState(0);
+  const [modalTempDniCount, setModalTempDniCount] = useState(0);
 
   // Estados para Acreditación Masiva de Asistencia y Oradores (Paso 6 - Refactorizado en 2 Pasos)
   const [processedMeetings, setProcessedMeetings] = useState([]);
@@ -976,14 +987,179 @@ ${oradoresEfectivos.length > 0
     setLoadingInscriptos(true);
     setInscriptosList([]);
     setInscriptosSearch('');
+    setTempSelectedDnis({});
     
     const { data, error } = await getAsistentesPorReunion(reunion.id);
     setLoadingInscriptos(false);
     if (!error && data) {
       setInscriptosList(data);
+      const initialSelected = {};
+      data.forEach(item => {
+        if (item.estado_convocatoria === 'citado' || item.estado_convocatoria === 'walk_in') {
+          initialSelected[item.vecino_id] = true;
+        }
+      });
+      setTempSelectedDnis(initialSelected);
     } else {
       console.error(error);
       alert('Error al cargar la lista de inscriptos.');
+    }
+  };
+
+  const handleReloadInscriptos = async () => {
+    if (!selectedReunionInscriptos) return;
+    const { data, error } = await getAsistentesPorReunion(selectedReunionInscriptos.id);
+    if (!error && data) {
+      setInscriptosList(data);
+      const initialSelected = {};
+      data.forEach(item => {
+        if (item.estado_convocatoria === 'citado' || item.estado_convocatoria === 'walk_in') {
+          initialSelected[item.vecino_id] = true;
+        }
+      });
+      setTempSelectedDnis(initialSelected);
+    }
+  };
+
+  const handleToggleCitadoInscriptos = (item) => {
+    setTempSelectedDnis(prev => ({
+      ...prev,
+      [item.vecino_id]: !prev[item.vecino_id]
+    }));
+    setInscriptosSearch(''); // Limpiar el buscador inmediatamente
+  };
+
+  const handleSaveConvocados = async (autoCloseAfterSave = false) => {
+    if (!selectedReunionInscriptos) return;
+    setSavingConvocados(true);
+    try {
+      const promises = inscriptosList.map(async (item) => {
+        const currentlyCitado = item.estado_convocatoria === 'citado' || item.estado_convocatoria === 'walk_in';
+        const nextCitado = !!tempSelectedDnis[item.vecino_id];
+        
+        if (currentlyCitado !== nextCitado) {
+          const nextEstado = nextCitado ? 'citado' : null;
+          return guardarAsistencia(selectedReunionInscriptos.id, item.vecino_id, item.asistio, {
+            estado_convocatoria: nextEstado
+          });
+        }
+      }).filter(Boolean);
+
+      if (promises.length > 0) {
+        await Promise.all(promises);
+      }
+      
+      await handleReloadInscriptos();
+      await loadAllData();
+      if (!autoCloseAfterSave) {
+        alert('¡Convocados guardados con éxito!');
+      }
+    } catch (err) {
+      console.error('Error al guardar convocados:', err);
+      alert('Ocurrió un error al guardar los convocados.');
+    } finally {
+      setSavingConvocados(false);
+    }
+  };
+
+  const generateSlotsLocal = (startStr, endStr) => {
+    if (!startStr || !endStr) return [];
+    const [sh, sm] = startStr.split(':').map(Number);
+    const [eh, em] = endStr.split(':').map(Number);
+    let currentMinutes = sh * 60 + sm;
+    const endMinutes = eh * 60 + em;
+    const slots = [];
+    while (currentMinutes + 5 <= endMinutes) {
+      const hs = Math.floor(currentMinutes / 60).toString().padStart(2, '0');
+      const ms = (currentMinutes % 60).toString().padStart(2, '0');
+
+      const nextMinutes = currentMinutes + 5;
+      const he = Math.floor(nextMinutes / 60).toString().padStart(2, '0');
+      const me = (nextMinutes % 60).toString().padStart(2, '0');
+
+      slots.push(`${hs}:${ms} - ${he}:${me}`);
+      currentMinutes = nextMinutes;
+    }
+    return slots;
+  };
+
+  const handleSaveVentana = async (e) => {
+    e.preventDefault();
+    if (!vetDni || !vetNombre || !vetApellido) {
+      alert('DNI, Nombre y Apellido son obligatorios');
+      return;
+    }
+
+    try {
+      const { data: vecino, error: errVecino } = await upsertVecino({
+        dni: vetDni,
+        nombre: vetNombre,
+        apellido: vetApellido,
+        celular: vetCelular,
+        email: vetEmail,
+        barrio: selectedReunionInscriptos.barrio || '',
+        comuna: selectedReunionInscriptos.comuna || ''
+      });
+
+      if (errVecino || !vecino) {
+        alert(`Error al guardar vecino: ${errVecino?.message || 'Verifica la conexión'}`);
+        return;
+      }
+
+      // Generar bloques
+      let estimatedStart = '17:00';
+      let estimatedEnd = '19:00';
+      try {
+        const configData = selectedReunionInscriptos.config_uno_a_uno || (selectedReunionInscriptos.gestion_presente && selectedReunionInscriptos.gestion_presente.startsWith('{') ? selectedReunionInscriptos.gestion_presente : null);
+        if (configData) {
+          const parsed = typeof configData === 'string' ? JSON.parse(configData) : configData;
+          if (parsed?.estimatedStart) estimatedStart = parsed.estimatedStart;
+          if (parsed?.estimatedEnd) estimatedEnd = parsed.estimatedEnd;
+        }
+      } catch(e) {}
+      
+      const slots = generateSlotsLocal(estimatedStart, estimatedEnd);
+      const selectedBlock = vetBloque || slots[0] || '17:00 - 17:05';
+
+      // 1. Guardar todos los convocados marcados actualmente en la vista local
+      const promises = inscriptosList.map(async (item) => {
+        const currentlyCitado = item.estado_convocatoria === 'citado' || item.estado_convocatoria === 'walk_in';
+        const nextCitado = !!tempSelectedDnis[item.vecino_id];
+        
+        if (currentlyCitado !== nextCitado) {
+          const nextEstado = nextCitado ? 'citado' : null;
+          return guardarAsistencia(selectedReunionInscriptos.id, item.vecino_id, item.asistio, {
+            estado_convocatoria: nextEstado
+          });
+        }
+      }).filter(Boolean);
+
+      // 2. Guardar el nuevo walk-in
+      promises.push(
+        guardarAsistencia(selectedReunionInscriptos.id, vecino.dni, false, {
+          estado_convocatoria: 'walk_in',
+          horario_bloque_asignado: selectedBlock
+        })
+      );
+
+      await Promise.all(promises);
+
+      // Resetear estados
+      setVetDni('');
+      setVetNombre('');
+      setVetApellido('');
+      setVetCelular('');
+      setVetEmail('');
+      setVetBloque('');
+      setShowVentanaModal(false);
+
+      // Recargar y actualizar
+      await handleReloadInscriptos();
+      await loadAllData();
+      alert('¡Vecino registrado por la ventana y convocados guardados con éxito!');
+    } catch (err) {
+      console.error(err);
+      alert('Ocurrió un error al registrar.');
     }
   };
 
@@ -1068,6 +1244,9 @@ ${oradoresEfectivos.length > 0
         const idxAccesibilidad = findIndex(['accesibilidad', 'acceso', 'discapacidad']);
 
         const parsedData = [];
+        const seenDnis = {}; // { [dni]: { nombre, apellido, count } }
+        let dupCount = 0;
+        let tempDniCount = 0;
 
         for (let i = 1; i < rows.length; i++) {
           const cols = rows[i];
@@ -1079,13 +1258,40 @@ ${oradoresEfectivos.length > 0
             return val === '' ? null : val;
           };
 
-          const dni = getValue(idxDni);
-          if (!dni) continue;
+          const nombre = getValue(idxNombre) || 'Vecino';
+          const apellido = getValue(idxApellido) || 'Desconocido';
+          
+          let dni = getValue(idxDni);
+          let isTemp = false;
+
+          if (!dni) {
+            isTemp = true;
+            const randomId = Math.floor(1000 + Math.random() * 9000);
+            dni = `SIN-DNI-${i}-${randomId}`;
+          }
+
+          if (seenDnis[dni]) {
+            const prev = seenDnis[dni];
+            if (prev.nombre === nombre && prev.apellido === apellido) {
+              dupCount++;
+              continue;
+            } else {
+              isTemp = true;
+              prev.count = (prev.count || 0) + 1;
+              dni = `${dni}-TEMP-${prev.count}`;
+            }
+          } else {
+            seenDnis[dni] = { nombre, apellido, count: 0 };
+          }
+
+          if (isTemp) {
+            tempDniCount++;
+          }
 
           parsedData.push({
             dni,
-            nombre: getValue(idxNombre) || 'Vecino',
-            apellido: getValue(idxApellido) || 'Desconocido',
+            nombre,
+            apellido,
             celular: getValue(idxCelular),
             email: getValue(idxEmail),
             barrio: getValue(idxBarrio) || (selectedReunionInscriptos.barrio !== 'Convocatoria Comunal' ? selectedReunionInscriptos.barrio : null),
@@ -1101,6 +1307,8 @@ ${oradoresEfectivos.length > 0
           throw new Error('No se encontraron vecinos válidos en las filas.');
         }
 
+        setModalDuplicateCount(dupCount);
+        setModalTempDniCount(tempDniCount);
         setModalImportedNeighbors(parsedData);
         setModalImportStatus('success');
       } catch (err) {
@@ -2695,7 +2903,26 @@ ${oradoresEfectivos.length > 0
                 <Users size={20} style={{ color: 'var(--color-highlight)' }} />
                 Inscriptos: {selectedReunionInscriptos.nombre}
               </h3>
-              <div style={{ display: 'flex', gap: '8px' }}>
+              <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                {selectedReunionInscriptos.tipo_reunion === 'Uno a Uno' && (
+                  <>
+                    <button 
+                      className="btn btn-primary btn-sm"
+                      onClick={() => handleSaveConvocados(false)}
+                      style={{ display: 'flex', alignItems: 'center', gap: '4px', fontWeight: '700' }}
+                      disabled={savingConvocados}
+                    >
+                      <Save size={14} /> Guardar Selección
+                    </button>
+                    <button 
+                      className="btn btn-primary btn-sm"
+                      onClick={() => setShowVentanaModal(true)}
+                      style={{ display: 'flex', alignItems: 'center', gap: '4px', backgroundColor: 'var(--color-success)', borderColor: 'var(--color-success)' }}
+                    >
+                      <UserPlus size={14} /> Entra "Por la Ventana"
+                    </button>
+                  </>
+                )}
                 <button 
                   className="btn btn-secondary btn-sm"
                   onClick={handleExportInscriptosToExcel}
@@ -2724,7 +2951,18 @@ ${oradoresEfectivos.length > 0
                 </button>
                 <button 
                   className="btn btn-secondary btn-sm" 
-                  onClick={() => {
+                  onClick={async () => {
+                    const hasChanges = inscriptosList.some(item => {
+                      const currentlyCitado = item.estado_convocatoria === 'citado' || item.estado_convocatoria === 'walk_in';
+                      const nextCitado = !!tempSelectedDnis[item.vecino_id];
+                      return currentlyCitado !== nextCitado;
+                    });
+                    if (hasChanges) {
+                      const confirmSave = await window.confirm('Tenés cambios de selección sin guardar. ¿Querés guardarlos antes de salir?');
+                      if (confirmSave) {
+                        await handleSaveConvocados(true);
+                      }
+                    }
                     setShowInscriptosModal(false);
                     setSelectedReunionInscriptos(null);
                     setInscriptosList([]);
@@ -2760,14 +2998,26 @@ ${oradoresEfectivos.length > 0
                   />
                   
                   {modalImportStatus === 'success' && (
-                    <button
-                      className="btn btn-primary btn-sm"
-                      onClick={handleConfirmModalImport}
-                      disabled={modalImportStatus === 'saving'}
-                      style={{ display: 'flex', alignItems: 'center', gap: '4px', padding: '6px 12px' }}
-                    >
-                      {modalImportStatus === 'saving' ? 'Guardando...' : <><Check size={14} /> Confirmar {modalImportedNeighbors.length} Vecinos</>}
-                    </button>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap' }}>
+                      <button
+                        className="btn btn-primary btn-sm"
+                        onClick={handleConfirmModalImport}
+                        disabled={modalImportStatus === 'saving'}
+                        style={{ display: 'flex', alignItems: 'center', gap: '4px', padding: '6px 12px' }}
+                      >
+                        {modalImportStatus === 'saving' ? 'Guardando...' : <><Check size={14} /> Confirmar {modalImportedNeighbors.length} Vecinos</>}
+                      </button>
+                      {modalDuplicateCount > 0 && (
+                        <span style={{ fontSize: '0.75rem', color: '#B91C1C', fontWeight: '500', backgroundColor: '#FEF2F2', padding: '4px 8px', borderRadius: '6px', border: '1px solid #FCA5A5' }}>
+                          ⚠️ Se omitieron {modalDuplicateCount} filas duplicadas idénticas.
+                        </span>
+                      )}
+                      {modalTempDniCount > 0 && (
+                        <span style={{ fontSize: '0.75rem', color: '#D97706', fontWeight: '500', backgroundColor: '#FFFBEB', padding: '4px 8px', borderRadius: '6px', border: '1px solid #FCD34D' }}>
+                          ℹ️ Se generaron {modalTempDniCount} DNI temporales (ausentes o con DNI compartido del agente).
+                        </span>
+                      )}
+                    </div>
                   )}
                 </div>
 
@@ -2794,15 +3044,31 @@ ${oradoresEfectivos.length > 0
               <div>
                 {/* Métricas rápidas del modal */}
                 <div style={{ display: 'flex', gap: '10px', marginBottom: '1.25rem', flexWrap: 'wrap', fontSize: '0.85rem' }}>
-                  <span className="badge badge-info" style={{ backgroundColor: '#F1F5F9', color: 'var(--color-primary)' }}>
-                    Total convocados: {inscriptosList.length}
-                  </span>
-                  <span className="badge badge-success">
-                    Presentes: {inscriptosList.filter(i => i.asistio).length}
-                  </span>
-                  <span className="badge badge-secondary" style={{ backgroundColor: '#E2E8F0', color: '#475569' }}>
-                    Ausentes: {inscriptosList.filter(i => !i.asistio).length}
-                  </span>
+                  {selectedReunionInscriptos.tipo_reunion === 'Uno a Uno' ? (
+                    <>
+                      <span className="badge badge-info" style={{ backgroundColor: '#F1F5F9', color: 'var(--color-primary)' }}>
+                        Inscriptos en Piscina: {inscriptosList.filter(i => !tempSelectedDnis[i.vecino_id]).length}
+                      </span>
+                      <span className="badge badge-success" style={{ backgroundColor: 'var(--color-primary)', color: '#FFFFFF' }}>
+                        Seleccionados (Citados): {inscriptosList.filter(i => tempSelectedDnis[i.vecino_id]).length}
+                      </span>
+                      <span className="badge badge-success">
+                        Presentes: {inscriptosList.filter(i => i.asistio).length}
+                      </span>
+                    </>
+                  ) : (
+                    <>
+                      <span className="badge badge-info" style={{ backgroundColor: '#F1F5F9', color: 'var(--color-primary)' }}>
+                        Total convocados: {inscriptosList.length}
+                      </span>
+                      <span className="badge badge-success">
+                        Presentes: {inscriptosList.filter(i => i.asistio).length}
+                      </span>
+                      <span className="badge badge-secondary" style={{ backgroundColor: '#E2E8F0', color: '#475569' }}>
+                        Ausentes: {inscriptosList.filter(i => !i.asistio).length}
+                      </span>
+                    </>
+                  )}
                 </div>
 
                 {/* Filtro libre del listado */}
@@ -2823,34 +3089,80 @@ ${oradoresEfectivos.length > 0
                   <div style={{ padding: '2rem', textAlign: 'center', color: 'var(--color-text-muted)', fontSize: '0.9rem' }}>
                     No hay inscriptos registrados en esta reunión.
                   </div>
-                ) : (
-                  <div style={{ maxHeight: '400px', overflowY: 'auto', border: '1px solid var(--color-border)', borderRadius: '8px' }}>
-                    <table className="table" style={{ margin: 0 }}>
-                      <thead style={{ position: 'sticky', top: 0, backgroundColor: '#F8FAFC', zIndex: 1 }}>
-                        <tr>
-                          <th>Vecino</th>
-                          <th>DNI</th>
-                          <th>Contacto</th>
-                          <th>Origen</th>
-                          <th style={{ textAlign: 'center' }}>Asistencia</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {inscriptosList
-                          .filter(item => {
-                            const term = inscriptosSearch.toLowerCase();
-                            const v = item.vecino || {};
-                            return (
-                              (v.nombre && v.nombre.toLowerCase().includes(term)) ||
-                              (v.apellido && v.apellido.toLowerCase().includes(term)) ||
-                              (item.vecino_id && item.vecino_id.toLowerCase().includes(term)) ||
-                              (v.celular && v.celular.toLowerCase().includes(term))
-                            );
-                          })
-                          .map(item => {
+                ) : (() => {
+                  const filteredList = inscriptosList.filter(item => {
+                    const term = inscriptosSearch.toLowerCase().trim();
+                    if (!term) return true;
+                    const v = item.vecino || {};
+                    return (
+                      (v.nombre && v.nombre.toLowerCase().includes(term)) ||
+                      (v.apellido && v.apellido.toLowerCase().includes(term)) ||
+                      (item.vecino_id && item.vecino_id.toLowerCase().includes(term)) ||
+                      (v.celular && v.celular.toLowerCase().includes(term))
+                    );
+                  });
+
+                  if (filteredList.length === 0 && inscriptosSearch.trim() !== '') {
+                    return (
+                      <div style={{ padding: '2rem', textAlign: 'center', backgroundColor: '#F8FAFC', borderRadius: '12px', border: '1px dashed var(--color-border)' }}>
+                        <p style={{ margin: 0, fontWeight: '600', color: 'var(--color-primary)' }}>
+                          "{inscriptosSearch}" no se encuentra en el listado.
+                        </p>
+                        <p style={{ margin: '4px 0 1rem 0', fontSize: '0.85rem', color: 'var(--color-text-muted)' }}>
+                          ¿Querés registrar a este ciudadano directamente por la ventana?
+                        </p>
+                        <button
+                          className="btn btn-primary btn-sm"
+                          onClick={() => {
+                            const termVal = inscriptosSearch.trim();
+                            const isDni = /^\d+$/.test(termVal);
+                            if (isDni) {
+                              setVetDni(termVal);
+                            } else {
+                              const parts = termVal.split(/\s+/);
+                              if (parts.length > 0) setVetNombre(parts[0]);
+                              if (parts.length > 1) setVetApellido(parts.slice(1).join(' '));
+                            }
+                            setShowVentanaModal(true);
+                          }}
+                          style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', backgroundColor: 'var(--color-success)', borderColor: 'var(--color-success)' }}
+                        >
+                          <UserPlus size={14} /> Registrar "{inscriptosSearch}" por la Ventana
+                        </button>
+                      </div>
+                    );
+                  }
+
+                  return (
+                    <div style={{ maxHeight: '400px', overflowY: 'auto', border: '1px solid var(--color-border)', borderRadius: '8px' }}>
+                      <table className="table" style={{ margin: 0 }}>
+                        <thead style={{ position: 'sticky', top: 0, backgroundColor: '#F8FAFC', zIndex: 1 }}>
+                          <tr>
+                            {selectedReunionInscriptos.tipo_reunion === 'Uno a Uno' && (
+                              <th style={{ width: '60px', textAlign: 'center' }}>Selecc.</th>
+                            )}
+                            <th>Vecino</th>
+                            <th>DNI</th>
+                            <th>Contacto</th>
+                            <th>Origen</th>
+                            <th style={{ textAlign: 'center' }}>Asistencia</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {filteredList.map(item => {
                             const v = item.vecino || {};
                             return (
                               <tr key={item.id}>
+                                {selectedReunionInscriptos.tipo_reunion === 'Uno a Uno' && (
+                                  <td style={{ textAlign: 'center', verticalAlign: 'middle' }}>
+                                    <input
+                                      type="checkbox"
+                                      checked={!!tempSelectedDnis[item.vecino_id]}
+                                      onChange={() => handleToggleCitadoInscriptos(item)}
+                                      style={{ width: '18px', height: '18px', cursor: 'pointer', accentColor: 'var(--color-primary)' }}
+                                    />
+                                  </td>
+                                )}
                                 <td>
                                   <div style={{ fontWeight: '600' }}>{v.nombre} {v.apellido}</div>
                                   <div style={{ fontSize: '0.75rem', color: 'var(--color-text-muted)' }}>
@@ -2880,9 +3192,131 @@ ${oradoresEfectivos.length > 0
                       </tbody>
                     </table>
                   </div>
-                )}
+                )})()}
               </div>
             )}
+          </div>
+        </div>
+      )}
+
+      {/* MODAL ENTRA POR LA VENTANA (Dentro de Inscriptos) */}
+      {showVentanaModal && selectedReunionInscriptos && (
+        <div className="modal-overlay" style={{ zIndex: 2000 }}>
+          <div className="modal-content" style={{ maxWidth: '500px', width: '95%' }}>
+            <h3 style={{ marginBottom: '1.25rem', color: 'var(--color-primary)' }}>Registro Excepcional ("Por la Ventana")</h3>
+            <form onSubmit={handleSaveVentana}>
+              <div className="form-group">
+                <label>DNI *</label>
+                <input
+                  type="text"
+                  className="form-control"
+                  placeholder="DNI del vecino"
+                  value={vetDni}
+                  onChange={(e) => setVetDni(e.target.value)}
+                  required
+                />
+              </div>
+
+              <div className="grid-2" style={{ gap: '1rem' }}>
+                <div className="form-group">
+                  <label>Nombre *</label>
+                  <input
+                    type="text"
+                    className="form-control"
+                    value={vetNombre}
+                    onChange={(e) => setVetNombre(e.target.value)}
+                    required
+                  />
+                </div>
+                <div className="form-group">
+                  <label>Apellido *</label>
+                  <input
+                    type="text"
+                    className="form-control"
+                    value={vetApellido}
+                    onChange={(e) => setVetApellido(e.target.value)}
+                    required
+                  />
+                </div>
+              </div>
+
+              <div className="grid-2" style={{ gap: '1rem' }}>
+                <div className="form-group">
+                  <label>Celular</label>
+                  <input
+                    type="text"
+                    className="form-control"
+                    placeholder="Ej: 1155556666"
+                    value={vetCelular}
+                    onChange={(e) => setVetCelular(e.target.value)}
+                  />
+                </div>
+                <div className="form-group">
+                  <label>Email</label>
+                  <input
+                    type="email"
+                    className="form-control"
+                    placeholder="vecino@correo.com"
+                    value={vetEmail}
+                    onChange={(e) => setVetEmail(e.target.value)}
+                  />
+                </div>
+              </div>
+
+              {/* Selección del bloque horario si es Uno a Uno */}
+              <div className="form-group">
+                <label>Bloque Horario Asignado</label>
+                {(() => {
+                  let estimatedStart = '17:00';
+                  let estimatedEnd = '19:00';
+                  try {
+                    const configData = selectedReunionInscriptos.config_uno_a_uno || (selectedReunionInscriptos.gestion_presente && selectedReunionInscriptos.gestion_presente.startsWith('{') ? selectedReunionInscriptos.gestion_presente : null);
+                    if (configData) {
+                      const parsed = typeof configData === 'string' ? JSON.parse(configData) : configData;
+                      if (parsed?.estimatedStart) estimatedStart = parsed.estimatedStart;
+                      if (parsed?.estimatedEnd) estimatedEnd = parsed.estimatedEnd;
+                    }
+                  } catch(e) {}
+                  
+                  const slots = generateSlotsLocal(estimatedStart, estimatedEnd);
+                  return (
+                    <select
+                      className="form-control"
+                      value={vetBloque || (slots[0] || '17:00 - 17:05')}
+                      onChange={(e) => setVetBloque(e.target.value)}
+                    >
+                      {slots.map(h => (
+                        <option key={h} value={h}>{h} hs</option>
+                      ))}
+                      {slots.length === 0 && (
+                        <option value="17:00 - 17:05">17:00 - 17:05 hs</option>
+                      )}
+                    </select>
+                  );
+                })()}
+              </div>
+
+              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px', marginTop: '1.5rem' }}>
+                <button
+                  type="button"
+                  className="btn btn-secondary"
+                  onClick={() => {
+                    setShowVentanaModal(false);
+                    setVetDni('');
+                    setVetNombre('');
+                    setVetApellido('');
+                    setVetCelular('');
+                    setVetEmail('');
+                    setVetBloque('');
+                  }}
+                >
+                  Cancelar
+                </button>
+                <button type="submit" className="btn btn-primary">
+                  Agregar Citado
+                </button>
+              </div>
+            </form>
           </div>
         </div>
       )}

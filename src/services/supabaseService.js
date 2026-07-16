@@ -203,6 +203,69 @@ export const upsertVecino = async (vecinoData) => {
   }
 };
 
+export const cambiarDniVecino = async (oldDni, newDni, updates = {}) => {
+  try {
+    // 1. Verificar si el nuevo DNI ya existe en la base de datos
+    const { data: existingVecino } = await supabase
+      .from('vecinos')
+      .select('dni')
+      .eq('dni', newDni)
+      .maybeSingle();
+
+    if (!existingVecino) {
+      // Obtener datos del vecino viejo para clonar
+      const { data: oldVecino, error: errFetch } = await supabase
+        .from('vecinos')
+        .select('*')
+        .eq('dni', oldDni)
+        .single();
+      if (errFetch) throw errFetch;
+
+      // Insertar nuevo vecino con el DNI correcto
+      const { error: errInsert } = await supabase
+        .from('vecinos')
+        .insert({
+          ...oldVecino,
+          ...updates,
+          dni: newDni
+        });
+      if (errInsert) throw errInsert;
+    } else {
+      // Si ya existe, actualizamos sus datos con las novedades
+      const { error: errUpdateExisting } = await supabase
+        .from('vecinos')
+        .update(updates)
+        .eq('dni', newDni);
+      if (errUpdateExisting) throw errUpdateExisting;
+    }
+
+    // 2. Actualizar las referencias de inscripción
+    await supabase
+      .from('inscripciones_asistencias')
+      .update({ vecino_id: newDni })
+      .eq('vecino_id', oldDni);
+
+    // 3. Actualizar las referencias de oradores
+    await supabase
+      .from('oradores')
+      .update({ vecino_id: newDni })
+      .eq('vecino_id', oldDni);
+
+    // 4. Eliminar el DNI viejo/temporal si es distinto al nuevo
+    if (oldDni !== newDni) {
+      await supabase
+        .from('vecinos')
+        .delete()
+        .eq('dni', oldDni);
+    }
+
+    return { data: { dni: newDni }, error: null };
+  } catch (error) {
+    console.error('Error en cambiarDniVecino:', error);
+    return { data: null, error };
+  }
+};
+
 // =========================================================================
 // 4. INSCRIPCIONES Y ASISTENCIAS (EL CORAZÓN DEL SISTEMA)
 // =========================================================================
