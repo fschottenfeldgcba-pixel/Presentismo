@@ -420,6 +420,7 @@ export default function AdministrarReunion({ reunion, onBack, onSaveSuccess }) {
                     <option value={TIPOS_REUNION.UNO_A_UNO}>{TIPOS_REUNION.UNO_A_UNO}</option>
                     <option value={TIPOS_REUNION.PROCESOS_CO_CREACION}>{TIPOS_REUNION.PROCESOS_CO_CREACION}</option>
                     <option value={TIPOS_REUNION.PROCESOS_INFORMATIVA}>{TIPOS_REUNION.PROCESOS_INFORMATIVA}</option>
+                    <option value={TIPOS_REUNION.PRIMERA_PERSONA}>{TIPOS_REUNION.PRIMERA_PERSONA}</option>
                   </select>
                 </div>
               </div>
@@ -439,6 +440,7 @@ export default function AdministrarReunion({ reunion, onBack, onSaveSuccess }) {
                     <option value="Educacion">Educacion</option>
                     <option value="Salud">Salud</option>
                     <option value="Ciudad Atractiva">Ciudad Atractiva</option>
+                    <option value="Movilidad">Movilidad</option>
                   </select>
                 </div>
               )}

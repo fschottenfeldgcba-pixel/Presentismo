@@ -10,7 +10,8 @@ import {
   getOradores, 
   registrarOrador, 
   eliminarOrador, 
-  updateOradorTema 
+  updateOradorTema,
+  updateOradorDetails
 } from '../services/supabaseService';
 import PreguntasTematicas from './PreguntasTematicas';
 import Cronometro1a1 from './Cronometro1a1';
@@ -141,6 +142,32 @@ export default function ControlAsistencia({ reunion, onBack, mode = 'asistencia'
   const [selectedVecinoDni, setSelectedVecinoDni] = useState(null);
   const [seguridadProblemática, setSeguridadProblemática] = useState('');
 
+  // Estados para Agentes de Territorio y Difusión
+  const [agentesTerritorio, setAgentesTerritorio] = useState([]);
+  const [selectedDifusion, setSelectedDifusion] = useState({}); // { [dni]: string }
+  const [selectedAgente, setSelectedAgente] = useState({}); // { [dni]: string }
+
+  // Registro Nivel 3
+  const [regComoSeEntero, setRegComoSeEntero] = useState('Walk-in');
+  const [regAgenteTerritorioId, setRegAgenteTerritorioId] = useState('');
+
+  // Edición rápida
+  const [editComoSeEntero, setEditComoSeEntero] = useState('Walk-in');
+  const [editAgenteTerritorioId, setEditAgenteTerritorioId] = useState('');
+  const [editAsistio, setEditAsistio] = useState(false);
+
+  // Pop-up de Oradores y Minuta Colaborativo
+  const [showOradoresModal, setShowOradoresModal] = useState(false);
+  const [oradoresModalList, setOradoresModalList] = useState([]);
+  const [activeOradorId, setActiveOradorId] = useState(null);
+  const [editingOradorId, setEditingOradorId] = useState(null);
+  const [editingMinutaText, setEditingMinutaText] = useState('');
+  const [activeOradorTimer, setActiveOradorTimer] = useState(0);
+
+  // Buscador interno de vecinos para agregar oradores en caliente
+  const [oradorSearchQuery, setOradorSearchQuery] = useState('');
+  const [oradorSearchResults, setOradorSearchResults] = useState([]);
+
   const isCafeOrEncuentro = reunion.tipo_reunion !== TIPOS_REUNION.UNO_A_UNO;
   const isUnoAUno = reunion.tipo_reunion === TIPOS_REUNION.UNO_A_UNO;
   const isTematica = reunion.tipo_reunion === TIPOS_REUNION.TEMATICA;
@@ -183,6 +210,22 @@ export default function ControlAsistencia({ reunion, onBack, mode = 'asistencia'
     
     loadStatsCounts();
 
+    // Cargar agentes territoriales
+    const fetchAgentes = async () => {
+      try {
+        const { data, error } = await supabase
+          .from('agentes_territorio')
+          .select('*')
+          .order('nombre_completo', { ascending: true });
+        if (!error && data) {
+          setAgentesTerritorio(data);
+        }
+      } catch (err) {
+        console.error('Error al cargar agentes de territorio:', err);
+      }
+    };
+    fetchAgentes();
+
     // Restaurar estado del timer de la reunión si ya tiene marcas
     if (reunion.funcionario_inicio && !reunion.funcionario_cierre) {
       setReunionStatus('running');
@@ -203,6 +246,60 @@ export default function ControlAsistencia({ reunion, onBack, mode = 'asistencia'
       if (timerIntervalId) clearInterval(timerIntervalId);
     };
   }, [reunion.id]);
+
+  // Polling automático para la cola de oradores en el modal (cada 5 segundos)
+  useEffect(() => {
+    if (!showOradoresModal) return;
+
+    const loadModalOradores = async () => {
+      try {
+        // 1. Cargar oradores
+        const { data: ords, error: errOrds } = await getOradores(reunion.id);
+        if (!errOrds && ords) {
+          const sorted = ords.sort((a, b) => (a.orden || 0) - (b.orden || 0));
+          
+          setOradoresModalList(prev => {
+            return sorted.map(newItem => {
+              // Si este item se está editando en este preciso momento (enfocado), no pisar su tema_efectivo
+              if (editingOradorId === newItem.id) {
+                return { ...newItem, tema_efectivo: editingMinutaText };
+              }
+              return newItem;
+            });
+          });
+        }
+
+        // 2. Cargar reunión para ver active_orador_id
+        const { data: reunData, error: errReun } = await supabase
+          .from('reuniones')
+          .select('active_orador_id')
+          .eq('id', reunion.id)
+          .single();
+        if (!errReun && reunData) {
+          setActiveOradorId(reunData.active_orador_id);
+        }
+      } catch (err) {
+        console.error('Error en polling de oradores:', err);
+      }
+    };
+
+    loadModalOradores(); // Carga inicial inmediata
+    const interval = setInterval(loadModalOradores, 5000);
+
+    return () => clearInterval(interval);
+  }, [showOradoresModal, editingOradorId, editingMinutaText, reunion.id]);
+
+  // Cronómetro local para el orador activo dentro del modal
+  useEffect(() => {
+    if (activeOradorId) {
+      const interval = setInterval(() => {
+        setActiveOradorTimer(t => t + 1);
+      }, 1000);
+      return () => clearInterval(interval);
+    } else {
+      setActiveOradorTimer(0);
+    }
+  }, [activeOradorId]);
 
   // Ejecución de búsqueda reutilizable
   const performSearch = async (q) => {
@@ -294,7 +391,16 @@ export default function ControlAsistencia({ reunion, onBack, mode = 'asistencia'
   const handleGivePresence = async (vecinoDni, isAlreadyInscribed) => {
     setIsSaving(true);
     try {
-      const extra = isAlreadyInscribed ? {} : { estado_convocatoria: 'walk_in', como_se_entero: 'Otro' };
+      let extra = {};
+      if (!isAlreadyInscribed) {
+        const dif = selectedDifusion[vecinoDni] || 'Walk-in';
+        const agId = selectedAgente[vecinoDni] || null;
+        extra = { 
+          estado_convocatoria: 'walk_in', 
+          como_se_entero: dif,
+          agente_territorio_id: dif === 'Territorio' ? agId : null
+        };
+      }
       const { error } = await guardarAsistencia(reunion.id, vecinoDni, true, extra);
       if (error) throw error;
       
@@ -408,7 +514,8 @@ export default function ControlAsistencia({ reunion, onBack, mode = 'asistencia'
       // 2. Guardar asistencia con walk-in
       const { error: errAsist } = await guardarAsistencia(reunion.id, regDni, true, {
         estado_convocatoria: 'walk_in',
-        como_se_entero: 'Otro'
+        como_se_entero: regComoSeEntero,
+        agente_territorio_id: regComoSeEntero === 'Territorio' ? regAgenteTerritorioId : null
       });
 
       if (errAsist) throw errAsist;
@@ -456,7 +563,8 @@ export default function ControlAsistencia({ reunion, onBack, mode = 'asistencia'
   };
 
   // Apertura y Guardado de Edición en Caliente (Requisito 1)
-  const handleOpenEditModal = (vecino) => {
+  const handleOpenEditModal = (item) => {
+    const { vecino, inscripcion } = item;
     setEditDni(vecino.dni);
     setTempEditDni(vecino.dni);
     setEditNombre(vecino.nombre || '');
@@ -465,6 +573,9 @@ export default function ControlAsistencia({ reunion, onBack, mode = 'asistencia'
     setEditEmail(vecino.email || '');
     setEditComuna(vecino.comuna || 'Comuna 1');
     setEditBarrio(vecino.barrio || 'Convocatoria Comunal');
+    setEditComoSeEntero(inscripcion?.como_se_entero || 'Walk-in');
+    setEditAgenteTerritorioId(inscripcion?.agente_territorio_id || '');
+    setEditAsistio(inscripcion ? !!inscripcion.asistio : false);
     setShowEditModal(true);
   };
 
@@ -506,6 +617,13 @@ export default function ControlAsistencia({ reunion, onBack, mode = 'asistencia'
         });
         if (error) throw error;
       }
+
+      // Guardar también los detalles de la asistencia / inscripción
+      const extra = {
+        como_se_entero: editComoSeEntero,
+        agente_territorio_id: editComoSeEntero === 'Territorio' ? editAgenteTerritorioId : null
+      };
+      await guardarAsistencia(reunion.id, cleanTempDni, editAsistio, extra);
 
       alert('¡Datos del vecino actualizados con éxito!');
       setShowEditModal(false);
@@ -746,6 +864,23 @@ export default function ControlAsistencia({ reunion, onBack, mode = 'asistencia'
           <ArrowLeft size={16} /> Volver al Tablero
         </button>
 
+        <button 
+          type="button"
+          className="btn btn-highlight btn-sm" 
+          onClick={() => setShowOradoresModal(true)}
+          style={{ 
+            display: 'flex', 
+            alignItems: 'center', 
+            gap: '6px', 
+            fontWeight: 'bold', 
+            padding: '6px 12px',
+            backgroundColor: 'var(--color-highlight)',
+            color: 'var(--color-primary)'
+          }}
+        >
+          <Mic size={14} /> Oradores y Minuta
+        </button>
+
         {/* Cronómetro Logístico en Vivo */}
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
           <span style={{ fontSize: '0.85rem', color: 'var(--color-text-muted)', fontWeight: '600' }}>Cronómetro Oficial:</span>
@@ -958,7 +1093,12 @@ export default function ControlAsistencia({ reunion, onBack, mode = 'asistencia'
                                 <div><strong>Email:</strong> {vecino.email || '-'}</div>
                                 <div><strong>Barrio:</strong> {vecino.barrio || '-'} ({vecino.comuna || '-'})</div>
                                 {inscripcion?.como_se_entero && (
-                                  <div><strong>Difusión:</strong> {inscripcion.como_se_entero}</div>
+                                  <div>
+                                    <strong>Difusión:</strong> {inscripcion.como_se_entero}
+                                    {inscripcion.como_se_entero === 'Territorio' && inscripcion.agente_territorio && (
+                                      <span> ({inscripcion.agente_territorio.nombre_completo})</span>
+                                    )}
+                                  </div>
                                 )}
                                 {inscripcion?.pregunta_puerta && (
                                   <div style={{ gridColumn: '1 / -1', color: 'var(--color-text-muted)', fontStyle: 'italic', marginTop: '4px' }}>
@@ -970,6 +1110,56 @@ export default function ControlAsistencia({ reunion, onBack, mode = 'asistencia'
 
                             {/* Botones de acción táctiles grandes */}
                             <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', width: '100%', maxWidth: '200px' }}>
+                              {!isInscribed && (
+                                <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', marginBottom: '4px', width: '100%', textAlign: 'left' }}>
+                                  <label style={{ fontSize: '0.72rem', fontWeight: '700', color: 'var(--color-text-muted)', marginBottom: 0 }}>
+                                    ¿Cómo se enteró?
+                                  </label>
+                                  <select
+                                    className="form-control form-control-sm"
+                                    style={{ fontSize: '0.78rem', padding: '4px 8px', height: 'auto' }}
+                                    value={selectedDifusion[vecino.dni] || 'Walk-in'}
+                                    onChange={(e) => {
+                                      const val = e.target.value;
+                                      setSelectedDifusion(prev => ({ ...prev, [vecino.dni]: val }));
+                                    }}
+                                  >
+                                    <option value="Walk-in">Walk-in</option>
+                                    <option value="Territorio">Territorio</option>
+                                    <option value="Mailing">Mailing</option>
+                                    <option value="WhatsApp">WhatsApp</option>
+                                    <option value="Llamada Telefónica">Llamada Telefónica</option>
+                                    <option value="Redes Sociales">Redes Sociales</option>
+                                    <option value="Vecino">Vecino</option>
+                                    <option value="Cartelería / Folleto">Cartelería / Folleto</option>
+                                    <option value="Medios Locales">Medios Locales</option>
+                                    <option value="Otro">Otro</option>
+                                  </select>
+
+                                  {(selectedDifusion[vecino.dni] === 'Territorio') && (
+                                    <>
+                                      <label style={{ fontSize: '0.72rem', fontWeight: '700', color: 'var(--color-text-muted)', marginTop: '4px', marginBottom: 0 }}>
+                                        Agente Territorial
+                                      </label>
+                                      <select
+                                        className="form-control form-control-sm"
+                                        style={{ fontSize: '0.78rem', padding: '4px 8px', height: 'auto' }}
+                                        value={selectedAgente[vecino.dni] || ''}
+                                        onChange={(e) => {
+                                          const val = e.target.value;
+                                          setSelectedAgente(prev => ({ ...prev, [vecino.dni]: val }));
+                                        }}
+                                      >
+                                        <option value="">-- Seleccionar --</option>
+                                        {agentesTerritorio.map(ag => (
+                                          <option key={ag.id} value={ag.id}>{ag.nombre_completo}</option>
+                                        ))}
+                                      </select>
+                                    </>
+                                  )}
+                                </div>
+                              )}
+
                               {isInscribed ? (
                                 /* NIVEL 1 */
                                 !isPresent ? (
@@ -1010,7 +1200,7 @@ export default function ControlAsistencia({ reunion, onBack, mode = 'asistencia'
                               <button
                                 type="button"
                                 className="btn btn-secondary btn-sm"
-                                onClick={() => handleOpenEditModal(vecino)}
+                                onClick={() => handleOpenEditModal(result)}
                                 disabled={isSaving}
                                 style={{ padding: '8px', fontSize: '0.8rem', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '4px' }}
                               >
@@ -1407,6 +1597,46 @@ export default function ControlAsistencia({ reunion, onBack, mode = 'asistencia'
                     ))}
                   </select>
                 </div>
+              </div>
+
+              <div className="grid-2" style={{ gap: '1rem', marginTop: '10px' }}>
+                <div className="form-group">
+                  <label htmlFor="edit-como-se-entero">¿Cómo se enteró?</label>
+                  <select
+                    id="edit-como-se-entero"
+                    className="form-control"
+                    value={editComoSeEntero}
+                    onChange={(e) => setEditComoSeEntero(e.target.value)}
+                  >
+                    <option value="Walk-in">Walk-in</option>
+                    <option value="Territorio">Territorio</option>
+                    <option value="Mailing">Mailing</option>
+                    <option value="WhatsApp">WhatsApp</option>
+                    <option value="Llamada Telefónica">Llamada Telefónica</option>
+                    <option value="Redes Sociales">Redes Sociales</option>
+                    <option value="Vecino">Vecino</option>
+                    <option value="Cartelería / Folleto">Cartelería / Folleto</option>
+                    <option value="Medios Locales">Medios Locales</option>
+                    <option value="Otro">Otro</option>
+                  </select>
+                </div>
+
+                {editComoSeEntero === 'Territorio' && (
+                  <div className="form-group">
+                    <label htmlFor="edit-agente-territorio">Agente Territorial</label>
+                    <select
+                      id="edit-agente-territorio"
+                      className="form-control"
+                      value={editAgenteTerritorioId}
+                      onChange={(e) => setEditAgenteTerritorioId(e.target.value)}
+                    >
+                      <option value="">-- Seleccionar Agente --</option>
+                      {agentesTerritorio.map(ag => (
+                        <option key={ag.id} value={ag.id}>{ag.nombre_completo}</option>
+                      ))}
+                    </select>
+                  </div>
+                )}
               </div>
 
               <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px', marginTop: '1.5rem' }}>

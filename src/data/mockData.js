@@ -15,7 +15,8 @@ export const TIPOS_REUNION = {
   SEGURIDAD: 'Seguridad en Tu Barrio',
   CAFE: 'Cafe con Vecinos',
   PROCESOS_CO_CREACION: 'Procesos Participativos - Co Creacion',
-  PROCESOS_INFORMATIVA: 'Procesos Participativos - Reunion Informativa'
+  PROCESOS_INFORMATIVA: 'Procesos Participativos - Reunion Informativa',
+  PRIMERA_PERSONA: 'Primera Persona'
 };
 
 export const ESTADO_CONVOCATORIA = {

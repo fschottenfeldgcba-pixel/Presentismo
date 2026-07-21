@@ -92,10 +92,65 @@ const BARRIOS = [
   "Villa Urquiza"
 ];
 
-export default function DashboardAdmin({ user, onSelectReunion, onManageReunion, onModerarReunion, onCreateMeetingClick, activeDashboardTab, setActiveDashboardTab }) {
+export default function DashboardAdmin({ 
+  user, 
+  onSelectReunion, 
+  onManageReunion, 
+  onModerarReunion, 
+  onCreateMeetingClick, 
+  activeDashboardTab, 
+  setActiveDashboardTab,
+  initialModal,
+  initialModalReunionId,
+  initialShowHistorical,
+  onClearInitialModal
+}) {
   const [reuniones, setReuniones] = useState([]);
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
+  const [filterTipoReunion, setFilterTipoReunion] = useState('');
+
+  // Estados para limitar la carga inicial de histórico
+  const [showHistorical, setShowHistorical] = useState(initialShowHistorical || false);
+  const [loadingHistorical, setLoadingHistorical] = useState(false);
+
+  useEffect(() => {
+    if (initialShowHistorical) {
+      setShowHistorical(true);
+      loadAllData(true);
+    }
+  }, [initialShowHistorical]);
+
+  // Cargar modal inicial si viene en la URL (soporte multi-pestaña)
+  useEffect(() => {
+    if (initialModal === 'inscriptos' && initialModalReunionId) {
+      const triggerOpen = async () => {
+        const { data, error } = await supabase
+          .from('reuniones')
+          .select('*')
+          .eq('id', initialModalReunionId)
+          .single();
+        if (!error && data) {
+          handleOpenInscriptos(data);
+          if (onClearInitialModal) onClearInitialModal();
+        }
+      };
+      triggerOpen();
+    } else if (initialModal === 'informe' && initialModalReunionId) {
+      const triggerOpen = async () => {
+        const { data, error } = await supabase
+          .from('reuniones')
+          .select('*')
+          .eq('id', initialModalReunionId)
+          .single();
+        if (!error && data) {
+          handleOpenInformeFinal(data);
+          if (onClearInitialModal) onClearInitialModal();
+        }
+      };
+      triggerOpen();
+    }
+  }, [initialModal, initialModalReunionId]);
   
   // Estadísticas del Tablero
   const [stats, setStats] = useState({
@@ -114,6 +169,13 @@ export default function DashboardAdmin({ user, onSelectReunion, onManageReunion,
   const [selectedVecino, setSelectedVecino] = useState(null);
   const [topVecinos, setTopVecinos] = useState([]);
   const [loadingTop, setLoadingTop] = useState(false);
+  const [topFilterDispositivo, setTopFilterDispositivo] = useState('');
+  const [topFilterMetric, setTopFilterMetric] = useState('inscripciones'); // 'inscripciones' | 'asistencias'
+  const [topFilterFechaDesde, setTopFilterFechaDesde] = useState('');
+  const [topFilterFechaHasta, setTopFilterFechaHasta] = useState('');
+  const [exportingPadron, setExportingPadron] = useState(false);
+  const [exportingAsistencias, setExportingAsistencias] = useState(false);
+  const [exportingTopRanking, setExportingTopRanking] = useState(false);
 
   // Formulario del Vecino en Padrón Central
   const [vDni, setVDni] = useState('');
@@ -370,8 +432,21 @@ ${oradoresEfectivos.length > 0
     if (meetingDate >= startOfWeek && meetingDate <= endOfWeek) {
       return 'semana';
     }
+
+    // 3. ¿Próxima semana (Lunes a Domingo)?
+    const startOfNextWeek = new Date(startOfWeek);
+    startOfNextWeek.setDate(startOfWeek.getDate() + 7);
+    startOfNextWeek.setHours(0, 0, 0, 0);
     
-    // 3. ¿Este mes?
+    const endOfNextWeek = new Date(endOfWeek);
+    endOfNextWeek.setDate(endOfWeek.getDate() + 7);
+    endOfNextWeek.setHours(23, 59, 59, 999);
+    
+    if (meetingDate >= startOfNextWeek && meetingDate <= endOfNextWeek) {
+      return 'proxima_semana';
+    }
+    
+    // 4. ¿Este mes?
     if (meetingDate.getMonth() === today.getMonth() && meetingDate.getFullYear() === today.getFullYear()) {
       return 'mes';
     }
@@ -380,8 +455,33 @@ ${oradoresEfectivos.length > 0
   };
 
   // Renderizador genérico de sección de tabla de reuniones
-  const renderMeetingTableSection = (title, emoji, categoryMeetings) => {
-    if (categoryMeetings.length === 0) return null;
+  const renderMeetingTableSection = (title, emoji, categoryMeetings, forceShow = false) => {
+    if (categoryMeetings.length === 0) {
+      if (!forceShow) return null;
+      return (
+        <div style={{ marginBottom: '2.5rem' }}>
+          <h4 style={{ 
+            fontSize: '1.05rem', 
+            color: 'var(--color-primary)', 
+            fontWeight: '700', 
+            marginBottom: '1rem', 
+            display: 'flex', 
+            alignItems: 'center', 
+            gap: '8px',
+            borderBottom: '1px solid var(--color-border)',
+            paddingBottom: '8px'
+          }}>
+            <span style={{ fontSize: '1.25rem' }}>{emoji}</span> {title}
+            <span className="badge" style={{ backgroundColor: '#F1F5F9', color: 'var(--color-text-muted)', fontSize: '0.75rem', padding: '3px 8px', borderRadius: '12px', fontWeight: '700' }}>
+              0
+            </span>
+          </h4>
+          <div style={{ backgroundColor: '#F8FAFC', border: '1px dashed #E2E8F0', borderRadius: '8px', padding: '1.25rem', textAlign: 'center', color: 'var(--color-text-muted)', fontSize: '0.85rem' }}>
+            No hay reuniones programadas para este período.
+          </div>
+        </div>
+      );
+    }
     
     return (
       <div style={{ marginBottom: '2.5rem' }}>
@@ -461,72 +561,79 @@ ${oradoresEfectivos.length > 0
                     </td>
                     <td style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
                       <div style={{ display: 'inline-flex', gap: '3px' }}>
-                        <button 
+                        <a 
+                          href={`?view=dashboard&modal=inscriptos&reunion_id=${r.id}`}
+                          target="_blank"
                           className="btn btn-secondary btn-sm" 
-                          onClick={() => handleOpenInscriptos(r)}
                           title="Ver lista completa de inscriptos y descargar XLS"
-                          style={{ padding: '3px 6px', display: 'flex', alignItems: 'center', gap: '3px', fontSize: '0.7rem' }}
+                          style={{ padding: '3px 6px', display: 'flex', alignItems: 'center', gap: '3px', fontSize: '0.7rem', textDecoration: 'none' }}
                         >
                           <Users size={12} style={{ color: 'var(--color-highlight)' }} /> Inscriptos
-                        </button>
+                        </a>
                         {isCercaniaOrGerencia && (
                           <>
-                            <button 
+                            <a 
+                              href={`?view=administrar_reunion&reunion_id=${r.id}`}
+                              target="_blank"
                               className="btn btn-secondary btn-sm" 
-                              onClick={() => onManageReunion(r)}
                               title="Editar valores de la reunión"
-                              style={{ padding: '3px 6px', display: 'flex', alignItems: 'center', gap: '3px', fontSize: '0.7rem' }}
+                              style={{ padding: '3px 6px', display: 'flex', alignItems: 'center', gap: '3px', fontSize: '0.7rem', textDecoration: 'none' }}
                             >
                               <Settings size={12} style={{ color: 'var(--color-primary)' }} /> Editar
-                            </button>
+                            </a>
                             {isMicMeeting ? (
                               <>
-                                <button 
+                                <a 
+                                  href={`?view=moderar_reunion&reunion_id=${r.id}`}
+                                  target="_blank"
                                   className="btn btn-secondary btn-sm" 
-                                  onClick={() => onModerarReunion(r)}
                                   title="Panel de moderador y oradores"
-                                  style={{ padding: '3px 6px', display: 'flex', alignItems: 'center', gap: '3px', fontSize: '0.7rem' }}
+                                  style={{ padding: '3px 6px', display: 'flex', alignItems: 'center', gap: '3px', fontSize: '0.7rem', textDecoration: 'none' }}
                                 >
                                   <Mic size={12} style={{ color: 'var(--color-highlight)' }} /> Moderar
-                                </button>
-                                <button 
+                                </a>
+                                <a 
+                                  href={`?view=dashboard&modal=informe&reunion_id=${r.id}`}
+                                  target="_blank"
                                   className="btn btn-secondary btn-sm" 
-                                  onClick={() => handleOpenInformeFinal(r)}
                                   title="Ver informe final y resumen cualitativo/cuantitativo"
-                                  style={{ padding: '3px 6px', display: 'flex', alignItems: 'center', gap: '3px', fontSize: '0.7rem', border: '1px solid var(--color-highlight)', color: 'var(--color-primary)' }}
+                                  style={{ padding: '3px 6px', display: 'flex', alignItems: 'center', gap: '3px', fontSize: '0.7rem', border: '1px solid var(--color-highlight)', color: 'var(--color-primary)', textDecoration: 'none' }}
                                 >
                                   <Activity size={12} style={{ color: 'var(--color-highlight)' }} /> Informe
-                                </button>
+                                </a>
                               </>
                             ) : (
                               <>
-                                <button 
+                                <a 
+                                  href={`?view=moderar_reunion&reunion_id=${r.id}`}
+                                  target="_blank"
                                   className="btn btn-secondary btn-sm" 
-                                  onClick={() => onModerarReunion(r)}
                                   title="Panel de moderador y cronómetro (Uno a Uno)"
-                                  style={{ padding: '3px 6px', display: 'flex', alignItems: 'center', gap: '3px', fontSize: '0.7rem' }}
+                                  style={{ padding: '3px 6px', display: 'flex', alignItems: 'center', gap: '3px', fontSize: '0.7rem', textDecoration: 'none' }}
                                 >
                                   <Mic size={12} style={{ color: 'var(--color-highlight)' }} /> Moderar
-                                </button>
-                                <button 
+                                </a>
+                                <a 
+                                  href={`?view=dashboard&modal=informe&reunion_id=${r.id}`}
+                                  target="_blank"
                                   className="btn btn-secondary btn-sm" 
-                                  onClick={() => handleOpenInformeFinal(r)}
                                   title="Ver informe final y resumen cualitativo/cuantitativo (Uno a Uno)"
-                                  style={{ padding: '3px 6px', display: 'flex', alignItems: 'center', gap: '3px', fontSize: '0.7rem', border: '1px solid var(--color-highlight)', color: 'var(--color-primary)' }}
+                                  style={{ padding: '3px 6px', display: 'flex', alignItems: 'center', gap: '3px', fontSize: '0.7rem', border: '1px solid var(--color-highlight)', color: 'var(--color-primary)', textDecoration: 'none' }}
                                 >
                                   <Activity size={12} style={{ color: 'var(--color-highlight)' }} /> Informe
-                                </button>
+                                </a>
                               </>
                             )}
                           </>
                         )}
-                        <button 
+                        <a 
+                          href={`?view=asistencia&reunion_id=${r.id}`}
+                          target="_blank"
                           className="btn btn-primary btn-sm" 
-                          onClick={() => onSelectReunion(r)}
-                          style={{ padding: '3px 6px', fontSize: '0.7rem', display: 'inline-flex', alignItems: 'center', gap: '3px' }}
+                          style={{ padding: '3px 6px', fontSize: '0.7rem', display: 'inline-flex', alignItems: 'center', gap: '3px', textDecoration: 'none' }}
                         >
                           Asistencia <ChevronRight size={12} />
-                        </button>
+                        </a>
                       </div>
                     </td>
                   </tr>
@@ -539,7 +646,7 @@ ${oradoresEfectivos.length > 0
     );
   };
 
-  const loadAllData = async () => {
+  const loadAllData = async (forceHistorical = false) => {
     setLoading(true);
     const { data: list, error: errReuniones } = await getReuniones();
     if (errReuniones) {
@@ -548,23 +655,34 @@ ${oradoresEfectivos.length > 0
       return;
     }
 
+    // Clasificar cuáles de la lista son de hoy, de esta semana o de la próxima semana
+    const filtered = (list || []).filter(r => {
+      const cat = getMeetingCategory(r.fecha);
+      return cat === 'hoy' || cat === 'semana' || cat === 'proxima_semana';
+    });
+
+    // Si está vacío y no estamos en modo histórico, tomar las 5 reuniones más recientes para evitar pantalla en blanco
+    const displayedList = (showHistorical || forceHistorical) 
+      ? (list || []) 
+      : (filtered.length > 0 ? filtered : (list || []).slice(0, 5));
+
     let totalInsc = 0;
     let totalAsis = 0;
     let walkInCount = 0;
     const reunionesConAsistencias = [];
 
-    if (list && list.length > 0) {
+    if (displayedList.length > 0) {
       try {
-        // Consultar las asistencias de todas las reuniones y oradores en paralelo
-        const asistenciasPromises = list.map(r => getAsistentesPorReunion(r.id));
-        const oradoresPromises = list.map(r => getOradores(r.id));
+        // Consultar asistencias y oradores solo para las reuniones a mostrar
+        const asistenciasPromises = displayedList.map(r => getAsistentesPorReunion(r.id));
+        const oradoresPromises = displayedList.map(r => getOradores(r.id));
 
         const [resultsAsis, resultsOrad] = await Promise.all([
           Promise.all(asistenciasPromises),
           Promise.all(oradoresPromises)
         ]);
 
-        list.forEach((r, idx) => {
+        displayedList.forEach((r, idx) => {
           const { data: asistencias } = resultsAsis[idx];
           const { data: oradores } = resultsOrad[idx];
           const listAsis = asistencias || [];
@@ -605,7 +723,7 @@ ${oradoresEfectivos.length > 0
       }
     }
 
-    setReuniones(reunionesConAsistencias.length > 0 ? reunionesConAsistencias : (list || []));
+    setReuniones(reunionesConAsistencias);
 
     let totalVecinosUnicos = 0;
     try {
@@ -636,15 +754,25 @@ ${oradoresEfectivos.length > 0
     setLoading(false);
   };
 
+  const handleLoadHistorical = async () => {
+    setLoadingHistorical(true);
+    setShowHistorical(true);
+    await loadAllData(true);
+    setLoadingHistorical(false);
+  };
+
   useEffect(() => {
     loadAllData();
   }, []);
 
   useEffect(() => {
     if (activeDashboardTab === 'padron') {
-      loadTopVecinos();
+      loadTopVecinos(topFilterDispositivo, topFilterMetric, topFilterFechaDesde, topFilterFechaHasta);
+      if (selectedVecino) {
+        loadRadiografia(selectedVecino.dni, topFilterDispositivo, topFilterMetric, topFilterFechaDesde, topFilterFechaHasta);
+      }
     }
-  }, [activeDashboardTab]);
+  }, [activeDashboardTab, topFilterDispositivo, topFilterMetric, topFilterFechaDesde, topFilterFechaHasta]);
 
   // Exportar lista de presentismo a un archivo CSV enriquecido
   const handleExportCSV = async (reunion) => {
@@ -738,54 +866,137 @@ ${oradoresEfectivos.length > 0
     }
   };
 
-  // Cargar Radiografía (timeline completo del vecino)
-  const loadRadiografia = async (dni) => {
+  // Cargar Radiografía (timeline completo del vecino o filtrado según Top 10)
+  const loadRadiografia = async (
+    dni,
+    filtroDispositivo = topFilterDispositivo,
+    filtroMetric = topFilterMetric,
+    filtroFechaDesde = topFilterFechaDesde,
+    filtroFechaHasta = topFilterFechaHasta
+  ) => {
     setLoadingRadiografia(true);
     setRadiografia([]);
     try {
+      if (!dni) return;
+      const cleanDni = String(dni).trim();
+      const dniFilter = `vecino_id.eq.${cleanDni}`;
+
       const { data: asistencias, error: errAsist } = await supabase
         .from('inscripciones_asistencias')
-        .select('*, reunion:reuniones(*)')
-        .eq('vecino_id', dni);
+        .select('*')
+        .or(dniFilter);
 
-      if (errAsist) throw errAsist;
+      if (errAsist) console.error('Error fetching asistencias:', errAsist);
 
       const { data: oradores, error: errOradores } = await supabase
         .from('oradores')
-        .select('*, reunion:reuniones(*)')
-        .eq('vecino_id', dni);
+        .select('*')
+        .or(dniFilter);
 
-      if (errOradores) throw errOradores;
+      if (errOradores) console.error('Error fetching oradores:', errOradores);
 
       const { data: preguntas, error: errPreguntas } = await supabase
         .from('preguntas_qr')
-        .select('*, reunion:reuniones(*)')
-        .eq('vecino_id', dni);
+        .select('*')
+        .or(dniFilter);
 
-      if (errPreguntas) throw errPreguntas;
+      if (errPreguntas) console.error('Error fetching preguntas:', errPreguntas);
 
-      // Filtrar reuniones de test/prueba
-      const filteredAsistencias = asistencias?.filter(asis => {
-        const name = asis.reunion?.nombre?.toLowerCase() || '';
-        return !name.includes('test') && !name.includes('prueba');
-      }) || [];
+      const rawAsistencias = asistencias || [];
+      const rawOradores = oradores || [];
+      const rawPreguntas = preguntas || [];
 
-      const filteredOradores = oradores?.filter(orad => {
-        const name = orad.reunion?.nombre?.toLowerCase() || '';
-        return !name.includes('test') && !name.includes('prueba');
-      }) || [];
+      // Recolectar todos los IDs de reuniones involucrados
+      const allReunionIds = [
+        ...rawAsistencias.map(a => a.reunion_id),
+        ...rawOradores.map(o => o.reunion_id),
+        ...rawPreguntas.map(p => p.reunion_id)
+      ].filter(Boolean);
 
-      const filteredPreguntas = preguntas?.filter(preg => {
-        const name = preg.reunion?.nombre?.toLowerCase() || '';
-        return !name.includes('test') && !name.includes('prueba');
-      }) || [];
+      const uniqueReunionIds = [...new Set(allReunionIds)];
+      const reunionesMap = {};
+
+      if (uniqueReunionIds.length > 0) {
+        const { data: reunionesData, error: errReuniones } = await supabase
+          .from('reuniones')
+          .select('id, nombre, fecha, comuna, barrio, tipo_reunion, funcionario')
+          .in('id', uniqueReunionIds);
+
+        if (!errReuniones && reunionesData) {
+          reunionesData.forEach(r => {
+            reunionesMap[r.id] = r;
+          });
+        }
+      }
+
+      // Filtrar reuniones de test/prueba, por dispositivo, fechas y métrica si hay filtros activos
+      const filteredAsistencias = rawAsistencias.filter(asis => {
+        const r = reunionesMap[asis.reunion_id];
+        const name = (r?.nombre || '').toLowerCase();
+        if (name.includes('test') || name.includes('prueba')) return false;
+
+        if (filtroDispositivo && r?.tipo_reunion !== filtroDispositivo) {
+          return false;
+        }
+
+        if (filtroFechaDesde && r?.fecha && r.fecha < filtroFechaDesde) {
+          return false;
+        }
+        if (filtroFechaHasta && r?.fecha && r.fecha > filtroFechaHasta) {
+          return false;
+        }
+
+        if (filtroMetric === 'asistencias' && !asis.asistio) {
+          return false;
+        }
+
+        return true;
+      });
+
+      const filteredOradores = rawOradores.filter(orad => {
+        const r = reunionesMap[orad.reunion_id];
+        const name = (r?.nombre || '').toLowerCase();
+        if (name.includes('test') || name.includes('prueba')) return false;
+
+        if (filtroDispositivo && r?.tipo_reunion !== filtroDispositivo) {
+          return false;
+        }
+
+        if (filtroFechaDesde && r?.fecha && r.fecha < filtroFechaDesde) {
+          return false;
+        }
+        if (filtroFechaHasta && r?.fecha && r.fecha > filtroFechaHasta) {
+          return false;
+        }
+
+        return true;
+      });
+
+      const filteredPreguntas = rawPreguntas.filter(preg => {
+        const r = reunionesMap[preg.reunion_id];
+        const name = (r?.nombre || '').toLowerCase();
+        if (name.includes('test') || name.includes('prueba')) return false;
+
+        if (filtroDispositivo && r?.tipo_reunion !== filtroDispositivo) {
+          return false;
+        }
+
+        if (filtroFechaDesde && r?.fecha && r.fecha < filtroFechaDesde) {
+          return false;
+        }
+        if (filtroFechaHasta && r?.fecha && r.fecha > filtroFechaHasta) {
+          return false;
+        }
+
+        return true;
+      });
 
       const timelineMap = {};
 
       filteredAsistencias.forEach(asis => {
-        if (!asis.reunion) return;
+        const r = reunionesMap[asis.reunion_id] || { id: asis.reunion_id, nombre: 'Reunión sin título', fecha: new Date().toISOString() };
         timelineMap[asis.reunion_id] = {
-          reunion: asis.reunion,
+          reunion: r,
           asistio: asis.asistio,
           estado_convocatoria: asis.estado_convocatoria,
           como_se_entero: asis.como_se_entero,
@@ -797,10 +1008,10 @@ ${oradoresEfectivos.length > 0
       });
 
       filteredOradores.forEach(orad => {
-        if (!orad.reunion) return;
+        const r = reunionesMap[orad.reunion_id] || { id: orad.reunion_id, nombre: 'Reunión sin título', fecha: new Date().toISOString() };
         if (!timelineMap[orad.reunion_id]) {
           timelineMap[orad.reunion_id] = {
-            reunion: orad.reunion,
+            reunion: r,
             asistio: false,
             estado_convocatoria: '-',
             como_se_entero: null,
@@ -818,10 +1029,10 @@ ${oradoresEfectivos.length > 0
       });
 
       filteredPreguntas.forEach(preg => {
-        if (!preg.reunion) return;
+        const r = reunionesMap[preg.reunion_id] || { id: preg.reunion_id, nombre: 'Reunión sin título', fecha: new Date().toISOString() };
         if (!timelineMap[preg.reunion_id]) {
           timelineMap[preg.reunion_id] = {
-            reunion: preg.reunion,
+            reunion: r,
             asistio: false,
             estado_convocatoria: '-',
             como_se_entero: null,
@@ -835,7 +1046,7 @@ ${oradoresEfectivos.length > 0
       });
 
       const sortedTimeline = Object.values(timelineMap).sort((a, b) => {
-        return new Date(b.reunion.fecha) - new Date(a.reunion.fecha);
+        return new Date(b.reunion?.fecha || 0) - new Date(a.reunion?.fecha || 0);
       });
 
       setRadiografia(sortedTimeline);
@@ -856,77 +1067,210 @@ ${oradoresEfectivos.length > 0
     setVEmail(vecino.email || '');
     setVBarrio(vecino.barrio || 'Convocatoria Comunal');
     setVComuna(vecino.comuna || 'Comuna 1');
-    loadRadiografia(vecino.dni);
+    loadRadiografia(vecino.dni, topFilterDispositivo, topFilterMetric);
   };
 
-  const loadTopVecinos = async () => {
+  const loadTopVecinos = async (
+    dispositivo = topFilterDispositivo,
+    metric = topFilterMetric,
+    fechaDesde = topFilterFechaDesde,
+    fechaHasta = topFilterFechaHasta
+  ) => {
     try {
       setLoadingTop(true);
-      // Intentar consulta a la vista top_10_vecinos
-      const { data: viewData, error: viewError } = await supabase
-        .from('top_10_vecinos')
-        .select('*');
+      
+      let rawAsistencias = [];
+      let page = 0;
+      const pageSize = 1000;
 
-      if (!viewError && viewData) {
-        // Doble seguridad: filtrar vecinos de prueba del resultado de la vista por si no actualizaron el SQL
-        const filtered = viewData.filter(v => {
-          const name = (v.nombre || '').toLowerCase();
-          const lastName = (v.apellido || '').toLowerCase();
-          return !name.includes('test') && !name.includes('prueba') && !lastName.includes('test') && !lastName.includes('prueba');
-        });
-        setTopVecinos(filtered);
-      } else {
-        // Fallback en JS si no se ha creado la vista o falla
-        console.warn('La vista top_10_vecinos no existe. Usando fallback en JS...');
-        const { data: rawAsistencias, error: errAsist } = await supabase
+      while (true) {
+        const { data, error } = await supabase
           .from('inscripciones_asistencias')
-          .select('vecino_id, reunion:reuniones(nombre)');
+          .select('vecino_id, asistio, reunion_id')
+          .range(page * pageSize, (page + 1) * pageSize - 1);
 
-        if (!errAsist && rawAsistencias) {
-          // Filtrar reuniones test/prueba
-          const validAsistencias = rawAsistencias.filter(item => {
-            const name = item.reunion?.nombre?.toLowerCase() || '';
-            return !name.includes('test') && !name.includes('prueba');
+        if (error) {
+          console.error('Error fetching rawAsistencias page', page, error);
+          break;
+        }
+        if (!data || data.length === 0) break;
+        rawAsistencias = rawAsistencias.concat(data);
+        if (data.length < pageSize) break;
+        page++;
+      }
+
+      // Cargar oradores para asociar la cantidad de veces que fue orador efectivo ('hablo')
+      let rawOradores = [];
+      let pageOrad = 0;
+      while (true) {
+        const { data, error } = await supabase
+          .from('oradores')
+          .select('vecino_id, estado, reunion_id')
+          .range(pageOrad * pageSize, (pageOrad + 1) * pageSize - 1);
+
+        if (error) {
+          console.error('Error fetching rawOradores page', pageOrad, error);
+          break;
+        }
+        if (!data || data.length === 0) break;
+        rawOradores = rawOradores.concat(data);
+        if (data.length < pageSize) break;
+        pageOrad++;
+      }
+
+      // Recolectar e indexar datos de reuniones involucradas
+      const allReunionIds = [...new Set([
+        ...rawAsistencias.map(a => a.reunion_id),
+        ...rawOradores.map(o => o.reunion_id)
+      ])].filter(Boolean);
+
+      const reunionesMap = {};
+      const chunkSize = 500;
+      for (let i = 0; i < allReunionIds.length; i += chunkSize) {
+        const chunk = allReunionIds.slice(i, i + chunkSize);
+        const { data: rData, error: rErr } = await supabase
+          .from('reuniones')
+          .select('id, nombre, tipo_reunion, fecha')
+          .in('id', chunk);
+
+        if (!rErr && rData) {
+          rData.forEach(r => {
+            reunionesMap[r.id] = r;
           });
-
-          // Contar por vecino
-          const counts = {};
-          validAsistencias.forEach(item => {
-            counts[item.vecino_id] = (counts[item.vecino_id] || 0) + 1;
-          });
-
-          // Obtener los perfiles de vecinos correspondientes
-          const { data: vecinosList, error: vecError } = await supabase
-            .from('vecinos')
-            .select('dni, nombre, apellido, celular, email, comuna, barrio');
-
-          if (!vecError && vecinosList) {
-            const processed = vecinosList
-              .filter(v => {
-                const name = (v.nombre || '').toLowerCase();
-                const lastName = (v.apellido || '').toLowerCase();
-                return !name.includes('test') && !name.includes('prueba') && !lastName.includes('test') && !lastName.includes('prueba');
-              })
-              .map(v => ({
-                dni: v.dni,
-                nombre: v.nombre,
-                apellido: v.apellido,
-                celular: v.celular,
-                email: v.email,
-                comuna: v.comuna,
-                barrio: v.barrio,
-                total_inscripciones: counts[v.dni] || 0
-              }))
-              .filter(v => v.total_inscripciones > 0)
-              .sort((a, b) => b.total_inscripciones - a.total_inscripciones)
-              .slice(0, 10);
-
-            setTopVecinos(processed);
-          }
         }
       }
+
+      if (rawAsistencias.length > 0) {
+        // Filtrar reuniones de test/prueba, por dispositivo, por rango de fechas y por métrica
+        const validAsistencias = rawAsistencias.filter(item => {
+          if (!item.vecino_id) return false;
+          const r = reunionesMap[item.reunion_id];
+          const name = (r?.nombre || '').toLowerCase();
+          if (name.includes('test') || name.includes('prueba')) return false;
+          
+          if (dispositivo && r?.tipo_reunion !== dispositivo) {
+            return false;
+          }
+
+          if (fechaDesde && r?.fecha && r.fecha < fechaDesde) {
+            return false;
+          }
+          if (fechaHasta && r?.fecha && r.fecha > fechaHasta) {
+            return false;
+          }
+
+          if (metric === 'asistencias' && !item.asistio) {
+            return false;
+          }
+
+          return true;
+        });
+
+        // Filtrar oradores válidos (estado 'hablo') y acordes al dispositivo y fechas si aplica
+        const validOradores = rawOradores.filter(item => {
+          if (!item.vecino_id) return false;
+          if (item.estado !== 'hablo') return false;
+          const r = reunionesMap[item.reunion_id];
+          const name = (r?.nombre || '').toLowerCase();
+          if (name.includes('test') || name.includes('prueba')) return false;
+
+          if (dispositivo && r?.tipo_reunion !== dispositivo) {
+            return false;
+          }
+
+          if (fechaDesde && r?.fecha && r.fecha < fechaDesde) {
+            return false;
+          }
+          if (fechaHasta && r?.fecha && r.fecha > fechaHasta) {
+            return false;
+          }
+
+          return true;
+        });
+
+        const oradorCounts = {};
+        validOradores.forEach(item => {
+          const cleanId = String(item.vecino_id).trim();
+          if (cleanId) {
+            oradorCounts[cleanId] = (oradorCounts[cleanId] || 0) + 1;
+          }
+        });
+
+        // Contar por vecino (normalizando DNI como String limpio)
+        const counts = {};
+        validAsistencias.forEach(item => {
+          const cleanId = String(item.vecino_id).trim();
+          if (cleanId) {
+            counts[cleanId] = (counts[cleanId] || 0) + 1;
+          }
+        });
+
+        // Ordenar DNIs por frecuencia descendente
+        const sortedDniEntries = Object.entries(counts)
+          .sort((a, b) => b[1] - a[1]);
+
+        // Tomar DNIs candidatos top (ej: los 60 primeros)
+        const topCandidateDnis = sortedDniEntries.slice(0, 60).map(entry => entry[0]);
+
+        if (topCandidateDnis.length > 0) {
+          // Consultar los datos de perfil de esos vecinos específicos
+          let vecinosList = [];
+          for (let i = 0; i < topCandidateDnis.length; i += chunkSize) {
+            const chunk = topCandidateDnis.slice(i, i + chunkSize);
+            const { data: vData, error: vecError } = await supabase
+              .from('vecinos')
+              .select('dni, nombre, apellido, celular, email, comuna, barrio')
+              .in('dni', chunk);
+
+            if (!vecError && vData) {
+              vecinosList = vecinosList.concat(vData);
+            }
+          }
+
+          // Crear un mapa de perfiles por DNI limpio
+          const vecinosMap = {};
+          vecinosList.forEach(v => {
+            if (v.dni !== null && v.dni !== undefined) {
+              vecinosMap[String(v.dni).trim()] = v;
+            }
+          });
+
+          // Cruzar y armar el Top 10 ignorando registros de test
+          const processed = sortedDniEntries
+            .map(([dniStr, countVal]) => {
+              const profile = vecinosMap[dniStr];
+              if (!profile) return null;
+              
+              const name = (profile.nombre || '').toLowerCase();
+              const lastName = (profile.apellido || '').toLowerCase();
+              if (name.includes('test') || name.includes('prueba') || lastName.includes('test') || lastName.includes('prueba')) {
+                return null;
+              }
+
+              return {
+                dni: profile.dni,
+                nombre: profile.nombre,
+                apellido: profile.apellido,
+                celular: profile.celular,
+                email: profile.email,
+                comuna: profile.comuna,
+                barrio: profile.barrio,
+                total_count: countVal,
+                orador_count: oradorCounts[dniStr] || 0
+              };
+            })
+            .filter(Boolean)
+            .slice(0, 10);
+
+          setTopVecinos(processed);
+        } else {
+          setTopVecinos([]);
+        }
+      } else {
+        setTopVecinos([]);
+      }
     } catch (err) {
-      console.error(err);
+      console.error('Error loadTopVecinos:', err);
     } finally {
       setLoadingTop(false);
     }
@@ -956,6 +1300,388 @@ ${oradoresEfectivos.length > 0
     const cleanName = selectedReunionInscriptos.nombre.replace(/[^a-zA-Z0-9]/g, '_');
     const fileName = `Inscriptos_${cleanName}.xlsx`;
     XLSX.writeFile(workbook, fileName);
+  };
+
+  // Exportar el Padrón Central de Vecinos Completo a Excel (XLSX)
+  const handleExportFullPadronXLS = async () => {
+    try {
+      setExportingPadron(true);
+
+      let rawVecinos = [];
+      let page = 0;
+      const pageSize = 1000;
+
+      while (true) {
+        const { data, error } = await supabase
+          .from('vecinos')
+          .select('dni, nombre, apellido, celular, email, comuna, barrio, created_at')
+          .range(page * pageSize, (page + 1) * pageSize - 1);
+
+        if (error) {
+          console.error('Error fetching vecinos page', page, error);
+          break;
+        }
+        if (!data || data.length === 0) break;
+        rawVecinos = rawVecinos.concat(data);
+        if (data.length < pageSize) break;
+        page++;
+      }
+
+      let rawAsistencias = [];
+      page = 0;
+      while (true) {
+        const { data, error } = await supabase
+          .from('inscripciones_asistencias')
+          .select('vecino_id, asistio')
+          .range(page * pageSize, (page + 1) * pageSize - 1);
+
+        if (error) break;
+        if (!data || data.length === 0) break;
+        rawAsistencias = rawAsistencias.concat(data);
+        if (data.length < pageSize) break;
+        page++;
+      }
+
+      const inscripcionesCounts = {};
+      const asistenciasCounts = {};
+      rawAsistencias.forEach(a => {
+        if (!a.vecino_id) return;
+        const cleanId = String(a.vecino_id).trim();
+        inscripcionesCounts[cleanId] = (inscripcionesCounts[cleanId] || 0) + 1;
+        if (a.asistio) {
+          asistenciasCounts[cleanId] = (asistenciasCounts[cleanId] || 0) + 1;
+        }
+      });
+
+      let rawOradores = [];
+      page = 0;
+      while (true) {
+        const { data, error } = await supabase
+          .from('oradores')
+          .select('vecino_id, estado')
+          .range(page * pageSize, (page + 1) * pageSize - 1);
+
+        if (error) break;
+        if (!data || data.length === 0) break;
+        rawOradores = rawOradores.concat(data);
+        if (data.length < pageSize) break;
+        page++;
+      }
+
+      const oradorCounts = {};
+      rawOradores.forEach(o => {
+        if (!o.vecino_id || o.estado !== 'hablo') return;
+        const cleanId = String(o.vecino_id).trim();
+        oradorCounts[cleanId] = (oradorCounts[cleanId] || 0) + 1;
+      });
+
+      const exportData = rawVecinos.map(v => {
+        const cleanDni = String(v.dni || '').trim();
+        return {
+          'DNI / Clave': cleanDni,
+          'Nombre': v.nombre || '',
+          'Apellido': v.apellido || '',
+          'Celular': v.celular || '',
+          'Email': v.email || '',
+          'Comuna': v.comuna || '',
+          'Barrio': v.barrio || '',
+          'Total Inscripciones': inscripcionesCounts[cleanDni] || 0,
+          'Total Asistencias': asistenciasCounts[cleanDni] || 0,
+          'Total Oratorias': oradorCounts[cleanDni] || 0,
+          'Fecha Registro': v.created_at ? v.created_at.split('T')[0] : ''
+        };
+      });
+
+      const worksheet = XLSX.utils.json_to_sheet(exportData);
+      const workbook = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(workbook, worksheet, 'Padron_Central');
+
+      const todayStr = new Date().toISOString().split('T')[0];
+      XLSX.writeFile(workbook, `Padron_Central_Vecinos_${todayStr}.xlsx`);
+    } catch (err) {
+      console.error('Error al exportar padrón:', err);
+      alert('Ocurrió un error al exportar el padrón central.');
+    } finally {
+      setExportingPadron(false);
+    }
+  };
+
+  // Exportar la Base Histórica Completa de Inscripciones y Asistencias a Excel (XLSX)
+  const handleExportFullAsistenciasXLS = async () => {
+    try {
+      setExportingAsistencias(true);
+
+      const pageSize = 1000;
+
+      let reunionesMap = {};
+      let page = 0;
+      while (true) {
+        const { data, error } = await supabase
+          .from('reuniones')
+          .select('id, nombre, fecha, tipo_reunion, funcionario, comuna, barrio, lugar')
+          .range(page * pageSize, (page + 1) * pageSize - 1);
+        if (error || !data || data.length === 0) break;
+        data.forEach(r => { reunionesMap[r.id] = r; });
+        if (data.length < pageSize) break;
+        page++;
+      }
+
+      let vecinosMap = {};
+      page = 0;
+      while (true) {
+        const { data, error } = await supabase
+          .from('vecinos')
+          .select('dni, nombre, apellido, celular, email, comuna, barrio')
+          .range(page * pageSize, (page + 1) * pageSize - 1);
+        if (error || !data || data.length === 0) break;
+        data.forEach(v => {
+          if (v.dni !== null && v.dni !== undefined) {
+            vecinosMap[String(v.dni).trim()] = v;
+          }
+        });
+        if (data.length < pageSize) break;
+        page++;
+      }
+
+      let oradoresMap = {};
+      page = 0;
+      while (true) {
+        const { data, error } = await supabase
+          .from('oradores')
+          .select('vecino_id, reunion_id, estado, tema_original, tema_efectivo')
+          .range(page * pageSize, (page + 1) * pageSize - 1);
+        if (error || !data || data.length === 0) break;
+        data.forEach(o => {
+          if (o.vecino_id && o.reunion_id) {
+            oradoresMap[`${String(o.vecino_id).trim()}_${o.reunion_id}`] = o;
+          }
+        });
+        if (data.length < pageSize) break;
+        page++;
+      }
+
+      let rawAsistencias = [];
+      page = 0;
+      while (true) {
+        const { data, error } = await supabase
+          .from('inscripciones_asistencias')
+          .select('*')
+          .range(page * pageSize, (page + 1) * pageSize - 1);
+        if (error || !data || data.length === 0) break;
+        rawAsistencias = rawAsistencias.concat(data);
+        if (data.length < pageSize) break;
+        page++;
+      }
+
+      const exportData = rawAsistencias.map(a => {
+        const cleanDni = String(a.vecino_id || '').trim();
+        const vec = vecinosMap[cleanDni] || {};
+        const reu = reunionesMap[a.reunion_id] || {};
+        const oradKey = `${cleanDni}_${a.reunion_id}`;
+        const orad = oradoresMap[oradKey];
+
+        return {
+          'DNI Vecino': cleanDni,
+          'Nombre Vecino': vec.nombre || '',
+          'Apellido Vecino': vec.apellido || '',
+          'Celular': vec.celular || '',
+          'Email': vec.email || '',
+          'Comuna Vecino': vec.comuna || '',
+          'Barrio Vecino': vec.barrio || '',
+          'Fecha Reunión': reu.fecha || '',
+          'Nombre Reunión': reu.nombre || '',
+          'Tipo Reunión': reu.tipo_reunion || '',
+          'Funcionario': reu.funcionario || '',
+          'Comuna Reunión': reu.comuna || '',
+          'Barrio Reunión': reu.barrio || '',
+          'Lugar': reu.lugar || '',
+          'Asistió': a.asistio ? 'Sí' : 'No',
+          'Estado Convocatoria': a.estado_convocatoria || '',
+          'Cómo se Enteró': a.como_se_entero || '',
+          'Hora Marcado': a.hora_marcado || '',
+          'Fue Orador': orad ? (orad.estado === 'hablo' ? 'Sí' : 'Anotado') : 'No',
+          'Tema Orador': orad ? (orad.tema_efectivo || orad.tema_original || '') : ''
+        };
+      });
+
+      const worksheet = XLSX.utils.json_to_sheet(exportData);
+      const workbook = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(workbook, worksheet, 'Base_Historica_Asistencias');
+
+      const todayStr = new Date().toISOString().split('T')[0];
+      XLSX.writeFile(workbook, `Base_Historica_Asistencias_${todayStr}.xlsx`);
+    } catch (err) {
+      console.error('Error al exportar base histórica:', err);
+      alert('Ocurrió un error al exportar la base histórica de asistencias.');
+    } finally {
+      setExportingAsistencias(false);
+    }
+  };
+
+  // Exportar el Ranking Completo de Vecinos según los Filtros Activos del Top 10 a Excel (XLSX)
+  const handleExportTopRankingXLS = async () => {
+    try {
+      setExportingTopRanking(true);
+      
+      const dispositivo = topFilterDispositivo;
+      const metric = topFilterMetric;
+      const fechaDesde = topFilterFechaDesde;
+      const fechaHasta = topFilterFechaHasta;
+      const pageSize = 1000;
+
+      let rawAsistencias = [];
+      let page = 0;
+      while (true) {
+        const { data, error } = await supabase
+          .from('inscripciones_asistencias')
+          .select('vecino_id, asistio, reunion_id')
+          .range(page * pageSize, (page + 1) * pageSize - 1);
+
+        if (error || !data || data.length === 0) break;
+        rawAsistencias = rawAsistencias.concat(data);
+        if (data.length < pageSize) break;
+        page++;
+      }
+
+      let rawOradores = [];
+      let pageOrad = 0;
+      while (true) {
+        const { data, error } = await supabase
+          .from('oradores')
+          .select('vecino_id, estado, reunion_id')
+          .range(pageOrad * pageSize, (pageOrad + 1) * pageSize - 1);
+
+        if (error || !data || data.length === 0) break;
+        rawOradores = rawOradores.concat(data);
+        if (data.length < pageSize) break;
+        pageOrad++;
+      }
+
+      const allReunionIds = [...new Set([
+        ...rawAsistencias.map(a => a.reunion_id),
+        ...rawOradores.map(o => o.reunion_id)
+      ])].filter(Boolean);
+
+      const reunionesMap = {};
+      const chunkSize = 500;
+      for (let i = 0; i < allReunionIds.length; i += chunkSize) {
+        const chunk = allReunionIds.slice(i, i + chunkSize);
+        const { data: rData } = await supabase
+          .from('reuniones')
+          .select('id, nombre, tipo_reunion, fecha')
+          .in('id', chunk);
+
+        if (rData) {
+          rData.forEach(r => { reunionesMap[r.id] = r; });
+        }
+      }
+
+      const validAsistencias = rawAsistencias.filter(item => {
+        if (!item.vecino_id) return false;
+        const r = reunionesMap[item.reunion_id];
+        const name = (r?.nombre || '').toLowerCase();
+        if (name.includes('test') || name.includes('prueba')) return false;
+        if (dispositivo && r?.tipo_reunion !== dispositivo) return false;
+        if (fechaDesde && r?.fecha && r.fecha < fechaDesde) return false;
+        if (fechaHasta && r?.fecha && r.fecha > fechaHasta) return false;
+        if (metric === 'asistencias' && !item.asistio) return false;
+        return true;
+      });
+
+      const validOradores = rawOradores.filter(item => {
+        if (!item.vecino_id || item.estado !== 'hablo') return false;
+        const r = reunionesMap[item.reunion_id];
+        const name = (r?.nombre || '').toLowerCase();
+        if (name.includes('test') || name.includes('prueba')) return false;
+        if (dispositivo && r?.tipo_reunion !== dispositivo) return false;
+        if (fechaDesde && r?.fecha && r.fecha < fechaDesde) return false;
+        if (fechaHasta && r?.fecha && r.fecha > fechaHasta) return false;
+        return true;
+      });
+
+      const oradorCounts = {};
+      validOradores.forEach(item => {
+        const cleanId = String(item.vecino_id).trim();
+        if (cleanId) oradorCounts[cleanId] = (oradorCounts[cleanId] || 0) + 1;
+      });
+
+      const counts = {};
+      validAsistencias.forEach(item => {
+        const cleanId = String(item.vecino_id).trim();
+        if (cleanId) counts[cleanId] = (counts[cleanId] || 0) + 1;
+      });
+
+      const sortedDniEntries = Object.entries(counts)
+        .sort((a, b) => b[1] - a[1]);
+
+      if (sortedDniEntries.length === 0) {
+        alert('No hay datos para exportar con los filtros seleccionados.');
+        return;
+      }
+
+      const targetDnis = sortedDniEntries.map(e => e[0]);
+      let vecinosMap = {};
+
+      for (let i = 0; i < targetDnis.length; i += chunkSize) {
+        const chunk = targetDnis.slice(i, i + chunkSize);
+        const { data: vData } = await supabase
+          .from('vecinos')
+          .select('dni, nombre, apellido, celular, email, comuna, barrio')
+          .in('dni', chunk);
+
+        if (vData) {
+          vData.forEach(v => {
+            if (v.dni !== null && v.dni !== undefined) {
+              vecinosMap[String(v.dni).trim()] = v;
+            }
+          });
+        }
+      }
+
+      let rank = 1;
+      const exportData = sortedDniEntries.map(([dniStr, countVal]) => {
+        const profile = vecinosMap[dniStr];
+        if (!profile) return null;
+
+        const name = (profile.nombre || '').toLowerCase();
+        const lastName = (profile.apellido || '').toLowerCase();
+        if (name.includes('test') || name.includes('prueba') || lastName.includes('test') || lastName.includes('prueba')) {
+          return null;
+        }
+
+        return {
+          'Posición (#)': rank++,
+          'DNI / Clave': profile.dni,
+          'Nombre': profile.nombre || '',
+          'Apellido': profile.apellido || '',
+          'Comuna': profile.comuna || '',
+          'Barrio': profile.barrio || '',
+          'Celular': profile.celular || '',
+          'Email': profile.email || '',
+          'Métrica': metric === 'asistencias' ? 'Asistencias Efectivas' : 'Inscripciones',
+          'Dispositivo Filtrado': dispositivo || 'Todos los dispositivos',
+          'Rango Fechas': (fechaDesde || fechaHasta) ? `${fechaDesde || 'Inicio'} a ${fechaHasta || 'Fin'}` : 'Sin filtro de fecha',
+          'Cantidad Total': countVal,
+          'Veces Orador': oradorCounts[dniStr] || 0
+        };
+      }).filter(Boolean);
+
+      const worksheet = XLSX.utils.json_to_sheet(exportData);
+      const workbook = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(workbook, worksheet, 'Ranking_Vecinos');
+
+      const cleanDisp = (dispositivo || 'Todos_Dispositivos').replace(/[^a-zA-Z0-9]/g, '_');
+      const cleanRango = (fechaDesde || fechaHasta) ? `_${fechaDesde || 'inicio'}_a_${fechaHasta || 'fin'}` : '';
+      const todayStr = new Date().toISOString().split('T')[0];
+      const fileName = `Ranking_Vecinos_${metric}_${cleanDisp}${cleanRango}_${todayStr}.xlsx`;
+
+      XLSX.writeFile(workbook, fileName);
+    } catch (err) {
+      console.error('Error al exportar ranking top:', err);
+      alert('Ocurrió un error al exportar el ranking filtrado.');
+    } finally {
+      setExportingTopRanking(false);
+    }
   };
 
   const handleVaciarInscriptos = async () => {
@@ -1629,7 +2355,7 @@ ${oradoresEfectivos.length > 0
         // Registrar asistencia (Presente)
         await guardarAsistencia(selectedMeetingId, finalDni, true, {
           estado_convocatoria: 'walk_in',
-          como_se_entero: 'Otro'
+          como_se_entero: 'Walk-in'
         });
         registeredPresent++;
       } catch (rowError) {
@@ -1901,7 +2627,7 @@ ${oradoresEfectivos.length > 0
           // Registrar asistencia presencial (indispensable para vincular oradores)
           await guardarAsistencia(selectedMeetingId, row.vecinoDni, true, {
             estado_convocatoria: 'walk_in',
-            como_se_entero: 'Otro'
+            como_se_entero: 'Walk-in'
           });
         }
 
@@ -2062,9 +2788,14 @@ ${oradoresEfectivos.length > 0
               </p>
             </div>
             {isCercaniaOrGerencia && (
-              <button className="btn btn-highlight" onClick={onCreateMeetingClick}>
+              <a 
+                href="?view=create_reunion" 
+                target="_blank" 
+                className="btn btn-highlight"
+                style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', textDecoration: 'none' }}
+              >
                 <Plus size={18} /> Nueva Reunión
-              </button>
+              </a>
             )}
           </div>
 
@@ -2123,33 +2854,52 @@ ${oradoresEfectivos.length > 0
             </div>
           )}
 
-          {/* Grilla de Reuniones con filtro libre */}
+          {/* Grilla de Reuniones con filtro libre y por tipo de evento */}
           <div className="card">
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '2rem', flexWrap: 'wrap', gap: '12px' }}>
               <h3 style={{ fontSize: '1.25rem', margin: 0, display: 'flex', alignItems: 'center', gap: '8px', color: 'var(--color-primary)', fontWeight: '700' }}>
                 <Calendar size={22} style={{ color: 'var(--color-highlight)' }} />
                 Cronograma de Reuniones
               </h3>
-              <input
-                type="text"
-                className="form-control"
-                placeholder="Filtrar por funcionario, fecha, tipo..."
-                value={searchTerm}
-                onChange={(e) => setSearchTerm(e.target.value)}
-                style={{ maxWidth: '300px', fontSize: '0.85rem', padding: '8px 14px', borderRadius: '8px', border: '1px solid var(--color-border)' }}
-              />
+              <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
+                <select
+                  className="form-control"
+                  value={filterTipoReunion}
+                  onChange={(e) => setFilterTipoReunion(e.target.value)}
+                  style={{ maxWidth: '240px', fontSize: '0.85rem', padding: '8px 12px', borderRadius: '8px', border: '1px solid var(--color-border)', backgroundColor: '#ffffff' }}
+                >
+                  <option value="">Todos los Tipos de Evento</option>
+                  {Object.values(TIPOS_REUNION).map(val => (
+                    <option key={val} value={val}>{val}</option>
+                  ))}
+                </select>
+                <input
+                  type="text"
+                  className="form-control"
+                  placeholder="Buscar funcionario, fecha, lugar..."
+                  value={searchTerm}
+                  onChange={(e) => setSearchTerm(e.target.value)}
+                  style={{ maxWidth: '280px', fontSize: '0.85rem', padding: '8px 14px', borderRadius: '8px', border: '1px solid var(--color-border)' }}
+                />
+              </div>
             </div>
 
             {/* Clasificar y Renderizar las Secciones Temporales */}
             {(() => {
               const filtered = reuniones.filter(r => {
                 const term = searchTerm.toLowerCase();
-                return (
+                const matchesSearch = (
                   (r.nombre && r.nombre.toLowerCase().includes(term)) ||
                   (r.funcionario && r.funcionario.toLowerCase().includes(term)) ||
                   (r.fecha && r.fecha.toLowerCase().includes(term)) ||
-                  (r.tipo_reunion && r.tipo_reunion.toLowerCase().includes(term))
+                  (r.tipo_reunion && r.tipo_reunion.toLowerCase().includes(term)) ||
+                  (r.comuna && r.comuna.toLowerCase().includes(term)) ||
+                  (r.lugar && r.lugar.toLowerCase().includes(term))
                 );
+
+                const matchesTipo = !filterTipoReunion || r.tipo_reunion === filterTipoReunion;
+
+                return matchesSearch && matchesTipo;
               });
 
               if (filtered.length === 0) {
@@ -2163,15 +2913,46 @@ ${oradoresEfectivos.length > 0
 
               const hoy = filtered.filter(r => getMeetingCategory(r.fecha) === 'hoy');
               const semana = filtered.filter(r => getMeetingCategory(r.fecha) === 'semana');
-              const mes = filtered.filter(r => getMeetingCategory(r.fecha) === 'mes');
-              const historicas = filtered.filter(r => getMeetingCategory(r.fecha) === 'historicas');
+              const proximaSemana = filtered.filter(r => getMeetingCategory(r.fecha) === 'proxima_semana');
+              const mes = showHistorical ? filtered.filter(r => getMeetingCategory(r.fecha) === 'mes') : [];
+              const historicas = showHistorical ? filtered.filter(r => getMeetingCategory(r.fecha) === 'historicas') : [];
+              
+              // Si no se muestra histórico y no hay reuniones de hoy, esta semana ni la próxima semana, mostramos las recientes
+              const recientes = (!showHistorical && hoy.length === 0 && semana.length === 0 && proximaSemana.length === 0) ? filtered : [];
 
               return (
                 <>
-                  {renderMeetingTableSection('Reuniones de HOY', '📅', hoy)}
-                  {renderMeetingTableSection('Reuniones de esta semana', '🗓️', semana)}
-                  {renderMeetingTableSection('Reuniones de este mes', '📆', mes)}
-                  {renderMeetingTableSection('Reuniones históricas', '🏛️', historicas)}
+                  {renderMeetingTableSection('Reuniones de HOY', '📅', hoy, true)}
+                  {renderMeetingTableSection('Reuniones de esta semana', '🗓️', semana, true)}
+                  {renderMeetingTableSection('Reuniones de la PRÓXIMA SEMANA', '🚀', proximaSemana, true)}
+                  {renderMeetingTableSection('Reuniones Recientes', '⏱️', recientes)}
+                  {showHistorical && renderMeetingTableSection('Reuniones de este mes', '📆', mes)}
+                  {showHistorical && renderMeetingTableSection('Reuniones históricas', '🏛️', historicas)}
+                  
+                  {!showHistorical && (
+                    <div style={{ display: 'flex', justifyContent: 'center', marginTop: '2rem', marginBottom: '2.5rem' }}>
+                      <a
+                        href="?view=dashboard&show_historical=true"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="btn btn-highlight"
+                        style={{
+                          fontWeight: 'bold',
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          gap: '8px',
+                          padding: '12px 28px',
+                          backgroundColor: 'var(--color-highlight)',
+                          color: 'var(--color-primary)',
+                          borderRadius: '8px',
+                          textDecoration: 'none',
+                          boxShadow: '0 4px 6px -1px rgba(0,0,0,0.1)'
+                        }}
+                      >
+                        {loadingHistorical ? 'Cargando Historial...' : '🏛️ Ver todo el Historial de Reuniones'}
+                      </a>
+                    </div>
+                  )}
                 </>
               );
             })()}
@@ -2184,6 +2965,8 @@ ${oradoresEfectivos.length > 0
             <div className="decor-tab-mint"></div>
             <div className="decor-tab-yellow"></div>
           </div>
+
+
 
           <div style={{ display: 'flex', gap: '1.5rem', flexWrap: 'wrap' }}>
             {/* Buscador de Padrón y Resultados */}
@@ -2250,12 +3033,89 @@ ${oradoresEfectivos.length > 0
                 )}
               </div>
 
-              {/* Card de Top 10 Vecinos con más inscripciones */}
+              {/* Card de Top 10 Vecinos Participativos */}
               <div className="card" style={{ margin: 0 }}>
-                <h3 style={{ fontSize: '1.15rem', color: 'var(--color-primary)', marginBottom: '1rem', display: 'flex', alignItems: 'center', gap: '8px' }}>
-                  <Award size={18} style={{ color: 'var(--color-highlight)' }} />
-                  Top 10 Vecinos Participativos
-                </h3>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.75rem', flexWrap: 'wrap', gap: '8px' }}>
+                  <h3 style={{ fontSize: '1.15rem', color: 'var(--color-primary)', margin: 0, display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <Award size={18} style={{ color: 'var(--color-highlight)' }} />
+                    Top 10 Vecinos Participativos
+                  </h3>
+                  <div style={{ display: 'flex', gap: '6px', alignItems: 'center', flexWrap: 'wrap' }}>
+                    <select 
+                      value={topFilterMetric} 
+                      onChange={(e) => setTopFilterMetric(e.target.value)} 
+                      className="form-control" 
+                      style={{ width: 'auto', padding: '4px 8px', fontSize: '0.8rem', height: 'auto', fontWeight: '600' }}
+                    >
+                      <option value="inscripciones">Por Inscripción</option>
+                      <option value="asistencias">Por Asistencia</option>
+                    </select>
+
+                    <select 
+                      value={topFilterDispositivo} 
+                      onChange={(e) => setTopFilterDispositivo(e.target.value)} 
+                      className="form-control" 
+                      style={{ width: 'auto', padding: '4px 8px', fontSize: '0.8rem', height: 'auto' }}
+                    >
+                      <option value="">Todos los dispositivos</option>
+                      <option value="Encuentro con Vecinos">Encuentro con Vecinos</option>
+                      <option value="Reunion Tematica">Reunión Temática</option>
+                      <option value="Uno a Uno">Uno a Uno</option>
+                      <option value="Seguridad en Tu Barrio">Seguridad en Tu Barrio</option>
+                      <option value="Cafe con Vecinos">Café con Vecinos</option>
+                      <option value="Procesos Participativos - Co Creacion">Procesos Co-Creación</option>
+                      <option value="Procesos Participativos - Reunion Informativa">Reunión Informativa</option>
+                      <option value="Primera Persona">Primera Persona</option>
+                    </select>
+
+                    <div style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', fontSize: '0.75rem', color: 'var(--color-text-muted)', backgroundColor: '#F1F5F9', padding: '2px 6px', borderRadius: '6px' }}>
+                      <span>Desde:</span>
+                      <input
+                        type="date"
+                        value={topFilterFechaDesde}
+                        onChange={(e) => setTopFilterFechaDesde(e.target.value)}
+                        className="form-control"
+                        style={{ width: 'auto', padding: '2px 4px', fontSize: '0.75rem', height: 'auto' }}
+                      />
+                    </div>
+
+                    <div style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', fontSize: '0.75rem', color: 'var(--color-text-muted)', backgroundColor: '#F1F5F9', padding: '2px 6px', borderRadius: '6px' }}>
+                      <span>Hasta:</span>
+                      <input
+                        type="date"
+                        value={topFilterFechaHasta}
+                        onChange={(e) => setTopFilterFechaHasta(e.target.value)}
+                        className="form-control"
+                        style={{ width: 'auto', padding: '2px 4px', fontSize: '0.75rem', height: 'auto' }}
+                      />
+                    </div>
+
+                    {(topFilterFechaDesde || topFilterFechaHasta) && (
+                      <button
+                        onClick={() => { setTopFilterFechaDesde(''); setTopFilterFechaHasta(''); }}
+                        style={{ background: 'none', border: 'none', color: '#EF4444', fontSize: '0.75rem', cursor: 'pointer', textDecoration: 'underline', padding: '2px 4px' }}
+                        title="Limpiar rango de fechas"
+                      >
+                        Limpiar
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem', flexWrap: 'wrap', gap: '8px', borderBottom: '1px solid #F1F5F9', paddingBottom: '8px' }}>
+                  <span style={{ fontSize: '0.75rem', color: 'var(--color-text-muted)', fontStyle: 'italic' }}>
+                    Vista previa de los 10 principales | Ranking completo disponible en Excel
+                  </span>
+                  <button
+                    onClick={handleExportTopRankingXLS}
+                    disabled={exportingTopRanking}
+                    className="btn btn-outline"
+                    style={{ fontSize: '0.75rem', padding: '4px 10px', display: 'inline-flex', alignItems: 'center', gap: '4px', backgroundColor: '#FFFFFF', fontWeight: '600' }}
+                  >
+                    <Download size={13} />
+                    {exportingTopRanking ? 'Exportando Ranking...' : 'Exportar Ranking Filtrado (XLSX)'}
+                  </button>
+                </div>
 
                 {loadingTop ? (
                   <div style={{ textAlign: 'center', padding: '2rem' }}>
@@ -2263,16 +3123,23 @@ ${oradoresEfectivos.length > 0
                   </div>
                 ) : topVecinos.length === 0 ? (
                   <p style={{ margin: 0, fontSize: '0.85rem', color: 'var(--color-text-muted)', fontStyle: 'italic', textAlign: 'center', padding: '1rem' }}>
-                    No hay datos de inscripciones cargados en el sistema.
+                    No hay datos de {topFilterMetric === 'asistencias' ? 'asistencias' : 'inscripciones'} cargados en el sistema.
                   </p>
                 ) : (
                   <div className="table-responsive" style={{ marginTop: 0, maxHeight: '350px', overflowY: 'auto' }}>
                     <table className="table" style={{ margin: 0, width: '100%' }}>
                       <thead>
                         <tr>
-                          <th style={{ padding: '6px 4px', fontSize: '0.75rem', width: '35px' }}>#</th>
+                          <th style={{ padding: '6px 4px', fontSize: '0.75rem', width: '30px' }}>#</th>
                           <th style={{ padding: '6px 4px', fontSize: '0.75rem' }}>Vecino</th>
-                          <th style={{ padding: '6px 4px', fontSize: '0.75rem', textAlign: 'center', width: '45px' }}>Insc.</th>
+                          <th style={{ padding: '6px 4px', fontSize: '0.75rem', textAlign: 'center', width: '45px' }}>
+                            {topFilterMetric === 'asistencias' ? 'Asist.' : 'Insc.'}
+                          </th>
+                          {topFilterMetric === 'asistencias' && (
+                            <th style={{ padding: '6px 4px', fontSize: '0.75rem', textAlign: 'center', width: '50px' }}>
+                              Orador
+                            </th>
+                          )}
                         </tr>
                       </thead>
                       <tbody>
@@ -2294,10 +3161,17 @@ ${oradoresEfectivos.length > 0
                               <div style={{ fontSize: '0.7rem', color: 'var(--color-text-muted)' }}>Comuna: {v.comuna || 'Comuna 1'}</div>
                             </td>
                             <td style={{ padding: '6px 4px', fontSize: '0.8rem', textAlign: 'center' }}>
-                              <span className="badge badge-success" style={{ fontSize: '0.7rem', padding: '2px 6px', fontWeight: 'bold' }}>
-                                {v.total_inscripciones}
+                              <span className={`badge ${topFilterMetric === 'asistencias' ? 'badge-primary' : 'badge-success'}`} style={{ fontSize: '0.7rem', padding: '2px 6px', fontWeight: 'bold' }}>
+                                {v.total_count}
                               </span>
                             </td>
+                            {topFilterMetric === 'asistencias' && (
+                              <td style={{ padding: '6px 4px', fontSize: '0.8rem', textAlign: 'center' }}>
+                                <span className="badge badge-info" style={{ fontSize: '0.7rem', padding: '2px 6px', fontWeight: 'bold', backgroundColor: '#DEF7EC', color: '#03543F' }}>
+                                  🎤 {v.orador_count || 0}
+                                </span>
+                              </td>
+                            )}
                           </tr>
                         ))}
                       </tbody>
@@ -2440,10 +3314,17 @@ ${oradoresEfectivos.length > 0
               {/* TARJETA DE RADIOGRAFIA DEL VECINO */}
               {selectedVecino && (
                 <div className="card" style={{ margin: 0, borderTop: '4px solid var(--color-mint)', backgroundColor: '#FFFFFF' }}>
-                  <h3 style={{ fontSize: '1.25rem', color: 'var(--color-primary)', marginBottom: '1rem', display: 'flex', alignItems: 'center', gap: '8px' }}>
-                    <Activity size={20} style={{ color: 'var(--color-highlight)' }} />
-                    Radiografía del Vecino: Historial de Participación
-                  </h3>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem', flexWrap: 'wrap', gap: '8px' }}>
+                    <h3 style={{ fontSize: '1.25rem', color: 'var(--color-primary)', margin: 0, display: 'flex', alignItems: 'center', gap: '8px' }}>
+                      <Activity size={20} style={{ color: 'var(--color-highlight)' }} />
+                      Radiografía del Vecino: Historial de Participación
+                    </h3>
+                    {(topFilterDispositivo || topFilterMetric === 'asistencias' || topFilterFechaDesde || topFilterFechaHasta) && (
+                      <span style={{ fontSize: '0.75rem', fontWeight: '500', color: 'var(--color-highlight)', backgroundColor: '#F0FDF4', border: '1px solid #BBF7D0', padding: '3px 8px', borderRadius: '6px' }}>
+                        Filtro activo: {topFilterMetric === 'asistencias' ? 'Solo Asistencias' : 'Inscripciones'} {topFilterDispositivo ? `(${topFilterDispositivo})` : ''} {(topFilterFechaDesde || topFilterFechaHasta) ? `[${topFilterFechaDesde || '...'} a ${topFilterFechaHasta || '...'}]` : ''}
+                      </span>
+                    )}
+                  </div>
 
                   {loadingRadiografia ? (
                     <div style={{ textAlign: 'center', padding: '2rem' }}>
@@ -3178,7 +4059,10 @@ ${oradoresEfectivos.length > 0
                                 </td>
                                 <td>
                                   <span className="badge badge-info" style={{ fontSize: '0.75rem', backgroundColor: '#F1F5F9', color: 'var(--color-primary)' }}>
-                                    {item.como_se_entero || item.estado_convocatoria || 'Orión'}
+                                    {item.como_se_entero === 'Territorio' && item.agente_territorio
+                                      ? `Territorio (${item.agente_territorio.nombre_completo})`
+                                      : (item.como_se_entero || item.estado_convocatoria || 'Orión')
+                                    }
                                   </span>
                                 </td>
                                 <td style={{ textAlign: 'center' }}>

@@ -25,6 +25,14 @@ const COMUNAS = [
   "Comuna 15"
 ];
 
+const EJES = [
+  "Eje Norte",
+  "Eje Sur",
+  "Eje Este",
+  "Eje Oeste",
+  "Movilidad"
+];
+
 const BARRIOS = [
   "Convocatoria Comunal",
   "Agronomía",
@@ -82,6 +90,9 @@ export default function ABMReuniones({ onBack, onSaveSuccess }) {
   const [fecha, setFecha] = useState('');
   const [lugar, setLugar] = useState('');
   const [comuna, setComuna] = useState('Comuna 1');
+  const [selectedComunas, setSelectedComunas] = useState([]);
+  const [showComunaDropdown, setShowComunaDropdown] = useState(false);
+  const dropdownComunaRef = useRef(null);
   const [barrio, setBarrio] = useState('Convocatoria Comunal');
   const [funcionario, setFuncionario] = useState('');
   const [tipoReunion, setTipoReunion] = useState(TIPOS_REUNION.ENCUENTRO);
@@ -118,12 +129,24 @@ export default function ABMReuniones({ onBack, onSaveSuccess }) {
       if (dropdownRef.current && !dropdownRef.current.contains(event.target)) {
         setShowFuncDropdown(false);
       }
+      if (dropdownComunaRef.current && !dropdownComunaRef.current.contains(event.target)) {
+        setShowComunaDropdown(false);
+      }
     };
     document.addEventListener("mousedown", handleClickOutside);
     return () => {
       document.removeEventListener("mousedown", handleClickOutside);
     };
-  }, [dropdownRef]);
+  }, []);
+
+  // Limpiar comuna si se cambia el tipo
+  useEffect(() => {
+    if (tipoReunion === TIPOS_REUNION.TEMATICA && !EJES.includes(comuna)) {
+      setComuna(EJES[0]);
+    } else if (tipoReunion !== TIPOS_REUNION.TEMATICA && !COMUNAS.includes(comuna)) {
+      setComuna(COMUNAS[0]);
+    }
+  }, [tipoReunion, comuna]);
 
   // Autocompletar el nombre de la reunión
   useEffect(() => {
@@ -135,9 +158,18 @@ export default function ABMReuniones({ onBack, onSaveSuccess }) {
       ? selectedFuncionarios.map(f => f.nombre_completo).join(' / ') 
       : '';
       
+    const isProcesos = tipoReunion === TIPOS_REUNION.PROCESOS_CO_CREACION || tipoReunion === TIPOS_REUNION.PROCESOS_INFORMATIVA;
+    
+    let displayComuna = comuna;
+    if (isProcesos && selectedComunas.length > 0) {
+      displayComuna = selectedComunas.join(', ');
+    } else if (tipoReunion === TIPOS_REUNION.TEMATICA) {
+      displayComuna = comuna;
+    }
+
     const displayComunaBarrio = barrio && barrio !== 'Convocatoria Comunal'
-      ? `${comuna} - ${barrio}`
-      : comuna;
+      ? `${displayComuna} - ${barrio}`
+      : displayComuna;
 
     // Si tiene tema y es Temática o Procesos Participativos, lo anexamos al tipo
     const displayTipoConTema = tema && (tipoReunion === TIPOS_REUNION.TEMATICA || tipoReunion === TIPOS_REUNION.PROCESOS_CO_CREACION || tipoReunion === TIPOS_REUNION.PROCESOS_INFORMATIVA)
@@ -397,7 +429,9 @@ export default function ABMReuniones({ onBack, onSaveSuccess }) {
       nombre: nombre.trim(),
       fecha,
       lugar: lugar.trim() || 'No especificado',
-      comuna,
+      comuna: (tipoReunion === TIPOS_REUNION.PROCESOS_CO_CREACION || tipoReunion === TIPOS_REUNION.PROCESOS_INFORMATIVA) 
+               ? (selectedComunas.length > 0 ? selectedComunas.join(', ') : comuna)
+               : comuna,
       barrio: barrio === 'Convocatoria Comunal' ? null : barrio,
       funcionario: funcionario.trim() || null,
       tipo_reunion: tipoReunion,
@@ -529,6 +563,7 @@ export default function ABMReuniones({ onBack, onSaveSuccess }) {
                       <option value="Educacion">Educacion</option>
                       <option value="Salud">Salud</option>
                       <option value="Ciudad Atractiva">Ciudad Atractiva</option>
+                      <option value="Movilidad">Movilidad</option>
                     </select>
                   </div>
                 )}
@@ -561,18 +596,55 @@ export default function ABMReuniones({ onBack, onSaveSuccess }) {
                 </div>
 
                 <div className="grid-2" style={{ gap: '1rem' }}>
-                  <div className="form-group">
-                    <label htmlFor="comuna">Comuna</label>
-                    <select
-                      id="comuna"
-                      className="form-control"
-                      value={comuna}
-                      onChange={(e) => setComuna(e.target.value)}
-                    >
-                      {COMUNAS.map(c => (
-                        <option key={c} value={c}>{c}</option>
-                      ))}
-                    </select>
+                  <div className="form-group" ref={dropdownComunaRef}>
+                    <label htmlFor="comuna">{tipoReunion === TIPOS_REUNION.TEMATICA ? 'Eje' : 'Comuna'}</label>
+                    {tipoReunion === TIPOS_REUNION.PROCESOS_CO_CREACION || tipoReunion === TIPOS_REUNION.PROCESOS_INFORMATIVA ? (
+                      <div style={{ position: 'relative' }}>
+                        <div 
+                          className="form-control" 
+                          onClick={() => setShowComunaDropdown(!showComunaDropdown)}
+                          style={{ 
+                            minHeight: '38px', height: 'auto', cursor: 'pointer', display: 'flex', 
+                            flexWrap: 'wrap', gap: '4px', alignItems: 'center', backgroundColor: '#FFFFFF',
+                            padding: '4px 8px'
+                          }}
+                        >
+                          {selectedComunas.length === 0 ? (
+                            <span style={{ color: 'var(--color-text-muted)', fontSize: '0.85rem' }}>Seleccioná una o más comunas...</span>
+                          ) : (
+                            selectedComunas.map(c => (
+                              <span key={c} style={{ backgroundColor: '#E0F2FE', color: '#0369A1', padding: '2px 8px', borderRadius: '12px', fontSize: '0.75rem', display: 'inline-flex', alignItems: 'center' }} onClick={(e) => { e.stopPropagation(); setSelectedComunas(prev => prev.filter(x => x !== c)); }}>
+                                {c} <span style={{ marginLeft: '4px', fontWeight: 'bold' }}>×</span>
+                              </span>
+                            ))
+                          )}
+                        </div>
+                        {showComunaDropdown && (
+                          <div style={{ position: 'absolute', top: '100%', left: 0, right: 0, backgroundColor: '#FFF', border: '1px solid var(--color-border)', borderRadius: 'var(--border-radius)', zIndex: 50, maxHeight: '180px', overflowY: 'auto', marginTop: '4px' }}>
+                            {COMUNAS.map(c => (
+                              <div key={c} onClick={() => {
+                                if (selectedComunas.includes(c)) setSelectedComunas(prev => prev.filter(x => x !== c));
+                                else setSelectedComunas(prev => [...prev, c]);
+                              }} style={{ padding: '8px 12px', cursor: 'pointer', display: 'flex', justifyContent: 'space-between', backgroundColor: selectedComunas.includes(c) ? '#F0F9FF' : 'transparent', borderBottom: '1px solid #F1F5F9', fontSize: '0.85rem' }}>
+                                <span>{c}</span>
+                                <input type="checkbox" checked={selectedComunas.includes(c)} readOnly style={{cursor: 'pointer'}} />
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    ) : (
+                      <select
+                        id="comuna"
+                        className="form-control"
+                        value={comuna}
+                        onChange={(e) => setComuna(e.target.value)}
+                      >
+                        {(tipoReunion === TIPOS_REUNION.TEMATICA ? EJES : COMUNAS).map(c => (
+                          <option key={c} value={c}>{c}</option>
+                        ))}
+                      </select>
+                    )}
                   </div>
                   <div className="form-group">
                     <label htmlFor="barrio">Barrio</label>

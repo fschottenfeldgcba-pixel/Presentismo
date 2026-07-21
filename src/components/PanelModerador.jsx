@@ -156,8 +156,8 @@ export default function PanelModerador({ reunion: initialReunion, onBack }) {
   };
 
   // Cargar y normalizar cola de oradores
-  const loadOradores = async () => {
-    setLoadingOradores(true);
+  const loadOradores = async (showLoading = false) => {
+    if (showLoading) setLoadingOradores(true);
     try {
       const { data, error } = await getOradores(reunion.id);
       if (!error && data) {
@@ -175,7 +175,23 @@ export default function PanelModerador({ reunion: initialReunion, onBack }) {
           await Promise.all(promises);
         }
 
-        setOradores(sorted);
+        // Modificación no-bloqueante para evitar pisar campos tema_efectivo enfocados
+        setOradores(prev => {
+          return sorted.map(newItem => {
+            const localItem = prev.find(o => o.id === newItem.id);
+            if (localItem) {
+              const isFocused = document.activeElement && 
+                document.activeElement.tagName === 'TEXTAREA' && 
+                localItem.tema_efectivo !== newItem.tema_efectivo;
+              
+              if (isFocused) {
+                // Preservar el valor local que el usuario está editando en este momento
+                return { ...newItem, tema_efectivo: localItem.tema_efectivo };
+              }
+            }
+            return newItem;
+          });
+        });
 
         const dnis = sorted.map(o => o.vecino_id);
         if (dnis.length > 0) {
@@ -185,7 +201,7 @@ export default function PanelModerador({ reunion: initialReunion, onBack }) {
     } catch (err) {
       console.error('Error al cargar oradores:', err);
     } finally {
-      setLoadingOradores(false);
+      if (showLoading) setLoadingOradores(false);
     }
   };
 
@@ -449,7 +465,7 @@ export default function PanelModerador({ reunion: initialReunion, onBack }) {
       if (!attendance) {
         await guardarAsistencia(reunion.id, vecino.dni, true, {
           estado_convocatoria: 'presente',
-          como_se_entero: 'Espontáneo'
+          como_se_entero: 'Walk-in'
         });
         await loadAsistenciaStats();
       }
@@ -485,7 +501,7 @@ export default function PanelModerador({ reunion: initialReunion, onBack }) {
       // 2. Guardar asistencia
       await guardarAsistencia(reunion.id, newDni.trim(), true, {
         estado_convocatoria: 'presente',
-        como_se_entero: 'Espontáneo'
+        como_se_entero: 'Walk-in'
       });
       
       // 3. Registrar como orador
@@ -531,8 +547,17 @@ export default function PanelModerador({ reunion: initialReunion, onBack }) {
   useEffect(() => {
     loadReunionDetails();
     loadAsistenciaStats();
-    loadOradores();
+    loadOradores(true);
   }, [initialReunion.id]);
+
+  // Polling automático cada 10 segundos en segundo plano
+  useEffect(() => {
+    const interval = setInterval(() => {
+      loadAsistenciaStats();
+      loadOradores(false);
+    }, 10000);
+    return () => clearInterval(interval);
+  }, [reunion.id]);
 
   // Manejo del cronómetro del orador activo
   useEffect(() => {
@@ -632,16 +657,38 @@ export default function PanelModerador({ reunion: initialReunion, onBack }) {
     }
   };
 
+  // Helper para limpiar el orador activo de la base de datos si coincide con el modificado
+  const cleanActiveSpeakerIfMatches = async (oradorId) => {
+    if (activeSpeaker && activeSpeaker.id === oradorId) {
+      setActiveSpeaker(null);
+      try {
+        await updateReunion(reunion.id, { active_orador_id: null });
+      } catch (err) {
+        console.error('Error al limpiar active_orador_id en Supabase:', err);
+      }
+    }
+  };
+
   // Acciones sobre los oradores
-  const handleLlamarAlMic = (orador) => {
+  const handleLlamarAlMic = async (orador) => {
     setActiveSpeaker(orador);
     setLiveMinuta(orador.tema_efectivo || '');
     setActiveSpeakerTimer(0);
+    try {
+      await updateReunion(reunion.id, { active_orador_id: orador.id });
+    } catch (err) {
+      console.error('Error al guardar active_orador_id en Supabase:', err);
+    }
   };
 
-  const handleCancelarMic = () => {
+  const handleCancelarMic = async () => {
     setActiveSpeaker(null);
     setLiveMinuta('');
+    try {
+      await updateReunion(reunion.id, { active_orador_id: null });
+    } catch (err) {
+      console.error('Error al limpiar active_orador_id en Supabase:', err);
+    }
   };
 
   const handleFinalizarExposicion = async () => {
@@ -654,6 +701,9 @@ export default function PanelModerador({ reunion: initialReunion, onBack }) {
       });
 
       if (error) throw error;
+
+      // Limpiar orador activo de la reunión
+      await updateReunion(reunion.id, { active_orador_id: null });
 
       // Actualizar localmente
       setOradores(prev => prev.map(o => {
@@ -693,9 +743,7 @@ export default function PanelModerador({ reunion: initialReunion, onBack }) {
           return o;
         }));
 
-        if (activeSpeaker && activeSpeaker.id === oradorId) {
-          setActiveSpeaker(null);
-        }
+        await cleanActiveSpeakerIfMatches(oradorId);
       } catch (err) {
         console.error(err);
         alert(`Error: ${err.message}`);
@@ -720,9 +768,7 @@ export default function PanelModerador({ reunion: initialReunion, onBack }) {
           return o;
         }));
 
-        if (activeSpeaker && activeSpeaker.id === oradorId) {
-          setActiveSpeaker(null);
-        }
+        await cleanActiveSpeakerIfMatches(oradorId);
       } catch (err) {
         console.error(err);
         alert(`Error al cambiar el estado del orador: ${err.message}`);
@@ -742,9 +788,7 @@ export default function PanelModerador({ reunion: initialReunion, onBack }) {
 
         // Quitar de la UI
         setOradores(prev => prev.filter(o => o.id !== oradorId));
-        if (activeSpeaker && activeSpeaker.id === oradorId) {
-          setActiveSpeaker(null);
-        }
+        await cleanActiveSpeakerIfMatches(oradorId);
         alert('¡Orador eliminado con éxito!');
       } catch (err) {
         console.error(err);

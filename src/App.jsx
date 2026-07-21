@@ -6,15 +6,17 @@ import ControlAsistencia from './components/ControlAsistencia';
 import AdministrarReunion from './components/AdministrarReunion';
 import PanelModerador from './components/PanelModerador';
 import { LogOut, ShieldCheck } from 'lucide-react';
+import { supabase } from './lib/supabaseClient';
 
 export default function App() {
   const [user, setUser] = useState(() => {
-    const saved = sessionStorage.getItem('presentismo_user');
+    const saved = localStorage.getItem('presentismo_user');
     return saved ? JSON.parse(saved) : null;
   });
   const [currentView, setCurrentView] = useState(() => {
     const saved = sessionStorage.getItem('presentismo_view');
-    return saved || 'login';
+    const savedUser = localStorage.getItem('presentismo_user');
+    return saved || (savedUser ? 'dashboard' : 'login');
   });
   const [selectedReunion, setSelectedReunion] = useState(() => {
     const saved = sessionStorage.getItem('presentismo_selected_reunion');
@@ -26,17 +28,67 @@ export default function App() {
   });
   const [dialog, setDialog] = useState(null);
 
+  // Estados para abrir modales o vistas específicas desde la URL
+  const [initialModal, setInitialModal] = useState(null);
+  const [initialModalReunionId, setInitialModalReunionId] = useState(null);
+  const [initialShowHistorical, setInitialShowHistorical] = useState(false);
+
+  // Parsear parámetros de la URL para soporte multi-pestaña
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const qView = params.get('view');
+    const qReunionId = params.get('reunion_id');
+    const qModal = params.get('modal');
+    const qHistorical = params.get('show_historical');
+
+    if (user) {
+      if (qHistorical === 'true') {
+        setInitialShowHistorical(true);
+      }
+      if (qView) {
+        if (qView === 'dashboard') {
+          setCurrentView('dashboard');
+          if (qModal && qReunionId) {
+            setInitialModal(qModal);
+            setInitialModalReunionId(qReunionId);
+          }
+        } else if (qView === 'create_reunion') {
+          setCurrentView('create_reunion');
+        } else if (qReunionId) {
+          const fetchReunion = async () => {
+            try {
+              const { data, error } = await supabase
+                .from('reuniones')
+                .select('*')
+                .eq('id', qReunionId)
+                .single();
+              if (!error && data) {
+                setSelectedReunion(data);
+                setCurrentView(qView);
+              }
+            } catch (err) {
+              console.error('Error al cargar la reunión de la URL:', err);
+            }
+          };
+          fetchReunion();
+        } else {
+          setCurrentView(qView);
+        }
+      }
+    }
+  }, [user]);
+
   // Guardar estado en sessionStorage para tolerar F5 (refrescos de navegador)
   useEffect(() => {
     sessionStorage.setItem('presentismo_dashboard_tab', activeDashboardTab);
   }, [activeDashboardTab]);
 
-  // Guardar estado en sessionStorage para tolerar F5 (refrescos de navegador)
+  // Guardar estado en localStorage para tolerar F5 y multi-pestaña
   React.useEffect(() => {
     if (user) {
-      sessionStorage.setItem('presentismo_user', JSON.stringify(user));
+      localStorage.setItem('presentismo_user', JSON.stringify(user));
     } else {
-      sessionStorage.removeItem('presentismo_user');
+      localStorage.removeItem('presentismo_user');
     }
   }, [user]);
 
@@ -76,6 +128,8 @@ export default function App() {
     setUser(null);
     setSelectedReunion(null);
     setCurrentView('login');
+    localStorage.removeItem('presentismo_user');
+    sessionStorage.clear();
   };
 
   const handleSelectReunion = (reunion) => {
@@ -143,6 +197,13 @@ export default function App() {
             onCreateMeetingClick={() => setCurrentView('create_reunion')}
             activeDashboardTab={activeDashboardTab}
             setActiveDashboardTab={setActiveDashboardTab}
+            initialModal={initialModal}
+            initialModalReunionId={initialModalReunionId}
+            initialShowHistorical={initialShowHistorical}
+            onClearInitialModal={() => {
+              setInitialModal(null);
+              setInitialModalReunionId(null);
+            }}
           />
         )}
 

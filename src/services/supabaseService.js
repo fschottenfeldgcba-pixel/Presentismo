@@ -278,7 +278,7 @@ export const getAsistentesPorReunion = async (reunionId) => {
   try {
     const { data, error } = await supabase
       .from('inscripciones_asistencias')
-      .select('*, vecino:vecinos(*)')
+      .select('*, vecino:vecinos(*), agente_territorio:agentes_territorio(*)')
       .eq('reunion_id', reunionId);
 
     if (error) throw error;
@@ -503,6 +503,8 @@ export const normalizeCanalDifusion = (val) => {
   if (['vecino', 'boca a boca', 'comunidad'].includes(clean)) return 'Vecino';
   if (['cartel', 'folleto', 'carteleria', 'folletos', 'carteleria / folleto', 'cartelería / folleto'].includes(clean)) return 'Cartelería / Folleto';
   if (['medios', 'radio', 'diario', 'medios locales', 'medio local'].includes(clean)) return 'Medios Locales';
+  if (['walk-in', 'walk_in', 'walkin', 'puerta', 'en puerta', 'espontaneo', 'espontáneo'].includes(clean)) return 'Walk-in';
+  if (['territorio', 'territorial', 'agente'].includes(clean)) return 'Territorio';
   
   return 'Otro';
 };
