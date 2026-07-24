@@ -103,6 +103,7 @@ export default function ABMReuniones({ onBack, onSaveSuccess }) {
   const [funcionariosList, setFuncionariosList] = useState([]);
   const [selectedFuncionarios, setSelectedFuncionarios] = useState([]);
   const [showFuncDropdown, setShowFuncDropdown] = useState(false);
+  const [funcSearchTerm, setFuncSearchTerm] = useState('');
   const dropdownRef = useRef(null);
 
   // Cargar funcionarios de Supabase (con caché de sesión de 5 minutos)
@@ -174,8 +175,8 @@ export default function ABMReuniones({ onBack, onSaveSuccess }) {
       ? `${displayComuna} - ${barrio}`
       : displayComuna;
 
-    // Si tiene tema y es Temática o Procesos Participativos, lo anexamos al tipo
-    const displayTipoConTema = tema && (tipoReunion === TIPOS_REUNION.TEMATICA || tipoReunion === TIPOS_REUNION.PROCESOS_CO_CREACION || tipoReunion === TIPOS_REUNION.PROCESOS_INFORMATIVA)
+    // Si tiene tema/famoso y es Temática, Procesos Participativos o Primera Persona, lo anexamos al tipo
+    const displayTipoConTema = tema && (tipoReunion === TIPOS_REUNION.TEMATICA || tipoReunion === TIPOS_REUNION.PROCESOS_CO_CREACION || tipoReunion === TIPOS_REUNION.PROCESOS_INFORMATIVA || tipoReunion === TIPOS_REUNION.PRIMERA_PERSONA)
       ? `${displayTipo} (${tema})`
       : displayTipo;
 
@@ -438,7 +439,7 @@ export default function ABMReuniones({ onBack, onSaveSuccess }) {
       barrio: barrio === 'Convocatoria Comunal' ? null : barrio,
       funcionario: funcionario.trim() || null,
       tipo_reunion: tipoReunion,
-      tema: (tipoReunion === TIPOS_REUNION.TEMATICA || tipoReunion === TIPOS_REUNION.PROCESOS_CO_CREACION || tipoReunion === TIPOS_REUNION.PROCESOS_INFORMATIVA) ? tema.trim() : null,
+      tema: (tipoReunion === TIPOS_REUNION.TEMATICA || tipoReunion === TIPOS_REUNION.PROCESOS_CO_CREACION || tipoReunion === TIPOS_REUNION.PROCESOS_INFORMATIVA || tipoReunion === TIPOS_REUNION.PRIMERA_PERSONA) ? tema.trim() : null,
       arreglo_1: arreglo1.trim() || null,
       funcionario_inicio: null,
       funcionario_cierre: null,
@@ -455,40 +456,41 @@ export default function ABMReuniones({ onBack, onSaveSuccess }) {
     // Si se cargaron vecinos (desde archivo real o simulador)
     if (importStatus === 'success' && importedNeighbors.length > 0 && created) {
       try {
-        // Guardamos vecinos e inscripciones secuencialmente
-        for (let idx = 0; idx < importedNeighbors.length; idx++) {
-          const vecino = importedNeighbors[idx];
+        const vecinosPayload = importedNeighbors.map(vecino => ({
+          dni: vecino.dni,
+          nombre: vecino.nombre,
+          apellido: vecino.apellido,
+          celular: vecino.celular || null,
+          email: vecino.email || null,
+          barrio: vecino.barrio || (barrio !== 'Convocatoria Comunal' ? barrio : null),
+          comuna: normalizeComuna(vecino.comuna || comuna)
+        }));
 
-          // Alta en padrón central
-          await upsertVecino({
-            dni: vecino.dni,
-            nombre: vecino.nombre,
-            apellido: vecino.apellido,
-            celular: vecino.celular || null,
-            email: vecino.email || null,
-            barrio: vecino.barrio || (barrio !== 'Convocatoria Comunal' ? barrio : null),
-            comuna: normalizeComuna(vecino.comuna || comuna)
-          });
-          
-          // Alta en la inscripción/asistencias de esta reunión
+        const asistenciasPayload = importedNeighbors.map((vecino, idx) => {
           const estadoConvocatoria = tipoReunion === TIPOS_REUNION.UNO_A_UNO 
             ? 'seleccionado_uno_a_uno' 
             : (vecino.estado_convocatoria || 'inscripto');
 
-          // Bloque horario en Uno a Uno
           const block = tipoReunion === TIPOS_REUNION.UNO_A_UNO 
             ? (vecino.horario_bloque_asignado || `11:${idx * 15} - 11:${(idx * 15) + 15}`)
             : null;
 
-          await guardarAsistencia(created.id, vecino.dni, false, {
+          return {
+            reunion_id: created.id,
+            vecino_id: vecino.dni,
+            asistio: false,
             estado_convocatoria: estadoConvocatoria,
             horario_bloque_asignado: block,
             como_se_entero: normalizeCanalDifusion(vecino.como_se_entero),
             invitado_por: vecino.invitado_por || null,
             tema_previo: vecino.tema_previo || null,
             necesita_accesibilidad: vecino.necesita_accesibilidad || null
-          });
-        }
+          };
+        });
+
+        // Guardado masivo por lotes (chunk de 500)
+        await bulkUpsertVecinos(vecinosPayload);
+        await bulkGuardarAsistencias(asistenciasPayload);
       } catch (saveError) {
         console.error('Error al guardar vecinos:', saveError);
         alert('Hubo un error al guardar la lista de vecinos importada. Algunos registros podrían no haberse completado.');
@@ -579,6 +581,21 @@ export default function ABMReuniones({ onBack, onSaveSuccess }) {
                       id="tema"
                       className="form-control"
                       placeholder="Ej: Presupuesto Participativo, Plan de Obras..."
+                      value={tema}
+                      onChange={(e) => setTema(e.target.value)}
+                      required
+                    />
+                  </div>
+                )}
+
+                {tipoReunion === TIPOS_REUNION.PRIMERA_PERSONA && (
+                  <div className="form-group">
+                    <label htmlFor="tema">Nombre del Famoso / Invitado *</label>
+                    <input
+                      type="text"
+                      id="tema"
+                      className="form-control"
+                      placeholder="Ej: Guillermo Francella, Mirtha Legrand..."
                       value={tema}
                       onChange={(e) => setTema(e.target.value)}
                       required
@@ -723,49 +740,75 @@ export default function ABMReuniones({ onBack, onSaveSuccess }) {
                         borderRadius: 'var(--border-radius)', 
                         boxShadow: '0 4px 6px rgba(0,0,0,0.1)', 
                         zIndex: 50, 
-                        maxHeight: '180px', 
+                        maxHeight: '220px', 
                         overflowY: 'auto',
-                        marginTop: '4px'
+                        marginTop: '4px',
+                        padding: '4px'
                       }}
                     >
-                      {funcionariosList.map(f => {
-                        const isSelected = selectedFuncionarios.some(x => x.id === f.id);
-                        return (
-                          <div 
-                            key={f.id} 
-                            onClick={() => {
-                              if (isSelected) {
-                                setSelectedFuncionarios(prev => prev.filter(x => x.id !== f.id));
-                              } else {
-                                setSelectedFuncionarios(prev => [...prev, f]);
-                              }
-                            }}
-                            style={{ 
-                              padding: '8px 12px', 
-                              cursor: 'pointer', 
-                              display: 'flex', 
-                              alignItems: 'center', 
-                              justifyContent: 'space-between',
-                              backgroundColor: isSelected ? '#F0F9FF' : 'transparent',
-                              borderBottom: '1px solid #F1F5F9',
-                              fontSize: '0.85rem'
-                            }}
-                          >
-                            <div>
-                              <strong>{f.nombre_completo}</strong>
-                              <span style={{ fontSize: '0.75rem', color: 'var(--color-text-muted)', marginLeft: '6px' }}>
-                                ({f.cargo})
-                              </span>
-                            </div>
-                            <input 
-                              type="checkbox" 
-                              checked={isSelected} 
-                              readOnly 
-                              style={{ cursor: 'pointer' }}
-                            />
-                          </div>
-                        );
-                      })}
+                      <div style={{ padding: '4px', borderBottom: '1px solid var(--color-border)', backgroundColor: '#F8FAFC' }}>
+                        <input
+                          type="text"
+                          placeholder="🔍 Buscar funcionario por nombre..."
+                          value={funcSearchTerm}
+                          onChange={(e) => setFuncSearchTerm(e.target.value)}
+                          onClick={(e) => e.stopPropagation()}
+                          style={{
+                            width: '100%',
+                            padding: '6px 10px',
+                            fontSize: '0.85rem',
+                            border: '1px solid var(--color-border)',
+                            borderRadius: '4px',
+                            outline: 'none'
+                          }}
+                        />
+                      </div>
+                      {funcionariosList.filter(f => f.nombre_completo?.toLowerCase().includes(funcSearchTerm.toLowerCase())).length === 0 ? (
+                        <div style={{ padding: '10px', fontSize: '0.85rem', color: 'var(--color-text-muted)', textAlign: 'center' }}>
+                          No se encontraron funcionarios
+                        </div>
+                      ) : (
+                        funcionariosList
+                          .filter(f => f.nombre_completo?.toLowerCase().includes(funcSearchTerm.toLowerCase()))
+                          .map(f => {
+                            const isSelected = selectedFuncionarios.some(x => x.id === f.id);
+                            return (
+                              <div 
+                                key={f.id} 
+                                onClick={() => {
+                                  if (isSelected) {
+                                    setSelectedFuncionarios(prev => prev.filter(x => x.id !== f.id));
+                                  } else {
+                                    setSelectedFuncionarios(prev => [...prev, f]);
+                                  }
+                                }}
+                                style={{ 
+                                  padding: '8px 12px', 
+                                  cursor: 'pointer', 
+                                  display: 'flex', 
+                                  alignItems: 'center', 
+                                  justifyContent: 'space-between',
+                                  backgroundColor: isSelected ? '#F0F9FF' : 'transparent',
+                                  borderBottom: '1px solid #F1F5F9',
+                                  fontSize: '0.85rem'
+                                }}
+                              >
+                                <div>
+                                  <strong>{f.nombre_completo}</strong>
+                                  <span style={{ fontSize: '0.75rem', color: 'var(--color-text-muted)', marginLeft: '6px' }}>
+                                    ({f.cargo})
+                                  </span>
+                                </div>
+                                <input 
+                                  type="checkbox" 
+                                  checked={isSelected} 
+                                  readOnly 
+                                  style={{ cursor: 'pointer' }}
+                                />
+                              </div>
+                            );
+                          })
+                      )}
                     </div>
                   )}
                 </div>

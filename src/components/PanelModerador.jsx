@@ -85,51 +85,62 @@ export default function PanelModerador({ reunion: initialReunion, onBack }) {
   // Cargar datos de asistencia
   const loadHistoricalStatsForVecinos = async (dnis) => {
     if (!dnis || dnis.length === 0) return;
-    // Limitar historial a 18 meses para reducir egress en polling
-    const cutoff18m = new Date(Date.now() - 18 * 30 * 24 * 60 * 60 * 1000).toISOString();
     try {
-      // 1. Obtener asistencias históricas (últimos 18 meses)
-      const { data: asistencias, error: errAsist } = await supabase
-        .from('inscripciones_asistencias')
-        .select('vecino_id, asistio, reunion:reuniones(nombre)')
-        .in('vecino_id', dnis)
-        .gte('created_at', cutoff18m);
-
-      if (errAsist) throw errAsist;
-
-      // 2. Obtener oratorias históricas (últimos 18 meses, excluyendo la reunión actual)
-      const { data: oradoresHist, error: errOrad } = await supabase
-        .from('oradores')
-        .select('vecino_id, reunion_id, reunion:reuniones(nombre)')
-        .eq('estado', 'hablo')
-        .neq('reunion_id', reunion.id)
-        .in('vecino_id', dnis)
-        .gte('created_at', cutoff18m);
-
-      if (errOrad) throw errOrad;
-
       const statsMap = {};
       dnis.forEach(dni => {
-        statsMap[dni] = { asistencias: 0, orador: 0 };
+        statsMap[dni] = { asistencias: 0, otrasAsistencias: 0, orador: 0 };
       });
 
-      asistencias?.forEach(asis => {
-        const name = asis.reunion?.nombre?.toLowerCase() || '';
-        if (name.includes('test') || name.includes('prueba')) return;
+      // Procesar por lotes de 100 DNIs para evitar el límite de longitud de URL HTTP (Error 414 URI Too Long)
+      const chunkSize = 100;
+      for (let i = 0; i < dnis.length; i += chunkSize) {
+        const chunkDnis = dnis.slice(i, i + chunkSize);
 
-        if (asis.asistio) {
-          if (!statsMap[asis.vecino_id]) statsMap[asis.vecino_id] = { asistencias: 0, orador: 0 };
-          statsMap[asis.vecino_id].asistencias = (statsMap[asis.vecino_id].asistencias || 0) + 1;
+        // 1. Obtener todas las asistencias confirmadas en cualquier reunión del sistema
+        const { data: asistencias, error: errAsist } = await supabase
+          .from('inscripciones_asistencias')
+          .select('vecino_id, reunion_id, asistio, reunion:reuniones(nombre)')
+          .in('vecino_id', chunkDnis)
+          .eq('asistio', true);
+
+        if (!errAsist && asistencias) {
+          asistencias.forEach(asis => {
+            const name = asis.reunion?.nombre?.toLowerCase() || '';
+            if (name.includes('test') || name.includes('prueba')) return;
+
+            if (!statsMap[asis.vecino_id]) {
+              statsMap[asis.vecino_id] = { asistencias: 0, otrasAsistencias: 0, orador: 0 };
+            }
+            
+            statsMap[asis.vecino_id].asistencias = (statsMap[asis.vecino_id].asistencias || 0) + 1;
+            
+            // Si la asistencia confirmada fue en otra reunión previa (distinta a la actual), se cuenta como recurrencia histórica
+            if (asis.reunion_id !== reunion.id) {
+              statsMap[asis.vecino_id].otrasAsistencias = (statsMap[asis.vecino_id].otrasAsistencias || 0) + 1;
+            }
+          });
         }
-      });
 
-      oradoresHist?.forEach(orad => {
-        const name = orad.reunion?.nombre?.toLowerCase() || '';
-        if (name.includes('test') || name.includes('prueba')) return;
+        // 2. Obtener oratorias históricas en cualquier otra reunión
+        const { data: oradoresHist, error: errOrad } = await supabase
+          .from('oradores')
+          .select('vecino_id, reunion_id, reunion:reuniones(nombre)')
+          .eq('estado', 'hablo')
+          .neq('reunion_id', reunion.id)
+          .in('vecino_id', chunkDnis);
 
-        if (!statsMap[orad.vecino_id]) statsMap[orad.vecino_id] = { asistencias: 0, orador: 0 };
-        statsMap[orad.vecino_id].orador = (statsMap[orad.vecino_id].orador || 0) + 1;
-      });
+        if (!errOrad && oradoresHist) {
+          oradoresHist.forEach(orad => {
+            const name = orad.reunion?.nombre?.toLowerCase() || '';
+            if (name.includes('test') || name.includes('prueba')) return;
+
+            if (!statsMap[orad.vecino_id]) {
+              statsMap[orad.vecino_id] = { asistencias: 0, otrasAsistencias: 0, orador: 0 };
+            }
+            statsMap[orad.vecino_id].orador = (statsMap[orad.vecino_id].orador || 0) + 1;
+          });
+        }
+      }
 
       setVecinoStatsMap(prev => ({ ...prev, ...statsMap }));
     } catch (err) {
@@ -149,9 +160,9 @@ export default function PanelModerador({ reunion: initialReunion, onBack }) {
         setPresentesCount(presentes);
         setRatioAsistencia(total > 0 ? Math.round((presentes / total) * 100) : 0);
 
-        const dnis = data.map(a => a.vecino_id);
-        if (dnis.length > 0) {
-          loadHistoricalStatsForVecinos(dnis);
+        const dnisPresentes = data.filter(a => a.asistio).map(a => a.vecino_id);
+        if (dnisPresentes.length > 0) {
+          loadHistoricalStatsForVecinos(dnisPresentes);
         }
       }
     } catch (err) {
@@ -915,12 +926,32 @@ export default function PanelModerador({ reunion: initialReunion, onBack }) {
       const oradoresAnotados = oradores.length;
       const oradoresEfectivos = oradores.filter(o => o.estado === 'hablo');
 
-      const txt = `👨👩👧👦 RDV | *${reunion.funcionario || reunion.nombre}* - ${reunion.comuna}
+      const presentesList = asistentes.filter(a => a.asistio);
+      const dnisPresentes = presentesList.map(a => a.vecino_id);
+      if (dnisPresentes.length > 0) {
+        await loadHistoricalStatsForVecinos(dnisPresentes);
+      }
+
+      let primerVezCount = 0;
+      let recurrentesCount = 0;
+
+      presentesList.forEach(a => {
+        const otras = vecinoStatsMap[a.vecino_id]?.otrasAsistencias || 0;
+        if (otras > 0) {
+          recurrentesCount++;
+        } else {
+          primerVezCount++;
+        }
+      });
+
+      const txt = `👨‍👩‍👧‍👦 RDV | *${reunion.funcionario || reunion.nombre}* - ${reunion.comuna}
 📅 ${displayFecha || 'Fecha'} | 🕠 ${displayHora}
 ⏰ Inicio: ${horaInicioReal || '--:--'} hs | Finalizó: ${horaFinReal || '--:--'} hs
 
 📋 Inscriptos: ${inscriptosCount}
 👥 Asistentes: ${presentesCount} (${ratioAsistencia}%)
+   🌱 Vecinos Primera Vez: ${primerVezCount}
+   🔄 Vecinos Recurrentes: ${recurrentesCount}
 📝 Oradores anotados: ${oradoresAnotados}
  🎤 Oradores efectivos: ${oradoresEfectivos.length}
 
@@ -1977,6 +2008,10 @@ ${oradoresEfectivos.length > 0
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px', marginBottom: '10px' }}>
               <div>Inscriptos: <strong>{inscriptosCount}</strong></div>
               <div>Asistentes: <strong>{presentesCount} ({ratioAsistencia}%)</strong></div>
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px', marginBottom: '10px' }}>
+              <div>Primera vez: <strong>🌱 {asistentes.filter(a => a.asistio && (vecinoStatsMap[a.vecino_id]?.otrasAsistencias || 0) <= 0).length}</strong></div>
+              <div>Recurrentes: <strong>🔄 {asistentes.filter(a => a.asistio && (vecinoStatsMap[a.vecino_id]?.otrasAsistencias || 0) > 0).length}</strong></div>
             </div>
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
               <div>Anotados: <strong>{oradores.length}</strong></div>

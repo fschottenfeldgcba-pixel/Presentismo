@@ -318,15 +318,77 @@ export const cambiarDniVecino = async (oldDni, newDni, updates = {}) => {
  */
 export const getAsistentesPorReunion = async (reunionId) => {
   try {
-    const { data, error } = await supabase
-      .from('inscripciones_asistencias')
-      .select('id, reunion_id, vecino_id, asistio, estado_convocatoria, horario_bloque_asignado, confirmado, como_se_entero, tema_previo, agente_territorio_id, vecino:vecinos(dni, nombre, apellido, barrio, comuna, celular, email), agente_territorio:agentes_territorio(id, nombre_completo)')
-      .eq('reunion_id', reunionId);
+    let allData = [];
+    let page = 0;
+    const pageSize = 1000;
 
-    if (error) throw error;
-    return { data, error: null };
+    while (true) {
+      const { data, error } = await supabase
+        .from('inscripciones_asistencias')
+        .select('id, reunion_id, vecino_id, asistio, estado_convocatoria, horario_bloque_asignado, confirmado, como_se_entero, tema_previo, agente_territorio_id, vecino:vecinos(dni, nombre, apellido, barrio, comuna, celular, email), agente_territorio:agentes_territorio(id, nombre_completo)')
+        .eq('reunion_id', reunionId)
+        .range(page * pageSize, (page + 1) * pageSize - 1);
+
+      if (error) throw error;
+      if (!data || data.length === 0) break;
+      allData = allData.concat(data);
+      if (data.length < pageSize) break;
+      page++;
+    }
+
+    return { data: allData, error: null };
   } catch (error) {
     console.error('Error en getAsistentesPorReunion:', error);
+    return { data: null, error };
+  }
+};
+
+/**
+ * Realiza altas/actualizaciones masivas de vecinos por lotes (chunking de a 500)
+ */
+export const bulkUpsertVecinos = async (vecinosList, chunkSize = 500) => {
+  try {
+    if (!vecinosList || vecinosList.length === 0) return { data: [], error: null };
+    
+    let allData = [];
+    for (let i = 0; i < vecinosList.length; i += chunkSize) {
+      const chunk = vecinosList.slice(i, i + chunkSize);
+      const { data, error } = await supabase
+        .from('vecinos')
+        .upsert(chunk, { onConflict: 'dni' })
+        .select();
+
+      if (error) throw error;
+      if (data) allData = allData.concat(data);
+    }
+    return { data: allData, error: null };
+  } catch (error) {
+    console.error('Error en bulkUpsertVecinos:', error);
+    return { data: null, error };
+  }
+};
+
+/**
+ * Realiza altas/actualizaciones masivas de inscripciones y asistencias por lotes (chunking de a 500)
+ */
+export const bulkGuardarAsistencias = async (asistenciasList, chunkSize = 500) => {
+  try {
+    if (!asistenciasList || asistenciasList.length === 0) return { data: [], error: null };
+    
+    let allData = [];
+    for (let i = 0; i < asistenciasList.length; i += chunkSize) {
+      const chunk = asistenciasList.slice(i, i + chunkSize);
+      const { data, error } = await supabase
+        .from('inscripciones_asistencias')
+        .upsert(chunk, { onConflict: 'reunion_id,vecino_id' })
+        .select();
+
+      if (error) throw error;
+      if (data) allData = allData.concat(data);
+    }
+    return { data: allData, error: null };
+  } catch (error) {
+    console.error('Error en bulkGuardarAsistencias:', error);
     return { data: null, error };
   }
 };

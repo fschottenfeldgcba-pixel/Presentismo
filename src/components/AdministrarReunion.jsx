@@ -92,6 +92,7 @@ export default function AdministrarReunion({ reunion, onBack, onSaveSuccess }) {
   const [funcionariosList, setFuncionariosList] = useState([]);
   const [selectedFuncionarios, setSelectedFuncionarios] = useState([]);
   const [showFuncDropdown, setShowFuncDropdown] = useState(false);
+  const [funcSearchTerm, setFuncSearchTerm] = useState('');
   const dropdownRef = useRef(null);
 
   // Cargar funcionarios de Supabase e inicializar seleccionados (con caché de sesión de 5 minutos)
@@ -158,8 +159,8 @@ export default function AdministrarReunion({ reunion, onBack, onSaveSuccess }) {
       ? `${comuna} - ${barrio}`
       : comuna;
 
-    // Si tiene tema y es Temática o Procesos Participativos, lo anexamos al tipo
-    const displayTipoConTema = tema && (tipoReunion === TIPOS_REUNION.TEMATICA || tipoReunion === TIPOS_REUNION.PROCESOS_CO_CREACION || tipoReunion === TIPOS_REUNION.PROCESOS_INFORMATIVA)
+    // Si tiene tema/famoso y es Temática, Procesos Participativos o Primera Persona, lo anexamos al tipo
+    const displayTipoConTema = tema && (tipoReunion === TIPOS_REUNION.TEMATICA || tipoReunion === TIPOS_REUNION.PROCESOS_CO_CREACION || tipoReunion === TIPOS_REUNION.PROCESOS_INFORMATIVA || tipoReunion === TIPOS_REUNION.PRIMERA_PERSONA)
       ? `${displayTipo} (${tema})`
       : displayTipo;
 
@@ -224,7 +225,7 @@ export default function AdministrarReunion({ reunion, onBack, onSaveSuccess }) {
       tipo_reunion: tipoReunion,
       comuna,
       barrio: barrio === 'Convocatoria Comunal' ? null : barrio,
-      tema: (tipoReunion === TIPOS_REUNION.TEMATICA || tipoReunion === TIPOS_REUNION.PROCESOS_CO_CREACION || tipoReunion === TIPOS_REUNION.PROCESOS_INFORMATIVA) ? tema.trim() : null,
+      tema: (tipoReunion === TIPOS_REUNION.TEMATICA || tipoReunion === TIPOS_REUNION.PROCESOS_CO_CREACION || tipoReunion === TIPOS_REUNION.PROCESOS_INFORMATIVA || tipoReunion === TIPOS_REUNION.PRIMERA_PERSONA) ? tema.trim() : null,
       arreglo_1: arreglo1.trim() || null
     });
     setSavingReunion(false);
@@ -463,6 +464,21 @@ export default function AdministrarReunion({ reunion, onBack, onSaveSuccess }) {
                 </div>
               )}
 
+              {tipoReunion === TIPOS_REUNION.PRIMERA_PERSONA && (
+                <div className="form-group">
+                  <label htmlFor="tema">Nombre del Famoso / Invitado *</label>
+                  <input
+                    type="text"
+                    id="tema"
+                    className="form-control"
+                    placeholder="Ej: Guillermo Francella, Mirtha Legrand..."
+                    value={tema}
+                    onChange={(e) => setTema(e.target.value)}
+                    required
+                  />
+                </div>
+              )}
+
               <div className="form-group">
                 <label htmlFor="lugar">Lugar / Dirección *</label>
                 <input
@@ -575,49 +591,75 @@ export default function AdministrarReunion({ reunion, onBack, onSaveSuccess }) {
                       borderRadius: 'var(--border-radius)', 
                       boxShadow: '0 4px 6px rgba(0,0,0,0.1)', 
                       zIndex: 50, 
-                      maxHeight: '150px', 
+                      maxHeight: '220px', 
                       overflowY: 'auto',
-                      marginTop: '4px'
+                      marginTop: '4px',
+                      padding: '4px'
                     }}
                   >
-                    {funcionariosList.map(f => {
-                      const isSelected = selectedFuncionarios.some(x => x.id === f.id);
-                      return (
-                        <div 
-                          key={f.id} 
-                          onClick={() => {
-                            if (isSelected) {
-                              setSelectedFuncionarios(prev => prev.filter(x => x.id !== f.id));
-                            } else {
-                              setSelectedFuncionarios(prev => [...prev, f]);
-                            }
-                          }}
-                          style={{ 
-                            padding: '8px 12px', 
-                            cursor: 'pointer', 
-                            display: 'flex', 
-                            alignItems: 'center', 
-                            justifyContent: 'space-between',
-                            backgroundColor: isSelected ? '#F0F9FF' : 'transparent',
-                            borderBottom: '1px solid #F1F5F9',
-                            fontSize: '0.85rem'
-                          }}
-                        >
-                          <div>
-                            <strong>{f.nombre_completo}</strong>
-                            <span style={{ fontSize: '0.75rem', color: 'var(--color-text-muted)', marginLeft: '6px' }}>
-                              ({f.cargo})
-                            </span>
-                          </div>
-                          <input 
-                            type="checkbox" 
-                            checked={isSelected} 
-                            readOnly 
-                            style={{ cursor: 'pointer' }}
-                          />
-                        </div>
-                      );
-                    })}
+                    <div style={{ padding: '4px', borderBottom: '1px solid var(--color-border)', backgroundColor: '#F8FAFC' }}>
+                      <input
+                        type="text"
+                        placeholder="🔍 Buscar funcionario por nombre..."
+                        value={funcSearchTerm}
+                        onChange={(e) => setFuncSearchTerm(e.target.value)}
+                        onClick={(e) => e.stopPropagation()}
+                        style={{
+                          width: '100%',
+                          padding: '6px 10px',
+                          fontSize: '0.85rem',
+                          border: '1px solid var(--color-border)',
+                          borderRadius: '4px',
+                          outline: 'none'
+                        }}
+                      />
+                    </div>
+                    {funcionariosList.filter(f => f.nombre_completo?.toLowerCase().includes(funcSearchTerm.toLowerCase())).length === 0 ? (
+                      <div style={{ padding: '10px', fontSize: '0.85rem', color: 'var(--color-text-muted)', textAlign: 'center' }}>
+                        No se encontraron funcionarios
+                      </div>
+                    ) : (
+                      funcionariosList
+                        .filter(f => f.nombre_completo?.toLowerCase().includes(funcSearchTerm.toLowerCase()))
+                        .map(f => {
+                          const isSelected = selectedFuncionarios.some(x => x.id === f.id);
+                          return (
+                            <div 
+                              key={f.id} 
+                              onClick={() => {
+                                if (isSelected) {
+                                  setSelectedFuncionarios(prev => prev.filter(x => x.id !== f.id));
+                                } else {
+                                  setSelectedFuncionarios(prev => [...prev, f]);
+                                }
+                              }}
+                              style={{ 
+                                padding: '8px 12px', 
+                                cursor: 'pointer', 
+                                display: 'flex', 
+                                alignItems: 'center', 
+                                justifyContent: 'space-between',
+                                backgroundColor: isSelected ? '#F0F9FF' : 'transparent',
+                                borderBottom: '1px solid #F1F5F9',
+                                fontSize: '0.85rem'
+                              }}
+                            >
+                              <div>
+                                <strong>{f.nombre_completo}</strong>
+                                <span style={{ fontSize: '0.75rem', color: 'var(--color-text-muted)', marginLeft: '6px' }}>
+                                  ({f.cargo})
+                                </span>
+                              </div>
+                              <input 
+                                type="checkbox" 
+                                checked={isSelected} 
+                                readOnly 
+                                style={{ cursor: 'pointer' }}
+                              />
+                            </div>
+                          );
+                        })
+                    )}
                   </div>
                 )}
               </div>

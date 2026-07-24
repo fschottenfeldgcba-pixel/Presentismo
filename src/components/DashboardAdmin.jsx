@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { BarChart3, Plus, Download, Calendar, MapPin, Users, Award, ChevronRight, FileSpreadsheet, Settings, Search, Edit3, Save, Activity, Mic, MessageSquare, Check, TrendingUp, AlertTriangle, Trash2, UserCog, User, UserPlus } from 'lucide-react';
-import { getReuniones, getAsistentesPorReunion, getOradores, upsertVecino, normalizeComuna, normalizeCanalDifusion, guardarAsistencia, registrarOrador, eliminarTodosLosInscriptos, unifyCitizenRecords } from '../services/supabaseService';
+import { getReuniones, getAsistentesPorReunion, getOradores, upsertVecino, bulkUpsertVecinos, bulkGuardarAsistencias, normalizeComuna, normalizeCanalDifusion, guardarAsistencia, registrarOrador, eliminarTodosLosInscriptos, unifyCitizenRecords } from '../services/supabaseService';
 import { supabase } from '../lib/supabaseClient';
 import * as XLSX from 'xlsx';
 
@@ -2108,29 +2108,29 @@ ${oradoresEfectivos.length > 0
     setModalImportStatus('saving');
 
     try {
-      for (let idx = 0; idx < modalImportedNeighbors.length; idx++) {
-        const vecino = modalImportedNeighbors[idx];
+      const vecinosPayload = modalImportedNeighbors.map(vecino => ({
+        dni: vecino.dni,
+        nombre: vecino.nombre,
+        apellido: vecino.apellido,
+        celular: vecino.celular || null,
+        email: vecino.email || null,
+        barrio: vecino.barrio,
+        comuna: normalizeComuna(vecino.comuna || selectedReunionInscriptos.comuna)
+      }));
 
-        // 1. Alta en padrón central
-        await upsertVecino({
-          dni: vecino.dni,
-          nombre: vecino.nombre,
-          apellido: vecino.apellido,
-          celular: vecino.celular || null,
-          email: vecino.email || null,
-          barrio: vecino.barrio,
-          comuna: normalizeComuna(vecino.comuna || selectedReunionInscriptos.comuna)
-        });
+      const asistenciasPayload = modalImportedNeighbors.map(vecino => ({
+        reunion_id: selectedReunionInscriptos.id,
+        vecino_id: vecino.dni,
+        asistio: false,
+        estado_convocatoria: 'inscripto',
+        como_se_entero: normalizeCanalDifusion(vecino.como_se_entero),
+        invitado_por: vecino.invitado_por || null,
+        tema_previo: vecino.tema_previo || null,
+        necesita_accesibilidad: vecino.necesita_accesibilidad || null
+      }));
 
-        // 2. Alta en inscripción
-        await guardarAsistencia(selectedReunionInscriptos.id, vecino.dni, false, {
-          estado_convocatoria: 'inscripto',
-          como_se_entero: normalizeCanalDifusion(vecino.como_se_entero),
-          invitado_por: vecino.invitado_por || null,
-          tema_previo: vecino.tema_previo || null,
-          necesita_accesibilidad: vecino.necesita_accesibilidad || null
-        });
-      }
+      await bulkUpsertVecinos(vecinosPayload);
+      await bulkGuardarAsistencias(asistenciasPayload);
 
       alert(`¡${modalImportedNeighbors.length} vecinos importados e inscriptos con éxito!`);
       
