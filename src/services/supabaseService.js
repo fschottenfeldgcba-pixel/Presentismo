@@ -6,6 +6,38 @@ import { supabase } from '../lib/supabaseClient';
  */
 
 // =========================================================================
+// CACHÉ EN MEMORIA DE SESIÓN
+// Para listas estáticas (funcionarios, agentes_territorio) que no cambian
+// durante una sesión normal de trabajo. TTL por defecto: 5 minutos.
+// =========================================================================
+const SESSION_CACHE = {};
+
+/**
+ * Ejecuta una query de Supabase y cachea el resultado en memoria.
+ * Si hay datos en caché dentro del TTL, los retorna sin consultar Supabase.
+ * @param {string} key - Clave única para identificar el caché
+ * @param {Function} queryFn - Función async que retorna { data, error }
+ * @param {number} ttlMs - Tiempo de vida del caché en milisegundos (default: 5 min)
+ */
+export const cachedQuery = async (key, queryFn, ttlMs = 5 * 60 * 1000) => {
+  const cached = SESSION_CACHE[key];
+  if (cached && Date.now() - cached.timestamp < ttlMs) {
+    return { data: cached.data, error: null };
+  }
+  const result = await queryFn();
+  if (!result.error && result.data) {
+    SESSION_CACHE[key] = { data: result.data, timestamp: Date.now() };
+  }
+  return result;
+};
+
+/** Invalida una entrada del caché manualmente (útil tras crear/editar registros) */
+export const invalidateCache = (key) => {
+  delete SESSION_CACHE[key];
+};
+
+
+// =========================================================================
 // 1. AUTENTICACIÓN Y USUARIOS (Supabase Auth + perfiles_usuarios)
 // =========================================================================
 
@@ -26,7 +58,7 @@ export const login = async (email, password) => {
     // Cruzar con la tabla perfiles_usuarios para obtener rol y nombre
     let { data: profileData, error: profileError } = await supabase
       .from('perfiles_usuarios')
-      .select('*')
+      .select('id, email, nombre, rol')
       .eq('id', authData.user.id)
       .maybeSingle();
 
@@ -125,13 +157,23 @@ export const recuperarPassword = async (email) => {
 /**
  * Obtiene todas las reuniones ordenadas por fecha en orden descendente.
  */
-export const getReuniones = async () => {
+/**
+ * Obtiene las reuniones. Por defecto limita a los últimos 180 días para reducir egress.
+ * Pasar { historico: true } para obtener todas sin límite de fecha.
+ */
+export const getReuniones = async ({ historico = false } = {}) => {
   try {
-    const { data, error } = await supabase
+    let query = supabase
       .from('reuniones')
-      .select('*')
+      .select('id, nombre, fecha, lugar, barrio, comuna, tipo_reunion, tema, funcionario, gestion_presente, clima, semaforo_politico, active_orador_id, sintesis_cualitativa, config_uno_a_uno, created_at')
       .order('fecha', { ascending: false });
 
+    if (!historico) {
+      const cutoff = new Date(Date.now() - 180 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+      query = query.gte('fecha', cutoff);
+    }
+
+    const { data, error } = await query;
     if (error) throw error;
     return { data, error: null };
   } catch (error) {
@@ -278,7 +320,7 @@ export const getAsistentesPorReunion = async (reunionId) => {
   try {
     const { data, error } = await supabase
       .from('inscripciones_asistencias')
-      .select('*, vecino:vecinos(*), agente_territorio:agentes_territorio(*)')
+      .select('id, reunion_id, vecino_id, asistio, estado_convocatoria, horario_bloque_asignado, confirmado, como_se_entero, tema_previo, agente_territorio_id, vecino:vecinos(dni, nombre, apellido, barrio, comuna, celular, email), agente_territorio:agentes_territorio(id, nombre_completo)')
       .eq('reunion_id', reunionId);
 
     if (error) throw error;
@@ -306,7 +348,7 @@ export const guardarAsistencia = async (reunionId, vecinoDni, asistioVal, extraD
     const { data, error } = await supabase
       .from('inscripciones_asistencias')
       .upsert(upsertData, { onConflict: 'reunion_id,vecino_id' })
-      .select('*, vecino:vecinos(*)')
+      .select('id, reunion_id, vecino_id, asistio, estado_convocatoria, horario_bloque_asignado, confirmado, como_se_entero, tema_previo, agente_territorio_id')
       .single();
 
     if (error) throw error;
@@ -328,7 +370,7 @@ export const getOradores = async (reunionId) => {
   try {
     const { data, error } = await supabase
       .from('oradores')
-      .select('*, vecino:vecinos(*)')
+      .select('id, reunion_id, vecino_id, estado, orden, tema_original, tema_efectivo, created_at, vecino:vecinos(dni, nombre, apellido, barrio, comuna)')
       .eq('reunion_id', reunionId)
       .order('orden', { ascending: true });
 
@@ -681,6 +723,156 @@ export const updatePassword = async (newPassword) => {
     return { data, error: null };
   } catch (error) {
     console.error('Error en updatePassword:', error);
+    return { data: null, error };
+  }
+};
+
+/**
+ * Fusiona dos fichas de vecinos duplicadas, consolidando datos y migrando el historial de interacciones al registro maestro.
+ * 
+ * @param {string} masterDni - El DNI real y válido que se conservará como clave principal (ej: '23299267').
+ * @param {string} duplicateDniOrId - El DNI erróneo o ID temporal a fusionar (ej: '1544791761').
+ * @param {object} overrideFields - Campos opcionales a sobreescribir ({ email, phone/celular, barrio, comuna, nombre, apellido }).
+ */
+export const unifyCitizenRecords = async (masterDni, duplicateDniOrId, overrideFields = {}) => {
+  try {
+    const cleanMasterDni = String(masterDni || '').trim();
+    const cleanDuplicateDni = String(duplicateDniOrId || '').trim();
+
+    if (!cleanMasterDni || !cleanDuplicateDni) {
+      throw new Error('Debe proporcionar el DNI Maestro y el DNI/ID Duplicado.');
+    }
+
+    if (cleanMasterDni === cleanDuplicateDni) {
+      throw new Error('El DNI Maestro y el DNI Duplicado no pueden ser idénticos.');
+    }
+
+    // 1. Obtener la ficha del registro duplicado y maestro
+    const { data: duplicateVecino } = await supabase
+      .from('vecinos')
+      .select('*')
+      .eq('dni', cleanDuplicateDni)
+      .maybeSingle();
+
+    const { data: masterVecino } = await supabase
+      .from('vecinos')
+      .select('*')
+      .eq('dni', cleanMasterDni)
+      .maybeSingle();
+
+    if (!duplicateVecino && !masterVecino) {
+      throw new Error(`No se encontró ningún vecino registrado con DNI ${cleanDuplicateDni} ni ${cleanMasterDni}.`);
+    }
+
+    // 2. Consolidar campos (Relleno de vacíos + Overrides)
+    const baseNombre = overrideFields.nombre || masterVecino?.nombre || duplicateVecino?.nombre || 'Vecino';
+    const baseApellido = overrideFields.apellido || masterVecino?.apellido || duplicateVecino?.apellido || '';
+    const baseCelular = overrideFields.phone || overrideFields.celular || masterVecino?.celular || duplicateVecino?.celular || '';
+    const baseEmail = overrideFields.email || masterVecino?.email || duplicateVecino?.email || '';
+    const baseBarrio = overrideFields.barrio || masterVecino?.barrio || duplicateVecino?.barrio || '';
+    const baseComuna = overrideFields.comuna || masterVecino?.comuna || duplicateVecino?.comuna || '';
+
+    const consolidatedMaster = {
+      dni: cleanMasterDni,
+      nombre: baseNombre,
+      apellido: baseApellido,
+      celular: baseCelular,
+      email: baseEmail,
+      barrio: baseBarrio,
+      comuna: baseComuna
+    };
+
+    // Upsert Ficha Maestra
+    const { data: updatedMaster, error: errUpsert } = await supabase
+      .from('vecinos')
+      .upsert(consolidatedMaster)
+      .select()
+      .single();
+
+    if (errUpsert) throw errUpsert;
+
+    // 3. Reasignar Historial de Inscripciones / Asistencias
+    const { data: dupInscripciones } = await supabase
+      .from('inscripciones_asistencias')
+      .select('*')
+      .eq('vecino_id', cleanDuplicateDni);
+
+    let countInscripcionesMigradas = 0;
+    if (dupInscripciones && dupInscripciones.length > 0) {
+      const { data: masterInscripciones } = await supabase
+        .from('inscripciones_asistencias')
+        .select('*')
+        .eq('vecino_id', cleanMasterDni);
+
+      const masterReunionMap = new Map((masterInscripciones || []).map(i => [i.reunion_id, i]));
+
+      for (const dupInsc of dupInscripciones) {
+        const existingMasterInsc = masterReunionMap.get(dupInsc.reunion_id);
+        if (existingMasterInsc) {
+          // Fusionar asistencias y eliminar duplicado
+          const mergedAsistio = existingMasterInsc.asistio || dupInsc.asistio;
+          await supabase
+            .from('inscripciones_asistencias')
+            .update({ asistio: mergedAsistio })
+            .eq('id', existingMasterInsc.id);
+
+          await supabase
+            .from('inscripciones_asistencias')
+            .delete()
+            .eq('id', dupInsc.id);
+        } else {
+          // Migrar inscripción al maestro
+          await supabase
+            .from('inscripciones_asistencias')
+            .update({ vecino_id: cleanMasterDni })
+            .eq('id', dupInsc.id);
+        }
+        countInscripcionesMigradas++;
+      }
+    }
+
+    // 4. Reasignar Historial de Oradores
+    const { data: dupOradores } = await supabase
+      .from('oradores')
+      .select('*')
+      .eq('vecino_id', cleanDuplicateDni);
+
+    let countOradoresMigrados = 0;
+    if (dupOradores && dupOradores.length > 0) {
+      await supabase
+        .from('oradores')
+        .update({ vecino_id: cleanMasterDni })
+        .eq('vecino_id', cleanDuplicateDni);
+      countOradoresMigrados = dupOradores.length;
+    }
+
+    // 5. Eliminar ficha duplicada
+    if (duplicateVecino && cleanDuplicateDni !== cleanMasterDni) {
+      await supabase
+        .from('vecinos')
+        .delete()
+        .eq('dni', cleanDuplicateDni);
+    }
+
+    return {
+      data: {
+        masterRecord: updatedMaster,
+        salvagedFields: {
+          email: baseEmail,
+          celular: baseCelular,
+          barrio: baseBarrio,
+          comuna: baseComuna
+        },
+        reassignedHistory: {
+          inscripciones: countInscripcionesMigradas,
+          oradores: countOradoresMigrados
+        }
+      },
+      error: null
+    };
+
+  } catch (error) {
+    console.error('Error en unifyCitizenRecords:', error);
     return { data: null, error };
   }
 };

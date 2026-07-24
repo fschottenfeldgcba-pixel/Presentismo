@@ -8,6 +8,46 @@ import PanelModerador from './components/PanelModerador';
 import { LogOut, ShieldCheck } from 'lucide-react';
 import { supabase } from './lib/supabaseClient';
 
+class ErrorBoundary extends React.Component {
+  constructor(props) {
+    super(props);
+    this.state = { hasError: false, error: null };
+  }
+
+  static getDerivedStateFromError(error) {
+    return { hasError: true, error };
+  }
+
+  componentDidCatch(error, errorInfo) {
+    console.error("Error no capturado en la aplicación:", error, errorInfo);
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div style={{ padding: '3rem', textAlign: 'center', backgroundColor: '#F8FAFC', minHeight: '80vh', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center' }}>
+          <h2 style={{ color: '#991B1B', marginBottom: '1rem', fontWeight: '800' }}>⚠️ Ocurrió un error inesperado al cargar la pantalla</h2>
+          <p style={{ color: '#475569', maxWidth: '500px', marginBottom: '1.5rem', fontSize: '0.9rem' }}>
+            {this.state.error?.message || 'Detalle inesperado en la interfaz.'}
+          </p>
+          <button 
+            className="btn btn-primary"
+            onClick={() => {
+              localStorage.removeItem('presentismo_user');
+              sessionStorage.clear();
+              window.location.href = '/';
+            }}
+            style={{ backgroundColor: 'var(--color-primary)', fontWeight: '700', padding: '10px 24px' }}
+          >
+            Reintentar / Volver al Login
+          </button>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
 export default function App() {
   const [user, setUser] = useState(() => {
     const saved = localStorage.getItem('presentismo_user');
@@ -144,37 +184,38 @@ export default function App() {
   const isCercaniaOrGerencia = user && (user.rol === 'gerencia' || user.rol === 'cercania');
 
   return (
-    <div className="app-container">
-      {/* HEADER DE LA APLICACIÓN */}
-      {user && (
-        <header className="app-header">
-          <h1>
-            <span>BA</span> Participación Ciudadana
-          </h1>
-          <div className="user-info">
-            <span style={{ display: 'flex', alignItems: 'center', gap: '4px', fontSize: '0.85rem' }}>
-              <ShieldCheck size={14} style={{ color: 'var(--color-highlight)' }} />
-              <strong>{user.nombre}</strong>
-            </span>
-            <span className="role-badge">
-              {user.rol.replace('_', ' ')}
-            </span>
-            <button 
-              className="btn btn-secondary btn-sm" 
-              onClick={handleLogout} 
-              style={{ 
-                padding: '4px 8px', 
-                backgroundColor: 'rgba(255,255,255,0.1)', 
-                color: '#ffffff', 
-                border: '1px solid rgba(255,255,255,0.2)' 
-              }}
-              title="Cerrar sesión"
-            >
-              <LogOut size={14} />
-            </button>
-          </div>
-        </header>
-      )}
+    <ErrorBoundary>
+      <div className="app-container">
+        {/* HEADER DE LA APLICACIÓN */}
+        {user && (
+          <header className="app-header">
+            <h1>
+              <span>BA</span> Participación Ciudadana
+            </h1>
+            <div className="user-info">
+              <span style={{ display: 'flex', alignItems: 'center', gap: '4px', fontSize: '0.85rem' }}>
+                <ShieldCheck size={14} style={{ color: 'var(--color-highlight)' }} />
+                <strong>{user.nombre}</strong>
+              </span>
+              <span className="role-badge">
+                {(user.rol || 'gerencia').replace('_', ' ')}
+              </span>
+              <button 
+                className="btn btn-secondary btn-sm" 
+                onClick={handleLogout} 
+                style={{ 
+                  padding: '4px 8px', 
+                  backgroundColor: 'rgba(255,255,255,0.1)', 
+                  color: '#ffffff', 
+                  border: '1px solid rgba(255,255,255,0.2)' 
+                }}
+                title="Cerrar sesión"
+              >
+                <LogOut size={14} />
+              </button>
+            </div>
+          </header>
+        )}
 
       {/* CUERPO PRINCIPAL / ENRUTADOR DE VISTAS */}
       <main style={{ flexGrow: 1, display: 'flex', flexDirection: 'column' }}>
@@ -337,5 +378,6 @@ export default function App() {
         </div>
       )}
     </div>
+    </ErrorBoundary>
   );
 }

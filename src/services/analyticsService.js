@@ -103,11 +103,40 @@ export const fetchDashboardData = async (filtros) => {
   
   const pageSize = 1000;
   
-  // 1. Traer todas las reuniones válidas
+  // 1. Traer reuniones válidas con filtros aplicados en el servidor
+  // Si no hay rango de fechas manual, se limita a los últimos 180 días para reducir egress
   let reuniones = [];
   let page = 0;
+  const defaultCutoff = new Date(Date.now() - 180 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+  const queryDesde = fechaDesde || defaultCutoff;
+  // Extender el rango para incluir también el período anterior (para comparativos)
+  // Estimamos el período anterior duplicando el rango hacia atrás
+  const queryDesdeConAnterior = fechaDesde
+    ? (() => {
+        const desde = new Date(fechaDesde);
+        const hasta = fechaHasta ? new Date(fechaHasta) : new Date();
+        const diffDays = Math.ceil(Math.abs(hasta - desde) / (1000 * 60 * 60 * 24));
+        const anteriorDesdeExt = new Date(desde);
+        anteriorDesdeExt.setDate(anteriorDesdeExt.getDate() - diffDays - 1);
+        return anteriorDesdeExt.toISOString().split('T')[0];
+      })()
+    : new Date(Date.now() - 365 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+
   while (true) {
-    const { data, error } = await supabase.from('reuniones').select('id, nombre, funcionario, fecha, comuna, barrio, tipo_reunion, semaforo_politico, clima, tema').order('id').range(page * pageSize, (page + 1) * pageSize - 1);
+    let query = supabase
+      .from('reuniones')
+      .select('id, nombre, funcionario, fecha, comuna, barrio, tipo_reunion, semaforo_politico, clima, tema')
+      .gte('fecha', queryDesdeConAnterior)
+      .order('id')
+      .range(page * pageSize, (page + 1) * pageSize - 1);
+
+    // Filtros server-side opcionales
+    if (selectedFuncionario) query = query.eq('funcionario', selectedFuncionario);
+    if (selectedTipoReunion) query = query.eq('tipo_reunion', selectedTipoReunion);
+    if (selectedBarrio) query = query.eq('barrio', selectedBarrio);
+    if (fechaHasta) query = query.lte('fecha', fechaHasta);
+
+    const { data, error } = await query;
     if (error) throw error;
     if (!data || data.length === 0) break;
     reuniones = reuniones.concat(data);

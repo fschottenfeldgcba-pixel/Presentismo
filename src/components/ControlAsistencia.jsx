@@ -11,7 +11,8 @@ import {
   registrarOrador, 
   eliminarOrador, 
   updateOradorTema,
-  updateOradorDetails
+  updateOradorDetails,
+  cachedQuery
 } from '../services/supabaseService';
 import PreguntasTematicas from './PreguntasTematicas';
 import Cronometro1a1 from './Cronometro1a1';
@@ -210,13 +211,16 @@ export default function ControlAsistencia({ reunion, onBack, mode = 'asistencia'
     
     loadStatsCounts();
 
-    // Cargar agentes territoriales
+    // Cargar agentes territoriales (con caché de sesión de 5 minutos)
     const fetchAgentes = async () => {
       try {
-        const { data, error } = await supabase
-          .from('agentes_territorio')
-          .select('*')
-          .order('nombre_completo', { ascending: true });
+        const { data, error } = await cachedQuery('agentes_territorio', async () => {
+          const result = await supabase
+            .from('agentes_territorio')
+            .select('id, nombre_completo, zona')
+            .order('nombre_completo', { ascending: true });
+          return result;
+        });
         if (!error && data) {
           setAgentesTerritorio(data);
         }

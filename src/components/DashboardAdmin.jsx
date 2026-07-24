@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { BarChart3, Plus, Download, Calendar, MapPin, Users, Award, ChevronRight, FileSpreadsheet, Settings, Search, Edit3, Save, Activity, Mic, MessageSquare, Check, TrendingUp, AlertTriangle, Trash2, UserCog, User, UserPlus } from 'lucide-react';
-import { getReuniones, getAsistentesPorReunion, getOradores, upsertVecino, normalizeComuna, normalizeCanalDifusion, guardarAsistencia, registrarOrador, eliminarTodosLosInscriptos } from '../services/supabaseService';
+import { getReuniones, getAsistentesPorReunion, getOradores, upsertVecino, normalizeComuna, normalizeCanalDifusion, guardarAsistencia, registrarOrador, eliminarTodosLosInscriptos, unifyCitizenRecords } from '../services/supabaseService';
 import { supabase } from '../lib/supabaseClient';
 import * as XLSX from 'xlsx';
 
@@ -189,6 +189,51 @@ export default function DashboardAdmin({
   const [radiografia, setRadiografia] = useState([]);
   const [loadingRadiografia, setLoadingRadiografia] = useState(false);
 
+  // Estados para Modal de Unificación / Saneamiento (Merge)
+  const [showUnifyModal, setShowUnifyModal] = useState(false);
+  const [unifyMasterDni, setUnifyMasterDni] = useState('');
+  const [unifyDupDni, setUnifyDupDni] = useState('');
+  const [unifyOverrideEmail, setUnifyOverrideEmail] = useState('');
+  const [unifyOverridePhone, setUnifyOverridePhone] = useState('');
+  const [unifyOverrideBarrio, setUnifyOverrideBarrio] = useState('');
+  const [unifyOverrideComuna, setUnifyOverrideComuna] = useState('');
+  const [unifyLoading, setUnifyLoading] = useState(false);
+
+  const handleExecuteUnify = async (e) => {
+    e.preventDefault();
+    if (!unifyMasterDni || !unifyDupDni) {
+      alert('Debés ingresar tanto el DNI Maestro como el DNI/ID Duplicado.');
+      return;
+    }
+
+    setUnifyLoading(true);
+    const overrides = {};
+    if (unifyOverrideEmail) overrides.email = unifyOverrideEmail;
+    if (unifyOverridePhone) overrides.phone = unifyOverridePhone;
+    if (unifyOverrideBarrio) overrides.barrio = unifyOverrideBarrio;
+    if (unifyOverrideComuna) overrides.comuna = unifyOverrideComuna;
+
+    const { data, error } = await unifyCitizenRecords(unifyMasterDni, unifyDupDni, overrides);
+    setUnifyLoading(false);
+
+    if (error) {
+      alert(`Error al unificar las fichas: ${error.message}`);
+    } else {
+      alert(`¡Fichas unificadas con éxito!\n\n- DNI Maestro: ${data.masterRecord.dni}\n- Nombre: ${data.masterRecord.nombre} ${data.masterRecord.apellido}\n- Inscripciones migradas: ${data.reassignedHistory.inscripciones}\n- Oratorias migradas: ${data.reassignedHistory.oradores}`);
+      setShowUnifyModal(false);
+      setUnifyMasterDni('');
+      setUnifyDupDni('');
+      setUnifyOverrideEmail('');
+      setUnifyOverridePhone('');
+      setUnifyOverrideBarrio('');
+      setUnifyOverrideComuna('');
+
+      if (padronSearch) {
+        handleSearchPadron(e);
+      }
+    }
+  };
+
   // Estados para Modal de Inscriptos (Requisito 6)
   const [showInscriptosModal, setShowInscriptosModal] = useState(false);
   const [selectedReunionInscriptos, setSelectedReunionInscriptos] = useState(null);
@@ -299,6 +344,8 @@ export default function DashboardAdmin({
         const avgSecs = averageSeconds % 60;
         const displayAvg = `${avgMins.toString().padStart(2, '0')}:${avgSecs.toString().padStart(2, '0')} min`;
 
+        const sortedCited = [...cited].sort((a, b) => (a.horario_bloque_asignado || '').localeCompare(b.horario_bloque_asignado || ''));
+
         txt = `👨‍👩‍👧‍👦 1a1 | *${reunion.funcionario || reunion.nombre}* - ${reunion.comuna}
 📅 ${displayFecha || 'Fecha'} | 🕠 ${displayHora}
 ⏰ Inicio: ${estimatedStart} hs | Finalizó: ${estimatedEnd} hs
@@ -315,9 +362,12 @@ export default function DashboardAdmin({
 *📝 Síntesis cualitativa:*
 ${(reunion.sintesis_cualitativa || '').trim() || 'La reunión se desarrolló con normalidad.'}
 
+*🏛️ Gestión presente:*
+${(reunion.gestion_presente || '').trim() || '- ' + (reunion.funcionario || 'Funcionario')}
+
 *🏛️ Minutas de los Vecinos:*
-${cited.length > 0 
-  ? cited.map((c, idx) => {
+${sortedCited.length > 0 
+  ? sortedCited.map((c, idx) => {
       const status = timeRecords[c.vecino_id]?.horaSalida 
         ? `✅ Atendido (${timeRecords[c.vecino_id].duracion})` 
         : (c.asistio ? '⏳ En espera (Presente)' : '❌ Ausente');
@@ -648,7 +698,8 @@ ${oradoresEfectivos.length > 0
 
   const loadAllData = async (forceHistorical = false) => {
     setLoading(true);
-    const { data: list, error: errReuniones } = await getReuniones();
+    const isHistoricalNeeded = showHistorical || forceHistorical;
+    const { data: list, error: errReuniones } = await getReuniones({ historico: isHistoricalNeeded });
     if (errReuniones) {
       console.error('Error al cargar reuniones:', errReuniones);
       setLoading(false);
@@ -2974,9 +3025,19 @@ ${oradoresEfectivos.length > 0
               
               {/* Card de Búsqueda */}
               <div className="card" style={{ margin: 0 }}>
-                <h3 style={{ fontSize: '1.2rem', color: 'var(--color-primary)', marginBottom: '1rem' }}>
-                  Buscador del Padrón Histórico
-                </h3>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem', flexWrap: 'wrap', gap: '8px' }}>
+                  <h3 style={{ fontSize: '1.2rem', color: 'var(--color-primary)', margin: 0 }}>
+                    Buscador del Padrón Histórico
+                  </h3>
+                  <button 
+                    onClick={() => setShowUnifyModal(true)} 
+                    className="btn btn-secondary btn-sm"
+                    style={{ backgroundColor: '#FEF3C7', color: '#92400E', border: '1px solid #FCD34D', fontWeight: '700', fontSize: '0.8rem', display: 'flex', alignItems: 'center', gap: '4px' }}
+                    title="Unificar fichas duplicadas por celular en DNI u otro error"
+                  >
+                    <UserCog size={14} /> Unificar Fichas Duplicadas
+                  </button>
+                </div>
                 
                 <form onSubmit={handleSearchPadron} style={{ display: 'flex', gap: '10px', marginBottom: '1.5rem' }}>
                   <div style={{ position: 'relative', flexGrow: 1 }}>
@@ -4572,6 +4633,108 @@ ${oradoresEfectivos.length > 0
 
               </div>
             )}
+          </div>
+        </div>
+      )}
+
+      {/* MODAL DE UNIFICACIÓN DE FICHAS DUPLICADAS (MERGE) */}
+      {showUnifyModal && (
+        <div className="modal-overlay" style={{ zIndex: 99999, display: 'flex', alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(0,0,0,0.5)', position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, padding: '20px' }}>
+          <div className="modal-content" style={{ maxWidth: '600px', width: '100%', padding: '24px', borderRadius: '12px', backgroundColor: '#FFFFFF', maxHeight: '90vh', overflowY: 'auto' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px', borderBottom: '1px solid #E2E8F0', paddingBottom: '12px' }}>
+              <h3 style={{ margin: 0, fontSize: '1.2rem', color: 'var(--color-primary)', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <UserCog size={20} style={{ color: 'var(--color-highlight)' }} />
+                Unificación y Saneamiento de Fichas (Merge)
+              </h3>
+              <button onClick={() => setShowUnifyModal(false)} style={{ background: 'none', border: 'none', fontSize: '1.5rem', cursor: 'pointer', color: '#64748B' }}>&times;</button>
+            </div>
+
+            <p style={{ fontSize: '0.85rem', color: '#475569', marginBottom: '16px' }}>
+              Esta herramienta permite consolidar dos fichas duplicadas (ej: cuando se cargó un celular en la casilla de DNI). Migra todo el historial de reuniones y oradores al DNI maestro.
+            </p>
+
+            <form onSubmit={handleExecuteUnify}>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', marginBottom: '16px' }}>
+                <div>
+                  <label style={{ fontSize: '0.8rem', fontWeight: '700', color: '#0F172A' }}>DNI Maestro (A Conservar) *</label>
+                  <input
+                    type="text"
+                    className="form-control"
+                    placeholder="Ej: 23299267"
+                    value={unifyMasterDni}
+                    onChange={(e) => setUnifyMasterDni(e.target.value)}
+                    required
+                  />
+                </div>
+
+                <div>
+                  <label style={{ fontSize: '0.8rem', fontWeight: '700', color: '#0F172A' }}>DNI Duplicado o Erróneo / Teléfono ID *</label>
+                  <input
+                    type="text"
+                    className="form-control"
+                    placeholder="Ej: 1544791761"
+                    value={unifyDupDni}
+                    onChange={(e) => setUnifyDupDni(e.target.value)}
+                    required
+                  />
+                </div>
+
+                <div style={{ padding: '12px', backgroundColor: '#F8FAFC', borderRadius: '8px', border: '1px solid #E2E8F0', marginTop: '4px' }}>
+                  <h4 style={{ margin: '0 0 8px 0', fontSize: '0.85rem', color: '#334155' }}>Campos Opcionales a Sobreescribir / Rellenar:</h4>
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
+                    <div>
+                      <input
+                        type="email"
+                        className="form-control"
+                        placeholder="Email (ej: arielrota@gmail.com)"
+                        value={unifyOverrideEmail}
+                        onChange={(e) => setUnifyOverrideEmail(e.target.value)}
+                        style={{ fontSize: '0.8rem' }}
+                      />
+                    </div>
+                    <div>
+                      <input
+                        type="text"
+                        className="form-control"
+                        placeholder="Teléfono (ej: 1144791761)"
+                        value={unifyOverridePhone}
+                        onChange={(e) => setUnifyOverridePhone(e.target.value)}
+                        style={{ fontSize: '0.8rem' }}
+                      />
+                    </div>
+                    <div>
+                      <input
+                        type="text"
+                        className="form-control"
+                        placeholder="Barrio (ej: Flores)"
+                        value={unifyOverrideBarrio}
+                        onChange={(e) => setUnifyOverrideBarrio(e.target.value)}
+                        style={{ fontSize: '0.8rem' }}
+                      />
+                    </div>
+                    <div>
+                      <input
+                        type="text"
+                        className="form-control"
+                        placeholder="Comuna (ej: Comuna 7)"
+                        value={unifyOverrideComuna}
+                        onChange={(e) => setUnifyOverrideComuna(e.target.value)}
+                        style={{ fontSize: '0.8rem' }}
+                      />
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px' }}>
+                <button type="button" onClick={() => setShowUnifyModal(false)} className="btn btn-secondary">
+                  Cancelar
+                </button>
+                <button type="submit" className="btn btn-primary" disabled={unifyLoading} style={{ backgroundColor: 'var(--color-primary)', fontWeight: '700' }}>
+                  {unifyLoading ? 'Consolidando...' : 'Ejecutar Unificación'}
+                </button>
+              </div>
+            </form>
           </div>
         </div>
       )}

@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { ArrowLeft, Save, Shield, User, FileText, Check, AlertCircle, Mic, RefreshCw, Trash2 } from 'lucide-react';
 import { TIPOS_REUNION } from '../data/mockData';
-import { updateReunion, getOradores, updateOradorDetails, deleteReunionCompleta } from '../services/supabaseService';
+import { updateReunion, getOradores, updateOradorDetails, deleteReunionCompleta, cachedQuery } from '../services/supabaseService';
 import { supabase } from '../lib/supabaseClient';
 
 const COMUNAS = [
@@ -94,14 +94,17 @@ export default function AdministrarReunion({ reunion, onBack, onSaveSuccess }) {
   const [showFuncDropdown, setShowFuncDropdown] = useState(false);
   const dropdownRef = useRef(null);
 
-  // Cargar funcionarios de Supabase e inicializar seleccionados
+  // Cargar funcionarios de Supabase e inicializar seleccionados (con caché de sesión de 5 minutos)
   useEffect(() => {
     const fetchFuncionarios = async () => {
       try {
-        const { data, error } = await supabase
-          .from('funcionarios')
-          .select('*')
-          .order('nombre_completo', { ascending: true });
+        const { data, error } = await cachedQuery('funcionarios', async () => {
+          const result = await supabase
+            .from('funcionarios')
+            .select('id, nombre_completo, cargo')
+            .order('nombre_completo', { ascending: true });
+          return result;
+        });
         if (!error && data) {
           setFuncionariosList(data);
           

@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import { Play, Square, UserPlus, Clock, Trash2, CheckCircle2, UserCheck, RotateCcw, FileText, Download, Copy, Activity, MessageSquare } from 'lucide-react';
-import { guardarAsistencia, upsertVecino } from '../services/supabaseService';
+import { Play, Square, UserPlus, Clock, Trash2, CheckCircle2, UserCheck, RotateCcw, RefreshCw, FileText, Download, Copy, Activity, MessageSquare } from 'lucide-react';
+import { guardarAsistencia, upsertVecino, getAsistentesPorReunion } from '../services/supabaseService';
 import { supabase } from '../lib/supabaseClient';
 import * as XLSX from 'xlsx';
 
@@ -48,6 +48,7 @@ export default function Cronometro1a1({ reunion, initialAsistencias, onUpdate, o
   const [tempDurationVal, setTempDurationVal] = useState('');
   const [citationOverrides, setCitationOverrides] = useState({});
   const [selectedForCopy, setSelectedForCopy] = useState({});
+  const [syncing, setSyncing] = useState(false);
 
   // Formulario para registro "Por la ventana" (Walk-In excepcional)
   const [showVentanaModal, setShowVentanaModal] = useState(false);
@@ -58,12 +59,14 @@ export default function Cronometro1a1({ reunion, initialAsistencias, onUpdate, o
   const [localSintesis, setLocalSintesis] = useState(reunion.sintesis_cualitativa || '');
   const [localClima, setLocalClima] = useState(reunion.clima || 'bajo');
   const [localSemaforo, setLocalSemaforo] = useState(reunion.semaforo_politico || 'verde');
+  const [localGestionPresente, setLocalGestionPresente] = useState(reunion.gestion_presente || (reunion.funcionario ? `- ${reunion.funcionario}\n` : ''));
 
   useEffect(() => {
     setLocalSintesis(reunion.sintesis_cualitativa || '');
     setLocalClima(reunion.clima || 'bajo');
     setLocalSemaforo(reunion.semaforo_politico || 'verde');
-  }, [reunion.sintesis_cualitativa, reunion.clima, reunion.semaforo_politico]);
+    setLocalGestionPresente(reunion.gestion_presente || (reunion.funcionario ? `- ${reunion.funcionario}\n` : ''));
+  }, [reunion.sintesis_cualitativa, reunion.clima, reunion.semaforo_politico, reunion.gestion_presente, reunion.funcionario]);
   const [vetNombre, setVetNombre] = useState('');
   const [vetApellido, setVetApellido] = useState('');
   const [vetCelular, setVetCelular] = useState('');
@@ -100,11 +103,75 @@ export default function Cronometro1a1({ reunion, initialAsistencias, onUpdate, o
           });
           setActiveTimers(restoredTimers);
         }
+
+        // Auto-calcular horarios si existen registros
+        const { autoStart, autoEnd } = computeAutoTimes(config.timeRecords, config.activeTimers);
+        if (autoStart) setEstimatedStart(autoStart);
+        if (autoEnd) setEstimatedEnd(autoEnd);
       } catch (err) {
         console.warn('Error parsing Uno a Uno config:', err);
       }
     }
   }, [reunion.config_uno_a_uno, reunion.gestion_presente]);
+
+  // Sincronización / Refresco manual completo desde Supabase
+  const handleManualRefresh = async () => {
+    setSyncing(true);
+    try {
+      // 1. Re-consultar la reunión actualizada (para config_uno_a_uno, sintesis, clima, etc)
+      const { data: freshReunion, error: errReun } = await supabase
+        .from('reuniones')
+        .select('*')
+        .eq('id', reunion.id)
+        .single();
+
+      if (!errReun && freshReunion) {
+        if (freshReunion.sintesis_cualitativa) setLocalSintesis(freshReunion.sintesis_cualitativa);
+        if (freshReunion.clima) setLocalClima(freshReunion.clima);
+        if (freshReunion.semaforo_politico) setLocalSemaforo(freshReunion.semaforo_politico);
+        if (freshReunion.gestion_presente) setLocalGestionPresente(freshReunion.gestion_presente);
+
+        const configData = freshReunion.config_uno_a_uno || (freshReunion.gestion_presente && freshReunion.gestion_presente.startsWith('{') ? freshReunion.gestion_presente : null);
+        if (configData) {
+          const config = typeof configData === 'string' ? JSON.parse(configData) : configData;
+          if (config.estimatedStart) setEstimatedStart(config.estimatedStart);
+          if (config.estimatedEnd) setEstimatedEnd(config.estimatedEnd);
+          if (config.timeRecords) setTimeRecords(config.timeRecords);
+          if (config.citationOverrides) setCitationOverrides(config.citationOverrides);
+
+          if (config.activeTimers) {
+            const restoredTimers = {};
+            Object.keys(config.activeTimers).forEach(dni => {
+              const entry = config.activeTimers[dni];
+              restoredTimers[dni] = {
+                startMs: entry.startMs,
+                elapsedSecs: Math.floor((Date.now() - entry.startMs) / 1000),
+                isRunning: true,
+                horaIngreso: entry.horaIngreso
+              };
+            });
+            setActiveTimers(restoredTimers);
+          }
+
+          const { autoStart, autoEnd } = computeAutoTimes(config.timeRecords, config.activeTimers);
+          if (autoStart) setEstimatedStart(autoStart);
+          if (autoEnd) setEstimatedEnd(autoEnd);
+        }
+      }
+
+      // 2. Re-consultar las asistencias completas (con bloques y datos del vecino)
+      const { data: freshAsis, error: errAsis } = await getAsistentesPorReunion(reunion.id);
+      if (!errAsis && freshAsis) {
+        setAsistencias(freshAsis);
+      }
+
+      if (onUpdate) await onUpdate();
+    } catch (err) {
+      console.error('Error al sincronizar Uno a Uno:', err);
+    } finally {
+      setSyncing(false);
+    }
+  };
 
   // Generador de dropdowns de tiempo en intervalos de 15 minutos
   const generateTimeOptions = () => {
@@ -267,19 +334,20 @@ export default function Cronometro1a1({ reunion, initialAsistencias, onUpdate, o
     }
   };
 
-  const handleSaveReunionQualitative = async (newSintesis, newClima, newSemaforo) => {
+  const handleSaveReunionQualitative = async (newSintesis, newClima, newSemaforo, newGestionPresente) => {
     try {
       const { error } = await supabase
         .from('reuniones')
         .update({
           sintesis_cualitativa: newSintesis,
           clima: newClima,
-          semaforo_politico: newSemaforo
+          semaforo_politico: newSemaforo,
+          gestion_presente: newGestionPresente
         })
         .eq('id', reunion.id);
       if (error) throw error;
       onUpdate();
-      alert('¡Síntesis y variables cualitativas guardadas con éxito!');
+      alert('¡Síntesis, gestión presente y variables cualitativas guardadas con éxito!');
     } catch (err) {
       console.error('Error al guardar síntesis:', err);
       alert('No se pudo guardar la síntesis.');
@@ -300,10 +368,12 @@ export default function Cronometro1a1({ reunion, initialAsistencias, onUpdate, o
       return;
     }
 
-    const selectedConvocados = convocadosList.filter(item => selectedDnis.includes(item.vecino_id));
+    const selectedConvocados = convocadosList
+      .filter(item => selectedDnis.includes(item.vecino_id))
+      .sort((a, b) => (a.horario_bloque_asignado || '').localeCompare(b.horario_bloque_asignado || ''));
 
     const textToCopy = selectedConvocados
-      .map(item => `*${item.vecino?.nombre} ${item.vecino?.apellido}*\n${item.tema_previo || 'Sin tema'}`)
+      .map(item => `*${item.vecino?.nombre || ''} ${item.vecino?.apellido || ''}* - ${item.horario_bloque_asignado || 'Sin hora'}\nTema: ${item.tema_previo || 'Sin tema'}`)
       .join('\n\n');
 
     try {
@@ -384,6 +454,40 @@ export default function Cronometro1a1({ reunion, initialAsistencias, onUpdate, o
     return () => clearInterval(interval);
   }, [activeTimers]);
 
+  // Helper para auto-calcular horarios reales (primer ingreso y última salida)
+  const computeAutoTimes = (records, timers) => {
+    let autoStart = null;
+    let autoEnd = null;
+
+    const allIngresos = [];
+    Object.values(records || {}).forEach(r => {
+      if (r?.horaIngreso) allIngresos.push(r.horaIngreso);
+    });
+    Object.values(timers || {}).forEach(t => {
+      if (t?.horaIngreso) allIngresos.push(t.horaIngreso);
+    });
+
+    if (allIngresos.length > 0) {
+      allIngresos.sort();
+      autoStart = allIngresos[0].substring(0, 5);
+    }
+
+    const allSalidas = [];
+    Object.values(records || {}).forEach(r => {
+      if (r?.horaSalida) allSalidas.push(r.horaSalida);
+    });
+
+    if (allSalidas.length > 0) {
+      allSalidas.sort();
+      autoEnd = allSalidas[allSalidas.length - 1].substring(0, 5);
+    } else if (timers && Object.keys(timers).length > 0) {
+      const now = new Date();
+      autoEnd = now.toTimeString().substring(0, 5);
+    }
+
+    return { autoStart, autoEnd };
+  };
+
   // Iniciar atención (Play)
   const handleStartTimer = async (vecinoDni) => {
     const now = new Date();
@@ -417,7 +521,14 @@ export default function Cronometro1a1({ reunion, initialAsistencias, onUpdate, o
     };
     setTimeRecords(newRecords);
 
-    await saveUnoAUnoConfig(estimatedStart, estimatedEnd, newRecords, serializeActiveTimers(newActiveTimers));
+    // Auto-actualizar horario de inicio/fin
+    const { autoStart, autoEnd } = computeAutoTimes(newRecords, newActiveTimers);
+    const updatedStart = autoStart || estimatedStart;
+    const updatedEnd = autoEnd || estimatedEnd;
+    if (autoStart && autoStart !== estimatedStart) setEstimatedStart(autoStart);
+    if (autoEnd && autoEnd !== estimatedEnd) setEstimatedEnd(autoEnd);
+
+    await saveUnoAUnoConfig(updatedStart, updatedEnd, newRecords, serializeActiveTimers(newActiveTimers));
     onUpdate();
   };
 
@@ -450,7 +561,14 @@ export default function Cronometro1a1({ reunion, initialAsistencias, onUpdate, o
     };
     setTimeRecords(newRecords);
 
-    await saveUnoAUnoConfig(estimatedStart, estimatedEnd, newRecords, serializeActiveTimers(newActiveTimers));
+    // Auto-actualizar horario de inicio/fin
+    const { autoStart, autoEnd } = computeAutoTimes(newRecords, newActiveTimers);
+    const updatedStart = autoStart || estimatedStart;
+    const updatedEnd = autoEnd || estimatedEnd;
+    if (autoStart && autoStart !== estimatedStart) setEstimatedStart(autoStart);
+    if (autoEnd && autoEnd !== estimatedEnd) setEstimatedEnd(autoEnd);
+
+    await saveUnoAUnoConfig(updatedStart, updatedEnd, newRecords, serializeActiveTimers(newActiveTimers));
     onUpdate();
   };
 
@@ -633,47 +751,192 @@ export default function Cronometro1a1({ reunion, initialAsistencias, onUpdate, o
 
   // EXPORTACIONES
 
-  // 1. Exportar a Excel (XLSX)
+  // 1. Exportar a Excel con diseño de tabla estilizada (Azul Pastel encabezado, Rojo Pastel ausentes)
   const handleExportExcel = () => {
-    if (filteredConvocados.length === 0) {
+    const exportList = [...convocadosList]
+      .filter(item => {
+        if (!searchQuery) return true;
+        const term = searchQuery.toLowerCase();
+        const nombreCompleto = `${item.vecino?.nombre} ${item.vecino?.apellido}`.toLowerCase();
+        return (
+          item.vecino_id.includes(term) ||
+          nombreCompleto.includes(term) ||
+          (item.horario_bloque_asignado || '').toLowerCase().includes(term)
+        );
+      })
+      .sort((a, b) => (a.horario_bloque_asignado || '').localeCompare(b.horario_bloque_asignado || ''));
+
+    if (exportList.length === 0) {
       alert('No hay vecinos citados para exportar.');
       return;
     }
 
-    const rows = filteredConvocados.map(item => {
+    const dataRows = exportList.map(item => {
       const slot = item.horario_bloque_asignado || 'Sin asignar';
-      const citation = calculateCitationTime(slot);
       const record = timeRecords[item.vecino_id] || {};
       const timer = activeTimers[item.vecino_id];
 
+      let estadoAsistencia = 'NO';
+      if (record.horaSalida) {
+        estadoAsistencia = 'SÍ (Atendido)';
+      } else if (item.asistio) {
+        estadoAsistencia = 'SÍ (En espera)';
+      }
+
       return {
-        'Citados': citation,
-        'Confirmó': item.confirmado ? 'SÍ' : 'NO',
-        'Horario Turno': slot,
-        'Vecino (Nombre)': `${item.vecino?.nombre} ${item.vecino?.apellido}`,
-        'DNI': item.vecino_id,
-        'Tema': item.tema_previo || 'No cargado',
-        'Hora Ingreso': record.horaIngreso || (timer ? timer.horaIngreso : '-'),
-        'Hora Salida': record.horaSalida || '-',
-        'Duración': record.duracion || (timer ? `${Math.floor(timer.elapsedSecs / 60)} min` : '-')
+        isNo: estadoAsistencia === 'NO',
+        asistio: estadoAsistencia,
+        slot: slot,
+        vecinoDni: `${item.vecino?.nombre || ''} ${item.vecino?.apellido || ''} (DNI: ${item.vecino_id})`,
+        nombre: item.vecino?.nombre || '',
+        apellido: item.vecino?.apellido || '',
+        dni: item.vecino_id,
+        tema: item.tema_previo || 'Sin tema',
+        horaIngreso: record.horaIngreso || (timer ? timer.horaIngreso : '-'),
+        horaSalida: record.horaSalida || '-',
+        duracion: record.duracion || (timer ? `${Math.floor(timer.elapsedSecs / 60)} min` : '-')
       };
     });
 
-    const worksheet = XLSX.utils.json_to_sheet(rows);
-    const workbook = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(workbook, worksheet, 'Lista de Atención');
-    XLSX.writeFile(workbook, `Lista_de_Atencion_${reunion.nombre.replace(/[^a-zA-Z0-9]/g, '_')}.xlsx`);
+    // Calcular promedio de duración de vecinos atendidos
+    let totalSecs = 0;
+    let countAtendidos = 0;
+    exportList.forEach(item => {
+      const dur = timeRecords[item.vecino_id]?.duracion;
+      if (dur) {
+        const cleanDur = dur.replace(' min', '').trim();
+        if (cleanDur.includes(':')) {
+          const [m, s] = cleanDur.split(':').map(Number);
+          if (!isNaN(m) && !isNaN(s)) { totalSecs += m * 60 + s; countAtendidos++; }
+        } else {
+          const m = parseInt(cleanDur, 10);
+          if (!isNaN(m)) { totalSecs += m * 60; countAtendidos++; }
+        }
+      }
+    });
+
+    const avgSecs = countAtendidos > 0 ? Math.round(totalSecs / countAtendidos) : 0;
+    const mStr = Math.floor(avgSecs / 60).toString().padStart(2, '0');
+    const sStr = (avgSecs % 60).toString().padStart(2, '0');
+    const displayAvgTime = countAtendidos > 0 ? `${mStr}:${sStr} min` : '-';
+
+    const headers = [
+      '¿Asistió?', 'Bloque Horario', 'Vecino (Nombre y DNI)', 'Nombre',
+      'Apellido', 'DNI', 'Tema', 'Hora Ingreso', 'Hora Salida', 'Duración'
+    ];
+
+    const tableHtml = `
+      <html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:x="urn:schemas-microsoft-com:office:excel" xmlns="http://www.w3.org/TR/REC-html40">
+      <head>
+        <meta charset="utf-8" />
+        <!--[if gte mso 9]>
+        <xml>
+          <x:ExcelWorkbook>
+            <x:ExcelWorksheets>
+              <x:ExcelWorksheet>
+                <x:Name>Vecinos 1a1</x:Name>
+                <x:WorksheetOptions><x:DisplayGridlines/></x:WorksheetOptions>
+              </x:ExcelWorksheet>
+            </x:ExcelWorksheets>
+          </x:ExcelWorkbook>
+        </xml>
+        <![endif]-->
+        <style>
+          th { background-color: #B8CCE4; color: #000000; font-weight: bold; font-family: Arial, sans-serif; border: 1px solid #7F7F7F; padding: 6px 10px; text-align: center; }
+          td { border: 1px solid #7F7F7F; padding: 6px 10px; font-family: Arial, sans-serif; font-size: 10pt; vertical-align: middle; }
+          .row-no { background-color: #E6B8B8; }
+          .center { text-align: center; }
+          .bold { font-weight: bold; }
+        </style>
+      </head>
+      <body>
+        <table border="1" style="border-collapse: collapse;">
+          <thead>
+            <tr>
+              ${headers.map(h => `<th>${h}</th>`).join('')}
+            </tr>
+          </thead>
+          <tbody>
+            ${dataRows.map(r => `
+              <tr ${r.isNo ? 'class="row-no"' : ''}>
+                <td class="center">${r.asistio}</td>
+                <td class="center">${r.slot}</td>
+                <td>${r.vecinoDni}</td>
+                <td>${r.nombre}</td>
+                <td>${r.apellido}</td>
+                <td class="center">${r.dni}</td>
+                <td>${r.tema}</td>
+                <td class="center">${r.horaIngreso}</td>
+                <td class="center">${r.horaSalida}</td>
+                <td class="center">${r.duracion}</td>
+              </tr>
+            `).join('')}
+            <!-- Fila separadora vacía -->
+            <tr>
+              <td style="border: none;"></td>
+              <td style="border: none;"></td>
+              <td style="border: none;"></td>
+              <td style="border: none;"></td>
+              <td style="border: none;"></td>
+              <td style="border: none;"></td>
+              <td style="border: none;"></td>
+              <td style="border: none;"></td>
+              <td style="border: none;"></td>
+              <td style="border: none;"></td>
+            </tr>
+            <!-- Fila de Promedio -->
+            <tr>
+              <td style="border: none;"></td>
+              <td style="border: none;"></td>
+              <td style="border: none;"></td>
+              <td style="border: none;"></td>
+              <td style="border: none;"></td>
+              <td style="border: none;"></td>
+              <td style="border: none;"></td>
+              <td style="border: none;"></td>
+              <td class="center bold" style="border: 1px solid #7F7F7F; background-color: #F2F2F2;">Promedio</td>
+              <td class="center bold" style="border: 1px solid #7F7F7F; background-color: #F2F2F2;">${displayAvgTime}</td>
+            </tr>
+          </tbody>
+        </table>
+      </body>
+      </html>
+    `;
+
+    const blob = new Blob([tableHtml], { type: 'application/vnd.ms-excel;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    const cleanName = (reunion.nombre || 'Reunion_1a1').replace(/[^a-zA-Z0-9]/g, '_');
+    link.href = url;
+    link.download = `Planilla_1a1_${cleanName}.xls`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
   };
 
   // 2. Imprimir PDF (diseño limpio y profesional en formato horizontal)
   const handlePrintPDF = () => {
-    if (filteredConvocados.length === 0) {
+    const exportList = [...convocadosList]
+      .filter(item => {
+        if (!searchQuery) return true;
+        const term = searchQuery.toLowerCase();
+        const nombreCompleto = `${item.vecino?.nombre} ${item.vecino?.apellido}`.toLowerCase();
+        return (
+          item.vecino_id.includes(term) ||
+          nombreCompleto.includes(term) ||
+          (item.horario_bloque_asignado || '').toLowerCase().includes(term)
+        );
+      })
+      .sort((a, b) => (a.horario_bloque_asignado || '').localeCompare(b.horario_bloque_asignado || ''));
+
+    if (exportList.length === 0) {
       alert('No hay vecinos citados para imprimir.');
       return;
     }
 
     const printWindow = window.open('', '_blank');
-    const rows = filteredConvocados.map(item => {
+    const rows = exportList.map(item => {
       const slot = item.horario_bloque_asignado || 'Sin asignar';
       const citation = calculateCitationTime(slot);
       const displayCitationTime = citationOverrides[item.vecino_id] || citation;
@@ -875,6 +1138,8 @@ export default function Cronometro1a1({ reunion, initialAsistencias, onUpdate, o
       const avgSecs = averageSeconds % 60;
       const displayAvg = `${avgMins.toString().padStart(2, '0')}:${avgSecs.toString().padStart(2, '0')} min`;
 
+      const sortedCited = [...cited].sort((a, b) => (a.horario_bloque_asignado || '').localeCompare(b.horario_bloque_asignado || ''));
+
       const txt = `👨‍👩‍👧‍👦 1a1 | *${reunion.funcionario || reunion.nombre}* - ${reunion.comuna}
 📅 ${displayFecha || 'Fecha'} | 🕠 ${displayHora}
 ⏰ Inicio: ${estimatedStart} hs | Finalizó: ${estimatedEnd} hs
@@ -891,9 +1156,12 @@ export default function Cronometro1a1({ reunion, initialAsistencias, onUpdate, o
 *📝 Síntesis cualitativa:*
 ${(reunion.sintesis_cualitativa || '').trim() || 'La reunión se desarrolló con normalidad.'}
 
+*🏛️ Gestión presente:*
+${(reunion.gestion_presente || '').trim() || '- ' + (reunion.funcionario || 'Funcionario')}
+
 *🏛️ Minutas de los Vecinos:*
-${cited.length > 0 
-  ? cited.map((c, idx) => {
+${sortedCited.length > 0 
+  ? sortedCited.map((c, idx) => {
       const status = timeRecords[c.vecino_id]?.horaSalida 
         ? `✅ Atendido (${timeRecords[c.vecino_id].duracion})` 
         : (c.asistio ? '⏳ En espera (Presente)' : '❌ Ausente');
@@ -1009,6 +1277,13 @@ ${cited.length > 0
           >
             ❌ No asistieron ({listNoAsistieron.length})
           </div>
+          <div 
+            className={`tab ${activeTab1a1 === 'vista' ? 'active' : ''}`}
+            onClick={() => setActiveTab1a1('vista')}
+            style={{ padding: '10px 16px', fontWeight: '600', backgroundColor: activeTab1a1 === 'vista' ? '#ECFDF5' : 'transparent', color: activeTab1a1 === 'vista' ? '#047857' : 'inherit' }}
+          >
+            👁️ Vista Directora ({convocadosList.length})
+          </div>
         </div>
 
         {/* CONTENEDOR DE TABLA DE ATENCIÓN Y REPORTES */}
@@ -1025,7 +1300,69 @@ ${cited.length > 0
                 />
               </div>
 
-              <div style={{ display: 'flex', gap: '8px' }}>
+              {/* Cartel de tiempo promedio para Ya Atendidos y Vista Directora */}
+              {(activeTab1a1 === 'atendidos' || activeTab1a1 === 'vista') && (() => {
+                let totalSecs = 0;
+                let count = 0;
+                listAtendidos.forEach(item => {
+                  const dur = timeRecords[item.vecino_id]?.duracion;
+                  if (dur) {
+                    const cleanDur = dur.replace(' min', '').trim();
+                    if (cleanDur.includes(':')) {
+                      const [m, s] = cleanDur.split(':').map(Number);
+                      if (!isNaN(m) && !isNaN(s)) { totalSecs += m * 60 + s; count++; }
+                    } else {
+                      const m = parseInt(cleanDur, 10);
+                      if (!isNaN(m)) { totalSecs += m * 60; count++; }
+                    }
+                  }
+                });
+                const avgSecs = count > 0 ? Math.round(totalSecs / count) : 0;
+                const mStr = Math.floor(avgSecs / 60).toString().padStart(2, '0');
+                const sStr = (avgSecs % 60).toString().padStart(2, '0');
+                const displayAvgTime = count > 0 ? `${mStr}:${sStr} min` : '--:-- min';
+
+                return (
+                  <div style={{
+                    padding: '8px 16px',
+                    backgroundColor: '#EFF6FF',
+                    color: '#1E40AF',
+                    borderRadius: '8px',
+                    border: '1px solid #BFDBFE',
+                    fontWeight: '700',
+                    fontSize: '0.85rem',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '6px'
+                  }}>
+                    <Clock size={16} style={{ color: '#2563EB' }} />
+                    Tiempo Promedio: <span style={{ fontSize: '0.95rem', color: '#1E3A8A' }}>{displayAvgTime}</span>
+                  </div>
+                );
+              })()}
+
+              <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                <button 
+                  className="btn btn-sm" 
+                  onClick={handleManualRefresh} 
+                  disabled={syncing}
+                  style={{ 
+                    display: 'inline-flex', 
+                    alignItems: 'center', 
+                    gap: '6px', 
+                    backgroundColor: '#DCFCE7', 
+                    color: '#15803D', 
+                    borderColor: '#86EFAC', 
+                    fontWeight: '700',
+                    padding: '6px 12px',
+                    opacity: syncing ? 0.7 : 1,
+                    cursor: syncing ? 'wait' : 'pointer'
+                  }}
+                  title="Sincronizar datos y actualizar la vista desde la base de datos"
+                >
+                  <RefreshCw size={14} className={syncing ? 'animate-spin' : ''} />
+                  {syncing ? 'Sincronizando...' : 'Sincronizar'}
+                </button>
                 <button 
                   className="btn btn-primary btn-sm" 
                   onClick={handleCopySelectedToClipboard} 
@@ -1042,6 +1379,108 @@ ${cited.length > 0
               </div>
             </div>
 
+            {activeTab1a1 === 'vista' ? (
+              <div className="table-responsive" style={{ maxHeight: '65vh', overflowY: 'auto', borderRadius: '8px', border: '1px solid var(--color-border)', boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.1)' }}>
+                <table className="table" style={{ width: '100%', borderCollapse: 'separate', borderSpacing: 0 }}>
+                  <thead>
+                    <tr style={{ backgroundColor: '#1E293B', color: '#FFFFFF' }}>
+                      <th style={{ padding: '12px 14px', width: '150px', textAlign: 'center', backgroundColor: '#1E293B', color: '#FFFFFF', position: 'sticky', top: 0, zIndex: 10 }}>Estado / Asistió</th>
+                      <th style={{ padding: '12px 14px', width: '140px', backgroundColor: '#1E293B', color: '#FFFFFF', position: 'sticky', top: 0, zIndex: 10 }}>Bloque Horario</th>
+                      <th style={{ padding: '12px 14px', backgroundColor: '#1E293B', color: '#FFFFFF', position: 'sticky', top: 0, zIndex: 10 }}>Nombre y Apellido</th>
+                      <th style={{ padding: '12px 14px', backgroundColor: '#1E293B', color: '#FFFFFF', position: 'sticky', top: 0, zIndex: 10 }}>Tema</th>
+                      <th style={{ padding: '12px 14px', width: '130px', backgroundColor: '#1E293B', color: '#FFFFFF', position: 'sticky', top: 0, zIndex: 10 }}>Duración</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {(() => {
+                      const sortedVistaList = [...convocadosList]
+                        .filter(item => {
+                          if (!searchQuery) return true;
+                          const term = searchQuery.toLowerCase();
+                          const nombreCompleto = `${item.vecino?.nombre} ${item.vecino?.apellido}`.toLowerCase();
+                          return (
+                            item.vecino_id.includes(term) ||
+                            nombreCompleto.includes(term) ||
+                            (item.horario_bloque_asignado || '').toLowerCase().includes(term)
+                          );
+                        })
+                        .sort((a, b) => (a.horario_bloque_asignado || '').localeCompare(b.horario_bloque_asignado || ''));
+
+                      if (sortedVistaList.length === 0) {
+                        return (
+                          <tr>
+                            <td colSpan={5} style={{ textAlign: 'center', color: 'var(--color-text-muted)', padding: '2rem' }}>
+                              No hay vecinos en la lista.
+                            </td>
+                          </tr>
+                        );
+                      }
+
+                      return sortedVistaList.map(item => {
+                        const record = timeRecords[item.vecino_id];
+                        const timer = activeTimers[item.vecino_id];
+
+                        const isNoAsistio = !item.asistio && !record?.horaSalida;
+                        const isEnEspera = item.asistio && !record?.horaSalida;
+                        const isYaAtendido = !!record?.horaSalida;
+
+                        let rowBg = '#FEE2E2'; // rojo pastel
+                        let rowBorder = '#FCA5A5';
+                        let textColor = '#7F1D1D';
+                        let badgeLabel = '❌ No asistió';
+                        let badgeBg = '#FECACA';
+                        let badgeColor = '#991B1B';
+
+                        if (isEnEspera) {
+                          rowBg = '#DCFCE7'; // verde pastel
+                          rowBorder = '#86EFAC';
+                          textColor = '#14532D';
+                          badgeLabel = timer ? '🎤 En Atención' : '⏳ En espera';
+                          badgeBg = '#BBF7D0';
+                          badgeColor = '#166534';
+                        } else if (isYaAtendido) {
+                          rowBg = '#4ADE80'; // verde flúor
+                          rowBorder = '#22C55E';
+                          textColor = '#052E16';
+                          badgeLabel = '✅ Atendido';
+                          badgeBg = '#16A34A';
+                          badgeColor = '#FFFFFF';
+                        }
+
+                        const durationStr = record?.duracion || (timer ? `${formatSeconds(timer.elapsedSecs)} min` : '-');
+
+                        return (
+                          <tr key={item.vecino_id} style={{ backgroundColor: rowBg, borderBottom: `2px solid ${rowBorder}`, color: textColor }}>
+                            <td style={{ padding: '14px 12px', textAlign: 'center' }}>
+                              <span style={{ padding: '6px 12px', borderRadius: '12px', fontSize: '0.8rem', fontWeight: '700', backgroundColor: badgeBg, color: badgeColor, display: 'inline-block' }}>
+                                {badgeLabel}
+                              </span>
+                            </td>
+                            <td style={{ padding: '14px 12px', fontWeight: '700', fontFamily: 'monospace', fontSize: '1rem' }}>
+                              {item.horario_bloque_asignado || 'Sin asignar'}
+                            </td>
+                            <td style={{ padding: '14px 12px' }}>
+                              <div style={{ fontWeight: '700', fontSize: '1.05rem' }}>
+                                {item.vecino?.nombre} {item.vecino?.apellido}
+                              </div>
+                              <div style={{ fontSize: '0.75rem', opacity: 0.85 }}>
+                                DNI: {item.vecino_id}
+                              </div>
+                            </td>
+                            <td style={{ padding: '14px 12px', fontSize: '0.9rem', fontWeight: '600' }}>
+                              {item.tema_previo || <span style={{ fontStyle: 'italic', opacity: 0.7 }}>Sin tema</span>}
+                            </td>
+                            <td style={{ padding: '14px 12px', fontFamily: 'monospace', fontWeight: '700', fontSize: '1rem' }}>
+                              {durationStr}
+                            </td>
+                          </tr>
+                        );
+                      });
+                    })()}
+                  </tbody>
+                </table>
+              </div>
+            ) : (
             <div className="table-responsive" style={{ maxHeight: '60vh', overflowY: 'auto', position: 'relative' }}>
               <table className="table" style={{ borderCollapse: 'separate', borderSpacing: 0 }}>
                 <thead>
@@ -1363,70 +1802,85 @@ ${cited.length > 0
                 </tbody>
               </table>
             </div>
-          </>
+          )}
+        </>
           
-          {/* Formulario de Síntesis y Variables Cualitativas */}
-          <div style={{ 
-            marginTop: '2rem', 
-            paddingTop: '1.5rem', 
-            borderTop: '2px solid var(--color-border)' 
-          }} className="hide-on-print">
-            <h4 style={{ fontSize: '1.1rem', color: 'var(--color-primary)', marginTop: 0, marginBottom: '1rem', fontWeight: '700' }}>
-              ✏️ Síntesis Cualitativa y Clima de la Reunión
-            </h4>
-            
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '1rem', marginBottom: '1.25rem' }}>
-              <div className="form-group" style={{ marginBottom: 0 }}>
-                <label style={{ fontSize: '0.8rem', color: 'var(--color-text-muted)', fontWeight: '600', display: 'block', marginBottom: '4px' }}>Clima de la Reunión</label>
-                <select 
-                  className="form-control" 
-                  value={localClima} 
-                  onChange={(e) => setLocalClima(e.target.value)}
-                  style={{ height: '38px' }}
-                >
-                  <option value="bajo">🔥 Clima bajo</option>
-                  <option value="medio">🔥 Clima medio</option>
-                  <option value="alto">🔥 Clima caliente</option>
-                </select>
-              </div>
+          {/* Formulario de Síntesis y Variables Cualitativas (oculto en Vista Directora) */}
+          {activeTab1a1 !== 'vista' && (
+            <div style={{ 
+              marginTop: '2rem', 
+              paddingTop: '1.5rem', 
+              borderTop: '2px solid var(--color-border)' 
+            }} className="hide-on-print">
+              <h4 style={{ fontSize: '1.1rem', color: 'var(--color-primary)', marginTop: 0, marginBottom: '1rem', fontWeight: '700' }}>
+                ✏️ Síntesis Cualitativa y Clima de la Reunión
+              </h4>
               
-              <div className="form-group" style={{ marginBottom: 0 }}>
-                <label style={{ fontSize: '0.8rem', color: 'var(--color-text-muted)', fontWeight: '600', display: 'block', marginBottom: '4px' }}>Semáforo Político</label>
-                <select 
-                  className="form-control" 
-                  value={localSemaforo} 
-                  onChange={(e) => setLocalSemaforo(e.target.value)}
-                  style={{ height: '38px' }}
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '1rem', marginBottom: '1.25rem' }}>
+                <div className="form-group" style={{ marginBottom: 0 }}>
+                  <label style={{ fontSize: '0.8rem', color: 'var(--color-text-muted)', fontWeight: '600', display: 'block', marginBottom: '4px' }}>Clima de la Reunión</label>
+                  <select 
+                    className="form-control" 
+                    value={localClima} 
+                    onChange={(e) => setLocalClima(e.target.value)}
+                    style={{ height: '38px' }}
+                  >
+                    <option value="bajo">🔥 Clima bajo</option>
+                    <option value="medio">🔥 Clima medio</option>
+                    <option value="alto">🔥 Clima caliente</option>
+                  </select>
+                </div>
+                
+                <div className="form-group" style={{ marginBottom: 0 }}>
+                  <label style={{ fontSize: '0.8rem', color: 'var(--color-text-muted)', fontWeight: '600', display: 'block', marginBottom: '4px' }}>Semáforo Político</label>
+                  <select 
+                    className="form-control" 
+                    value={localSemaforo} 
+                    onChange={(e) => setLocalSemaforo(e.target.value)}
+                    style={{ height: '38px' }}
+                  >
+                    <option value="verde">🟢 Verde (Favorable)</option>
+                    <option value="amarillo">🟡 Amarillo (Neutral/Mixto)</option>
+                    <option value="rojo">🔴 Rojo (Tenso/Reclamos)</option>
+                  </select>
+                </div>
+              </div>
+
+              <div className="form-group" style={{ marginBottom: '1rem' }}>
+                <label style={{ fontSize: '0.8rem', color: 'var(--color-text-muted)', fontWeight: '600', display: 'block', marginBottom: '4px' }}>Síntesis Cualitativa de la Reunión</label>
+                <textarea
+                  className="form-control"
+                  rows={4}
+                  placeholder="Escribe un breve resumen de los temas conversados, reclamos principales y conclusiones generales..."
+                  value={localSintesis}
+                  onChange={(e) => setLocalSintesis(e.target.value)}
+                  style={{ width: '100%', padding: '10px', borderRadius: '6px', border: '1px solid var(--color-border)', resize: 'vertical' }}
+                />
+              </div>
+
+              <div className="form-group" style={{ marginBottom: '1rem' }}>
+                <label style={{ fontSize: '0.8rem', color: 'var(--color-text-muted)', fontWeight: '600', display: 'block', marginBottom: '4px' }}>Gestión Presente</label>
+                <textarea
+                  className="form-control"
+                  rows={3}
+                  placeholder="Listado de funcionarios e integrantes de gestión presentes..."
+                  value={localGestionPresente}
+                  onChange={(e) => setLocalGestionPresente(e.target.value)}
+                  style={{ width: '100%', padding: '10px', borderRadius: '6px', border: '1px solid var(--color-border)', resize: 'vertical' }}
+                />
+              </div>
+
+              <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+                <button 
+                  className="btn btn-primary"
+                  onClick={() => handleSaveReunionQualitative(localSintesis, localClima, localSemaforo, localGestionPresente)}
+                  style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', backgroundColor: 'var(--color-success)', borderColor: 'var(--color-success)' }}
                 >
-                  <option value="verde">🟢 Verde (Favorable)</option>
-                  <option value="amarillo">🟡 Amarillo (Neutral/Mixto)</option>
-                  <option value="rojo">🔴 Rojo (Tenso/Reclamos)</option>
-                </select>
+                  Guardar Síntesis y Variables
+                </button>
               </div>
             </div>
-
-            <div className="form-group" style={{ marginBottom: '1rem' }}>
-              <label style={{ fontSize: '0.8rem', color: 'var(--color-text-muted)', fontWeight: '600', display: 'block', marginBottom: '4px' }}>Síntesis Cualitativa de la Reunión</label>
-              <textarea
-                className="form-control"
-                rows={4}
-                placeholder="Escribe un breve resumen de los temas conversados, reclamos principales y conclusiones generales..."
-                value={localSintesis}
-                onChange={(e) => setLocalSintesis(e.target.value)}
-                style={{ width: '100%', padding: '10px', borderRadius: '6px', border: '1px solid var(--color-border)', resize: 'vertical' }}
-              />
-            </div>
-
-            <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
-              <button 
-                className="btn btn-primary"
-                onClick={() => handleSaveReunionQualitative(localSintesis, localClima, localSemaforo)}
-                style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', backgroundColor: 'var(--color-success)', borderColor: 'var(--color-success)' }}
-              >
-                Guardar Síntesis y Variables
-              </button>
-            </div>
-          </div>
+          )}
       </div>
 
       {/* MODAL ENTRA POR LA VENTANA */}
@@ -1644,7 +2098,7 @@ ${cited.length > 0
                 <div style={{ padding: '10px', backgroundColor: '#F1F5F9', borderRadius: '8px' }}>
                   <span style={{ fontSize: '0.8rem', color: 'var(--color-text-muted)', fontWeight: '600', display: 'block', marginBottom: '4px' }}>Gestión Presente</span>
                   <p style={{ margin: 0, fontSize: '0.85rem', whiteSpace: 'pre-wrap', lineHeight: '1.4' }}>
-                    {reunion.funcionario || 'No asignado'}
+                    {reunion.gestion_presente || reunion.funcionario || 'No asignado'}
                   </p>
                 </div>
               </div>

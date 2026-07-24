@@ -85,22 +85,26 @@ export default function PanelModerador({ reunion: initialReunion, onBack }) {
   // Cargar datos de asistencia
   const loadHistoricalStatsForVecinos = async (dnis) => {
     if (!dnis || dnis.length === 0) return;
+    // Limitar historial a 18 meses para reducir egress en polling
+    const cutoff18m = new Date(Date.now() - 18 * 30 * 24 * 60 * 60 * 1000).toISOString();
     try {
-      // 1. Obtener asistencias históricas
+      // 1. Obtener asistencias históricas (últimos 18 meses)
       const { data: asistencias, error: errAsist } = await supabase
         .from('inscripciones_asistencias')
         .select('vecino_id, asistio, reunion:reuniones(nombre)')
-        .in('vecino_id', dnis);
+        .in('vecino_id', dnis)
+        .gte('created_at', cutoff18m);
 
       if (errAsist) throw errAsist;
 
-      // 2. Obtener oratorias históricas (excluyendo la reunión actual)
+      // 2. Obtener oratorias históricas (últimos 18 meses, excluyendo la reunión actual)
       const { data: oradoresHist, error: errOrad } = await supabase
         .from('oradores')
         .select('vecino_id, reunion_id, reunion:reuniones(nombre)')
         .eq('estado', 'hablo')
         .neq('reunion_id', reunion.id)
-        .in('vecino_id', dnis);
+        .in('vecino_id', dnis)
+        .gte('created_at', cutoff18m);
 
       if (errOrad) throw errOrad;
 

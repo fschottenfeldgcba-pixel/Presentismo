@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { supabase } from '../lib/supabaseClient';
+import { invalidateCache } from '../services/supabaseService';
 import { Plus, Edit3, Trash2, X, Search } from 'lucide-react';
 
 export default function ABMFuncionarios() {
@@ -49,6 +50,7 @@ export default function ABMFuncionarios() {
           })
           .eq('id', editingId);
         if (error) throw error;
+        invalidateCache('funcionarios');
         alert('Funcionario actualizado con éxito');
       } else {
         // Create
@@ -59,6 +61,7 @@ export default function ABMFuncionarios() {
             cargo: cargo.trim() || null
           }]);
         if (error) throw error;
+        invalidateCache('funcionarios');
         alert('Funcionario creado con éxito');
       }
       
@@ -92,6 +95,7 @@ export default function ABMFuncionarios() {
           .delete()
           .eq('id', id);
         if (error) throw error;
+        invalidateCache('funcionarios');
         alert('Funcionario eliminado');
         await loadFuncionarios();
       } catch (err) {

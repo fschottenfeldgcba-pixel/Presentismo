@@ -87,7 +87,11 @@ export default function Login({ onLoginSuccess }) {
     setLoading(false);
     
     if (loginError) {
-      setError(`Error de autenticación: ${loginError.message || 'Credenciales inválidas.'}`);
+      let msg = loginError.message || 'Credenciales inválidas.';
+      if (msg.includes('Invalid login credentials')) {
+        msg = 'Credenciales inválidas. Por favor verificá que el correo y la contraseña ingresados sean correctos (o que la cuenta no esté pendiente de confirmación por email).';
+      }
+      setError(`Error de autenticación: ${msg}`);
     } else if (data) {
       onLoginSuccess(data);
     }
@@ -107,9 +111,13 @@ export default function Login({ onLoginSuccess }) {
     setLoading(false);
 
     if (signUpError) {
-      setError(`Error de registro: ${signUpError.message || 'No se pudo crear la cuenta.'}`);
+      let msg = signUpError.message || 'No se pudo crear la cuenta.';
+      if (msg.includes('over_email_send_rate_limit') || msg.includes('rate limit')) {
+        msg = 'Se superó el límite de envío de correos de confirmación en Supabase Auth. Intentá más tarde o desactivá la confirmación de email obligatoria en el panel de Supabase.';
+      }
+      setError(`Error de registro: ${msg}`);
     } else if (data) {
-      alert('¡Usuario registrado con éxito en Supabase Auth y perfil sincronizado!');
+      alert('¡Usuario registrado con éxito! Ya podés ingresar al sistema.');
       onLoginSuccess(data);
     }
   };

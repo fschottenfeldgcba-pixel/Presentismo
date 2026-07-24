@@ -175,6 +175,8 @@ export default function CentralInformes({ user, onBack }) {
   const [selectedWord, setSelectedWord] = useState(null);
   const [chartGranularity, setChartGranularity] = useState('Semanal');
   const [semaforoViewMode, setSemaforoViewMode] = useState('matrix');
+  const [selectedComunaChart, setSelectedComunaChart] = useState('TODAS');
+  const [selectedMesChart, setSelectedMesChart] = useState('TODOS');
 
   useEffect(() => {
     if (!document.getElementById('analytics-print-styles')) {
@@ -737,6 +739,90 @@ export default function CentralInformes({ user, onBack }) {
 
   const semaforoTemporalData = Object.values(semaforoTempMap)
     .sort((a, b) => a.name.localeCompare(b.name));
+
+  // 5. Gráfico Inscriptos y Asistentes por Comuna y por Mes
+  const comunaMesMap = {};
+
+  const processComunaMes = (vecinosList, reunionesList) => {
+    const reunionesInsc = {};
+    const reunionesAsist = {};
+    (vecinosList || []).forEach(v => {
+      (v.inscripcionesReuniones || []).forEach(i => {
+        reunionesInsc[i.reunion_id] = (reunionesInsc[i.reunion_id] || 0) + 1;
+        if (i.asistio) {
+          reunionesAsist[i.reunion_id] = (reunionesAsist[i.reunion_id] || 0) + 1;
+        }
+      });
+    });
+
+    (reunionesList || []).forEach(r => {
+      if (!r.fecha) return;
+      const c = r.comuna || 'Sin Comuna';
+      const date = new Date(r.fecha);
+      if (isNaN(date.getTime())) return;
+      const mesStr = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
+      const key = `${c}___${mesStr}`;
+      if (!comunaMesMap[key]) {
+        comunaMesMap[key] = { comuna: c, mes: mesStr, inscriptos: 0, asistentes: 0 };
+      }
+      comunaMesMap[key].inscriptos += (reunionesInsc[r.id] || 0);
+      comunaMesMap[key].asistentes += (reunionesAsist[r.id] || 0);
+    });
+  };
+
+  processComunaMes(filteredVecinos, reuniones);
+
+  const rawComunaMesEntries = Object.values(comunaMesMap);
+
+  const availableComunasForChart = [...new Set(rawComunaMesEntries.map(e => e.comuna))].sort((a, b) => {
+    const idxA = COMUNAS.indexOf(a);
+    const idxB = COMUNAS.indexOf(b);
+    if (idxA !== -1 && idxB !== -1) return idxA - idxB;
+    if (idxA !== -1) return -1;
+    if (idxB !== -1) return 1;
+    return a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' });
+  });
+
+  const availableMesesForChart = [...new Set(rawComunaMesEntries.map(e => e.mes))].sort();
+
+  let comunaMesChartData = [];
+  let comunaMesChartLayout = 'horizontal';
+
+  if (selectedMesChart !== 'TODOS') {
+    const filteredByMes = rawComunaMesEntries.filter(e => e.mes === selectedMesChart);
+    const filteredByComuna = selectedComunaChart !== 'TODAS'
+      ? filteredByMes.filter(e => e.comuna === selectedComunaChart)
+      : filteredByMes;
+
+    comunaMesChartData = filteredByComuna
+      .map(e => ({
+        name: e.comuna,
+        Inscriptos: e.inscriptos,
+        Asistentes: e.asistentes
+      }))
+      .sort((a, b) => b.Inscriptos - a.Inscriptos);
+      
+    if (comunaMesChartData.length > 8) {
+      comunaMesChartLayout = 'vertical';
+    }
+  } else if (selectedComunaChart !== 'TODAS') {
+    const filteredByComuna = rawComunaMesEntries.filter(e => e.comuna === selectedComunaChart);
+    comunaMesChartData = filteredByComuna
+      .map(e => ({
+        name: e.mes,
+        Inscriptos: e.inscriptos,
+        Asistentes: e.asistentes
+      }))
+      .sort((a, b) => a.name.localeCompare(b.name));
+  } else {
+    const mesAgg = {};
+    rawComunaMesEntries.forEach(e => {
+      if (!mesAgg[e.mes]) mesAgg[e.mes] = { name: e.mes, Inscriptos: 0, Asistentes: 0 };
+      mesAgg[e.mes].Inscriptos += e.inscriptos;
+      mesAgg[e.mes].Asistentes += e.asistentes;
+    });
+    comunaMesChartData = Object.values(mesAgg).sort((a, b) => a.name.localeCompare(b.name));
+  }
 
   const convTot = kpis?.actual?.convocatorias || 0;
   const asisTot = kpis?.actual?.asistencias || 0;
@@ -1597,6 +1683,73 @@ export default function CentralInformes({ user, onBack }) {
                    </BarChart>
                  </ResponsiveContainer>
                </div>
+            </div>
+
+            {/* 5. Gráfico Inscriptos y Asistentes por Comuna y por Mes */}
+            <div className="card" style={{ margin: 0, padding: '20px', gridColumn: '1 / -1' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px', flexWrap: 'wrap', gap: '12px' }}>
+                <h4 style={{ margin: 0, color: '#0F172A', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                 <BarChart3 size={18} style={{ color: 'var(--color-highlight)' }} /> Inscriptos y Asistentes por Comuna y por Mes
+                </h4>
+                <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                    <span style={{ fontSize: '0.8rem', color: 'var(--color-text-muted)', fontWeight: '600' }}>Comuna:</span>
+                    <select 
+                      value={selectedComunaChart} 
+                      onChange={(e) => setSelectedComunaChart(e.target.value)} 
+                      className="form-control" 
+                      style={{ width: 'auto', padding: '4px 8px', fontSize: '0.85rem' }}
+                    >
+                      <option value="TODAS">Todas las Comunas</option>
+                      {availableComunasForChart.map(c => (
+                        <option key={c} value={c}>{c}</option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                    <span style={{ fontSize: '0.8rem', color: 'var(--color-text-muted)', fontWeight: '600' }}>Mes:</span>
+                    <select 
+                      value={selectedMesChart} 
+                      onChange={(e) => setSelectedMesChart(e.target.value)} 
+                      className="form-control" 
+                      style={{ width: 'auto', padding: '4px 8px', fontSize: '0.85rem' }}
+                    >
+                      <option value="TODOS">Todos los Meses</option>
+                      {availableMesesForChart.map(m => (
+                        <option key={m} value={m}>{m}</option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+              </div>
+
+              <div style={{ width: '100%', height: Math.max(340, comunaMesChartData.length * 30) }}>
+                <ResponsiveContainer>
+                  <BarChart 
+                    data={comunaMesChartData} 
+                    layout={comunaMesChartLayout} 
+                    margin={{ left: comunaMesChartLayout === 'vertical' ? 50 : 10, right: 30, top: 10, bottom: 10 }}
+                  >
+                    <CartesianGrid strokeDasharray="3 3" vertical={comunaMesChartLayout !== 'vertical'} horizontal={comunaMesChartLayout === 'vertical'} />
+                    {comunaMesChartLayout === 'vertical' ? (
+                      <>
+                        <XAxis type="number" />
+                        <YAxis dataKey="name" type="category" tick={{ fontSize: 11 }} width={90} interval={0} />
+                      </>
+                    ) : (
+                      <>
+                        <XAxis dataKey="name" tick={{ fontSize: 11 }} />
+                        <YAxis />
+                      </>
+                    )}
+                    <Tooltip formatter={(val, name) => [`${val} personas`, name]} />
+                    <Legend verticalAlign="bottom" align="center" wrapperStyle={{ paddingTop: '16px', fontSize: '0.85rem' }} />
+                    <Bar dataKey="Inscriptos" name="Inscriptos (Convocatoria)" fill="#3B82F6" radius={[4, 4, 0, 0]} />
+                    <Bar dataKey="Asistentes" name="Asistentes Efectivos" fill="#10B981" radius={[4, 4, 0, 0]} />
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
             </div>
 
           </div>

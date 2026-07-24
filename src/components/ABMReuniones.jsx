@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { Calendar, MapPin, User, FileText, Upload, AlertCircle, ArrowLeft, Check, FileSpreadsheet } from 'lucide-react';
 import { TIPOS_REUNION } from '../data/mockData';
-import { createReunion, upsertVecino, guardarAsistencia, normalizeComuna, normalizeCanalDifusion } from '../services/supabaseService';
+import { createReunion, upsertVecino, guardarAsistencia, normalizeComuna, normalizeCanalDifusion, cachedQuery } from '../services/supabaseService';
 import { supabase } from '../lib/supabaseClient';
 import * as XLSX from 'xlsx';
 
@@ -105,14 +105,17 @@ export default function ABMReuniones({ onBack, onSaveSuccess }) {
   const [showFuncDropdown, setShowFuncDropdown] = useState(false);
   const dropdownRef = useRef(null);
 
-  // Cargar funcionarios de Supabase
+  // Cargar funcionarios de Supabase (con caché de sesión de 5 minutos)
   useEffect(() => {
     const fetchFuncionarios = async () => {
       try {
-        const { data, error } = await supabase
-          .from('funcionarios')
-          .select('*')
-          .order('nombre_completo', { ascending: true });
+        const { data, error } = await cachedQuery('funcionarios', async () => {
+          const result = await supabase
+            .from('funcionarios')
+            .select('id, nombre_completo, cargo')
+            .order('nombre_completo', { ascending: true });
+          return result;
+        });
         if (!error && data) {
           setFuncionariosList(data);
         }
