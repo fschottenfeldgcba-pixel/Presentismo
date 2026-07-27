@@ -709,9 +709,10 @@ export default function PanelModerador({ reunion: initialReunion, onBack }) {
   const handleFinalizarExposicion = async () => {
     if (!activeSpeaker) return;
     try {
+      const finalTema = liveMinuta.trim() || activeSpeaker.tema_efectivo || activeSpeaker.tema_original || null;
       const { error } = await updateOradorDetails(activeSpeaker.id, {
         estado: 'hablo',
-        tema_efectivo: liveMinuta.trim() || null,
+        tema_efectivo: finalTema,
         duracion_segundos: activeSpeakerTimer
       });
 
@@ -726,7 +727,7 @@ export default function PanelModerador({ reunion: initialReunion, onBack }) {
           return { 
             ...o, 
             estado: 'hablo', 
-            tema_efectivo: liveMinuta.trim() || null,
+            tema_efectivo: finalTema,
             duracion_segundos: activeSpeakerTimer
           };
         }
@@ -734,7 +735,7 @@ export default function PanelModerador({ reunion: initialReunion, onBack }) {
       }));
 
       setActiveSpeaker(null);
-      alert('¡Orador marcado como efectivo y minuta guardada!');
+      setLiveMinuta('');
     } catch (err) {
       console.error(err);
       alert(`Error al guardar exposición del orador: ${err.message}`);
@@ -1304,7 +1305,7 @@ ${oradoresEfectivos.length > 0
         <div className="card" style={{ marginBottom: '1.5rem', padding: '16px' }}>
           <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
             <p style={{ fontSize: '0.85rem', color: 'var(--color-text-muted)', margin: 0, lineHeight: '1.4' }}>
-              Mesa libre colaborativa: los vecinos conversan libremente sin turnos estrictos. Elige el nombre de un vecino del listado de presentes para registrar su opinión y tomar notas.
+              Mesa libre colaborativa: los vecinos conversan libremente sin turnos estrictos. Elige el nombre de un vecino del listado de presentes para registrar su intervención. <em>Nota: la toma detallada de minutas se gestiona principalmente por el equipo de Territorio desde Acreditaciones.</em>
             </p>
 
             <div style={{ marginTop: '8px' }}>
@@ -1318,7 +1319,7 @@ ${oradoresEfectivos.length > 0
                 style={{ width: '100%', fontSize: '0.85rem', padding: '10px', borderRadius: '6px', border: '1px solid #CBD5E1', backgroundColor: '#FFFFFF', cursor: 'pointer', outline: 'none', fontWeight: '500', color: '#475569' }}
                 defaultValue=""
               >
-                <option value="" disabled>➕ Registrar / Tomar nota de intervención de vecino...</option>
+                <option value="" disabled>➕ Registrar intervención de vecino...</option>
                 {asistentes
                   .filter(a => a.asistio)
                   .map(a => {
@@ -1334,11 +1335,11 @@ ${oradoresEfectivos.length > 0
 
             <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', marginTop: '12px' }}>
               <h4 style={{ fontSize: '0.95rem', color: 'var(--color-primary)', margin: '0 0 4px 0', fontWeight: '700' }}>
-                Intervenciones y Notas ({oradores.length})
+                Intervenciones ({oradores.length})
               </h4>
               {oradores.length === 0 ? (
                 <div style={{ textAlign: 'center', padding: '2rem 1rem', color: 'var(--color-text-muted)', fontSize: '0.85rem', border: '1px dashed #CBD5E1', borderRadius: '8px' }}>
-                  Aún no hay intervenciones registradas. Elige un vecino de la lista para comenzar a tomar nota.
+                  Aún no hay intervenciones registradas. Elige un vecino de la lista para agregarlo.
                 </div>
               ) : (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
@@ -1359,8 +1360,8 @@ ${oradoresEfectivos.length > 0
                       </div>
                       <textarea
                         className="form-control"
-                        rows={3}
-                        placeholder="Escribí los comentarios de este vecino o la devolución de la mesa aquí..."
+                        rows={2}
+                        placeholder="Nota o minuta de la intervención (opcional, o completado por Territorio)..."
                         value={item.tema_efectivo || item.tema_original || ''}
                         onChange={(e) => {
                           const text = e.target.value;
@@ -1709,23 +1710,16 @@ ${oradoresEfectivos.length > 0
                 </div>
               </div>
 
-              <div style={{ backgroundColor: '#ffffff', borderRadius: '8px', padding: '10px', border: '1px solid var(--color-border)', marginBottom: '12px', fontSize: '0.85rem', boxShadow: 'inset 0 1px 2px rgba(0,0,0,0.02)' }}>
+              <div style={{ backgroundColor: '#F8FAFC', borderRadius: '8px', padding: '12px', border: '1px solid var(--color-border)', marginBottom: '14px', fontSize: '0.85rem' }}>
                 <div style={{ color: 'var(--color-text-muted)', fontSize: '0.75rem', fontWeight: '700', marginBottom: '4px', textTransform: 'uppercase' }}>
-                  Tema original:
+                  📌 Tema / Minuta registrada (por equipo de Territorio):
                 </div>
-                "{activeSpeaker.tema_original || 'No especificado'}"
-              </div>
-
-              <div className="form-group" style={{ marginBottom: '12px' }}>
-                <label style={{ fontSize: '0.8rem', fontWeight: '600', color: 'var(--color-primary)', marginBottom: '4px', display: 'block' }}>Minuta del Micrófono *</label>
-                <textarea
-                  className="form-control"
-                  rows={4}
-                  placeholder="Escribí la minuta final de lo que expone el vecino..."
-                  value={liveMinuta}
-                  onChange={(e) => setLiveMinuta(e.target.value)}
-                  style={{ fontSize: '0.85rem', lineHeight: '1.3' }}
-                />
+                <div style={{ fontWeight: '600', color: 'var(--color-primary)', fontStyle: 'italic', marginBottom: '8px', backgroundColor: '#FFFFFF', padding: '10px', borderRadius: '6px', border: '1px solid #E2E8F0', minHeight: '40px', lineHeight: '1.4' }}>
+                  "{activeSpeaker.tema_efectivo || activeSpeaker.tema_original || 'Sin tema especificado aún por Territorio.'}"
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.75rem', color: '#059669', backgroundColor: '#ECFDF5', padding: '6px 10px', borderRadius: '6px', border: '1px solid #A7F3D0' }}>
+                  <span>✍️ <strong>Nota de Flujo:</strong> La toma y edición de temas en vivo está a cargo de Territorio desde la pantalla de Acreditación. El moderador solo controla tiempos y turnos.</span>
+                </div>
               </div>
 
               <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>

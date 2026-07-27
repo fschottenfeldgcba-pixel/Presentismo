@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { ArrowLeft, Search, Plus, Check, Play, Square, Pause, Shield, Calendar, Users, ClipboardList, Mic, AlertTriangle, Clock } from 'lucide-react';
+import { ArrowLeft, Search, Plus, Check, Play, Square, Pause, Shield, Calendar, Users, ClipboardList, Mic, AlertTriangle, Clock, FileSpreadsheet, Trash2, Edit2, Save, X, Download } from 'lucide-react';
 import { TIPOS_REUNION } from '../data/mockData';
 import { 
   getAsistentesPorReunion, 
@@ -17,6 +17,7 @@ import {
 import PreguntasTematicas from './PreguntasTematicas';
 import Cronometro1a1 from './Cronometro1a1';
 import { supabase } from '../lib/supabaseClient';
+import * as XLSX from 'xlsx';
 
 const COMUNAS = [
   "Comuna 1",
@@ -157,8 +158,8 @@ export default function ControlAsistencia({ reunion, onBack, mode = 'asistencia'
   const [editAgenteTerritorioId, setEditAgenteTerritorioId] = useState('');
   const [editAsistio, setEditAsistio] = useState(false);
 
-  // Pop-up de Oradores y Minuta Colaborativo
-  const [showOradoresModal, setShowOradoresModal] = useState(false);
+  // Vista activa de Territorio ('asistencia' | 'minutas')
+  const [currentView, setCurrentView] = useState('asistencia');
   const [oradoresModalList, setOradoresModalList] = useState([]);
   const [activeOradorId, setActiveOradorId] = useState(null);
   const [editingOradorId, setEditingOradorId] = useState(null);
@@ -168,6 +169,75 @@ export default function ControlAsistencia({ reunion, onBack, mode = 'asistencia'
   // Buscador interno de vecinos para agregar oradores en caliente
   const [oradorSearchQuery, setOradorSearchQuery] = useState('');
   const [oradorSearchResults, setOradorSearchResults] = useState([]);
+  const [oradorFilterText, setOradorFilterText] = useState('');
+  const [modalMinutaState, setModalMinutaState] = useState({});
+
+  // Exportar Lista Completa de Oradores a Excel (.xlsx)
+  const handleExportOradoresXLS = () => {
+    if (!oradoresModalList || oradoresModalList.length === 0) {
+      alert('No hay oradores en la lista para exportar.');
+      return;
+    }
+
+    const exportData = oradoresModalList.map(o => {
+      const nombreCompleto = `${o.vecino?.nombre || ''} ${o.vecino?.apellido || ''}`.trim();
+      return {
+        'DNI': o.vecino?.dni || o.vecino_id || '',
+        'Nombre y Apellido': nombreCompleto || 'Sin Nombre',
+        'Teléfono': o.vecino?.celular || 'No registrado',
+        'Tema que habló': o.tema_efectivo || o.tema_original || 'Sin minuta registrada'
+      };
+    });
+
+    const worksheet = XLSX.utils.json_to_sheet(exportData);
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, worksheet, 'Oradores_y_Minuta');
+
+    const dateStr = reunion.fecha || new Date().toISOString().split('T')[0];
+    const cleanReunionName = (reunion.nombre || 'Reunion').replace(/[/\\?%*:|"<>]/g, '_');
+    XLSX.writeFile(workbook, `Oradores_y_Minuta_${dateStr}_${cleanReunionName}.xlsx`);
+  };
+
+  const handleUpdateOradorStatusInModal = async (oradorId, newEstado) => {
+    try {
+      const { error } = await supabase
+        .from('oradores')
+        .update({ estado: newEstado })
+        .eq('id', oradorId);
+      if (error) throw error;
+      setOradoresModalList(prev => prev.map(o => o.id === oradorId ? { ...o, estado: newEstado } : o));
+    } catch (err) {
+      console.error('Error al actualizar estado:', err);
+      alert('No se pudo actualizar el estado del orador.');
+    }
+  };
+
+  const handleSaveOradorMinutaInModal = async (oradorId, newMinutaText) => {
+    try {
+      const { error } = await supabase
+        .from('oradores')
+        .update({ tema_efectivo: newMinutaText })
+        .eq('id', oradorId);
+      if (error) throw error;
+      setOradoresModalList(prev => prev.map(o => o.id === oradorId ? { ...o, tema_efectivo: newMinutaText } : o));
+      alert('¡Minuta del orador guardada con éxito!');
+    } catch (err) {
+      console.error('Error al guardar minuta:', err);
+      alert('No se pudo guardar la minuta.');
+    }
+  };
+
+  const handleDeleteOradorInModal = async (oradorId) => {
+    if (!window.confirm('¿Seguro que deseas eliminar este orador de la lista?')) return;
+    try {
+      await eliminarOrador(oradorId);
+      setOradoresModalList(prev => prev.filter(o => o.id !== oradorId));
+      setOradoresCount(c => Math.max(0, c - 1));
+    } catch (err) {
+      console.error('Error al eliminar orador:', err);
+      alert('No se pudo eliminar el orador.');
+    }
+  };
 
   const isCafeOrEncuentro = reunion.tipo_reunion !== TIPOS_REUNION.UNO_A_UNO;
   const isUnoAUno = reunion.tipo_reunion === TIPOS_REUNION.UNO_A_UNO;
@@ -251,9 +321,9 @@ export default function ControlAsistencia({ reunion, onBack, mode = 'asistencia'
     };
   }, [reunion.id]);
 
-  // Polling automático para la cola de oradores en el modal (cada 5 segundos)
+  // Polling automático para la cola de oradores en la vista de minutas (cada 5 segundos)
   useEffect(() => {
-    if (!showOradoresModal) return;
+    if (currentView !== 'minutas') return;
 
     const loadModalOradores = async () => {
       try {
@@ -291,7 +361,7 @@ export default function ControlAsistencia({ reunion, onBack, mode = 'asistencia'
     const interval = setInterval(loadModalOradores, 5000);
 
     return () => clearInterval(interval);
-  }, [showOradoresModal, editingOradorId, editingMinutaText, reunion.id]);
+  }, [currentView, editingOradorId, editingMinutaText, reunion.id]);
 
   // Cronómetro local para el orador activo dentro del modal
   useEffect(() => {
@@ -715,6 +785,177 @@ export default function ControlAsistencia({ reunion, onBack, mode = 'asistencia'
     return `${hrs > 0 ? hrs + ':' : ''}${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
   };
 
+  // Renderizar contenido de Toma de Temas / Minuta a pantalla completa si está activo
+  if (currentView === 'minutas') {
+    const filteredList = oradoresModalList.filter(o => {
+      if (!oradorFilterText.trim()) return true;
+      const term = oradorFilterText.toLowerCase();
+      const nombreFull = `${o.vecino?.nombre || ''} ${o.vecino?.apellido || ''}`.toLowerCase();
+      const dni = String(o.vecino?.dni || o.vecino_id || '').toLowerCase();
+      const tema = (o.tema_efectivo || o.tema_original || '').toLowerCase();
+      return nombreFull.includes(term) || dni.includes(term) || tema.includes(term);
+    });
+
+    return (
+      <div className="container" style={{ maxWidth: '800px', margin: '0 auto', padding: '12px' }}>
+        {/* Header móvil adaptado */}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', marginBottom: '16px', backgroundColor: '#FFFFFF', padding: '16px', borderRadius: '12px', border: '1px solid var(--color-border)', boxShadow: '0 2px 4px rgba(0,0,0,0.04)' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <button
+              type="button"
+              className="btn btn-secondary btn-sm"
+              onClick={() => setCurrentView('asistencia')}
+              style={{ display: 'flex', alignItems: 'center', gap: '6px', fontWeight: '600', padding: '8px 12px', fontSize: '0.85rem' }}
+            >
+              <ArrowLeft size={16} /> Volver a Acreditaciones
+            </button>
+            <button
+              type="button"
+              className="btn btn-sm"
+              onClick={handleExportOradoresXLS}
+              style={{ backgroundColor: '#10B981', color: '#FFF', fontWeight: 'bold', display: 'flex', alignItems: 'center', gap: '6px', border: 'none', borderRadius: '6px', padding: '8px 14px', fontSize: '0.85rem', cursor: 'pointer' }}
+            >
+              <FileSpreadsheet size={16} /> Excel
+            </button>
+          </div>
+
+          <div>
+            <h2 style={{ fontSize: '1.25rem', color: 'var(--color-primary)', margin: 0, fontWeight: '800', display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <Mic size={22} style={{ color: 'var(--color-highlight)' }} /> Toma de Temas / Minuta en Vivo
+            </h2>
+            <span style={{ fontSize: '0.8rem', color: 'var(--color-text-muted)', display: 'block', marginTop: '4px' }}>
+              {reunion.nombre} ({reunion.fecha})
+            </span>
+          </div>
+
+          {/* Buscador de filtro */}
+          <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+            <input
+              type="text"
+              className="form-control"
+              placeholder="🔍 Buscar por DNI, Nombre o Tema..."
+              value={oradorFilterText}
+              onChange={(e) => setOradorFilterText(e.target.value)}
+              style={{ fontSize: '0.9rem', padding: '10px 12px', borderRadius: '8px', flex: 1 }}
+            />
+            <span className="badge badge-info" style={{ padding: '8px 12px', fontSize: '0.85rem', whiteSpace: 'nowrap' }}>
+              {oradoresModalList.length} oradores
+            </span>
+          </div>
+        </div>
+
+        {/* Listado en Tarjetas de 1 Columna adaptado 100% a Celular */}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+          {filteredList.length === 0 ? (
+            <div className="card" style={{ textAlign: 'center', padding: '2rem', color: 'var(--color-text-muted)' }}>
+              {oradoresModalList.length === 0 ? 'Aún no hay oradores anotados.' : 'Sin resultados para la búsqueda.'}
+            </div>
+          ) : (
+            filteredList.map((o, idx) => {
+              const nombreFull = `${o.vecino?.nombre || ''} ${o.vecino?.apellido || ''}`.trim() || 'Desconocido';
+              const dniVal = o.vecino?.dni || o.vecino_id || '-';
+              const telVal = o.vecino?.celular || 'No registrado';
+              const currentTema = modalMinutaState[o.id] !== undefined ? modalMinutaState[o.id] : (o.tema_efectivo || o.tema_original || '');
+
+              const isHablo = o.estado === 'hablo';
+              const isSeBajo = o.estado === 'se_bajo';
+
+              return (
+                <div
+                  key={o.id}
+                  className="card"
+                  style={{
+                    margin: 0,
+                    padding: '14px',
+                    borderRadius: '12px',
+                    borderLeft: `5px solid ${isHablo ? '#10B981' : isSeBajo ? '#94A3B8' : 'var(--color-highlight)'}`,
+                    backgroundColor: isHablo ? '#F0FDF4' : isSeBajo ? '#F8FAFC' : '#FFFFFF',
+                    boxShadow: '0 2px 6px rgba(0,0,0,0.03)'
+                  }}
+                >
+                  {/* Fila Header de la tarjeta */}
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '8px', gap: '8px' }}>
+                    <div>
+                      <div style={{ fontWeight: '800', fontSize: '1.05rem', color: 'var(--color-primary)' }}>
+                        #{o.orden || idx + 1} — {nombreFull}
+                      </div>
+                      <div style={{ fontSize: '0.8rem', color: '#64748B', marginTop: '2px', display: 'flex', gap: '12px', flexWrap: 'wrap' }}>
+                        <span>🆔 DNI: <strong>{dniVal}</strong></span>
+                        <span>📱 Tel: <strong>{telVal}</strong></span>
+                      </div>
+                    </div>
+
+                    <div>
+                      {isHablo && <span className="badge badge-success" style={{ fontSize: '0.75rem', padding: '4px 8px' }}>Habló</span>}
+                      {!isHablo && !isSeBajo && <span className="badge badge-warning" style={{ fontSize: '0.75rem', padding: '4px 8px' }}>En espera</span>}
+                      {isSeBajo && <span className="badge badge-secondary" style={{ fontSize: '0.75rem', padding: '4px 8px' }}>Se bajó</span>}
+                    </div>
+                  </div>
+
+                  {/* Textarea optimizado para teclado de smartphone */}
+                  <div style={{ marginBottom: '10px' }}>
+                    <textarea
+                      className="form-control"
+                      rows={3}
+                      placeholder="Escribí acá los temas hablados por este vecino..."
+                      value={currentTema}
+                      onChange={(e) => setModalMinutaState(prev => ({ ...prev, [o.id]: e.target.value }))}
+                      style={{ fontSize: '0.9rem', lineHeight: '1.4', borderRadius: '8px', padding: '10px', width: '100%' }}
+                    />
+                  </div>
+
+                  {/* Botones táctiles de acción */}
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '8px' }}>
+                    <button
+                      type="button"
+                      className="btn btn-primary btn-sm"
+                      onClick={() => handleSaveOradorMinutaInModal(o.id, currentTema)}
+                      style={{ display: 'flex', alignItems: 'center', gap: '6px', fontWeight: '600', padding: '8px 14px', fontSize: '0.85rem', borderRadius: '8px' }}
+                    >
+                      <Save size={15} /> Guardar Tema
+                    </button>
+
+                    <div style={{ display: 'flex', gap: '6px' }}>
+                      {!isHablo && (
+                        <button
+                          type="button"
+                          className="btn btn-sm btn-success"
+                          onClick={() => handleUpdateOradorStatusInModal(o.id, 'hablo')}
+                          style={{ padding: '6px 12px', fontSize: '0.8rem', borderRadius: '6px', fontWeight: '600' }}
+                        >
+                          ✔ Habló
+                        </button>
+                      )}
+                      {!isSeBajo && (
+                        <button
+                          type="button"
+                          className="btn btn-sm btn-secondary"
+                          onClick={() => handleUpdateOradorStatusInModal(o.id, 'se_bajo')}
+                          style={{ padding: '6px 10px', fontSize: '0.8rem', borderRadius: '6px' }}
+                        >
+                          Se bajó
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        className="btn btn-sm btn-danger"
+                        onClick={() => handleDeleteOradorInModal(o.id)}
+                        style={{ padding: '6px 10px', borderRadius: '6px' }}
+                        title="Eliminar"
+                      >
+                        <Trash2 size={14} />
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              );
+            })
+          )}
+        </div>
+      </div>
+    );
+  }
+
   // Renderizar contenido según reunión Uno a Uno o General
   if (isUnoAUno) {
     if (mode === 'moderacion') {
@@ -747,6 +988,7 @@ export default function ControlAsistencia({ reunion, onBack, mode = 'asistencia'
           (item.horario_bloque_asignado || '').toLowerCase().includes(term)
         );
       });
+
 
       return (
         <div className="container">
@@ -871,7 +1113,7 @@ export default function ControlAsistencia({ reunion, onBack, mode = 'asistencia'
         <button 
           type="button"
           className="btn btn-highlight btn-sm" 
-          onClick={() => setShowOradoresModal(true)}
+          onClick={() => setCurrentView('minutas')}
           style={{ 
             display: 'flex', 
             alignItems: 'center', 
@@ -882,7 +1124,7 @@ export default function ControlAsistencia({ reunion, onBack, mode = 'asistencia'
             color: 'var(--color-primary)'
           }}
         >
-          <Mic size={14} /> Oradores y Minuta
+          <Mic size={14} /> Toma de Temas / Oradores
         </button>
 
         {/* Cronómetro Logístico en Vivo */}
@@ -1655,6 +1897,7 @@ export default function ControlAsistencia({ reunion, onBack, mode = 'asistencia'
           </div>
         </div>
       )}
+
     </div>
   );
 }

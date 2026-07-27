@@ -432,7 +432,7 @@ export const getOradores = async (reunionId) => {
   try {
     const { data, error } = await supabase
       .from('oradores')
-      .select('id, reunion_id, vecino_id, estado, orden, tema_original, tema_efectivo, created_at, vecino:vecinos(dni, nombre, apellido, barrio, comuna)')
+      .select('id, reunion_id, vecino_id, estado, orden, tema_original, tema_efectivo, created_at, vecino:vecinos(dni, nombre, apellido, barrio, comuna, celular, email)')
       .eq('reunion_id', reunionId)
       .order('orden', { ascending: true });
 
