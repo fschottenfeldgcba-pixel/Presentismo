@@ -8,6 +8,7 @@ import {
 } from 'recharts';
 import { TIPOS_REUNION } from '../data/mockData';
 import { fetchDashboardData, generateInsights, processAndNormalizeWord } from '../services/analyticsService';
+import { getFuncionariosList } from '../services/supabaseService';
 
 const COMUNAS = [
   "Comuna 1", "Comuna 1 Norte", "Comuna 1 Sur", "Comuna 2", "Comuna 3", "Comuna 4", "Comuna 5", "Comuna 6", 
@@ -185,6 +186,19 @@ export default function CentralInformes({ user, onBack }) {
       style.innerHTML = globalStyles;
       document.head.appendChild(style);
     }
+
+    // Cargar la lista completa de funcionarios registrados en Supabase al abrir la pantalla
+    const loadFuncionariosDropdown = async () => {
+      try {
+        const { data } = await getFuncionariosList();
+        if (data && data.length > 0) {
+          setFuncionariosList(data);
+        }
+      } catch (err) {
+        console.error('Error al precargar lista de funcionarios:', err);
+      }
+    };
+    loadFuncionariosDropdown();
     
     const handleClickOutside = (event) => {
       if (dropdownRef.current && !dropdownRef.current.contains(event.target)) {
@@ -266,9 +280,18 @@ export default function CentralInformes({ user, onBack }) {
         setFrasesRawB(dataB.frasesGlobales);
         setInsightsB(generateInsights(dataB.kpis.actual, dataB.kpis.anterior, dataB.periodos));
 
-        const funcsA = dataA.reunionesActuales.map(r => r.funcionario).filter(Boolean);
-        const funcsB = dataB.reunionesActuales.map(r => r.funcionario).filter(Boolean);
-        setFuncionariosList([...new Set([...funcsA, ...funcsB])].sort());
+        const extractFuncs = (list) => {
+          const set = new Set();
+          (list || []).forEach(r => {
+            if (!r.funcionario) return;
+            r.funcionario.split(/[,/]/).map(s => s.trim()).filter(Boolean).forEach(p => set.add(p));
+          });
+          return [...set];
+        };
+
+        const funcsA = extractFuncs(dataA.reunionesActuales);
+        const funcsB = extractFuncs(dataB.reunionesActuales);
+        setFuncionariosList(prev => [...new Set([...prev, ...funcsA, ...funcsB])].sort());
       } else {
         const data = await fetchDashboardData(filtros);
         setAllVecinos(data.vecinos);
@@ -276,7 +299,13 @@ export default function CentralInformes({ user, onBack }) {
         setReuniones(data.reunionesActuales);
         setFrasesRaw(data.frasesGlobales);
         setInsights(generateInsights(data.kpis.actual, data.kpis.anterior, data.periodos));
-        setFuncionariosList([...new Set(data.reunionesActuales.map(r => r.funcionario).filter(Boolean))].sort());
+        
+        const set = new Set();
+        (data.reunionesActuales || []).forEach(r => {
+          if (!r.funcionario) return;
+          r.funcionario.split(/[,/]/).map(s => s.trim()).filter(Boolean).forEach(p => set.add(p));
+        });
+        setFuncionariosList(prev => [...new Set([...prev, ...set])].sort());
         
         setAllVecinosB([]);
         setKpisB(null);
@@ -611,10 +640,14 @@ export default function CentralInformes({ user, onBack }) {
   
   const processTerritorial = (vecinosList, suffix) => {
     vecinosList.forEach(v => {
-      const c = v.comuna || 'Sin Comuna';
-      if (!comunasMap[c]) comunasMap[c] = { comuna: c, ConvocadosA: 0, AsistentesA: 0, ConvocadosB: 0, AsistentesB: 0 };
-      comunasMap[c][`Convocados${suffix}`] += v.totalInscripciones;
-      comunasMap[c][`Asistentes${suffix}`] += v.totalAsistencias;
+      (v.inscripcionesReuniones || []).forEach(i => {
+        const c = i.reunion?.comuna || v.comuna || 'Sin Comuna';
+        if (!comunasMap[c]) comunasMap[c] = { comuna: c, ConvocadosA: 0, AsistentesA: 0, ConvocadosB: 0, AsistentesB: 0 };
+        comunasMap[c][`Convocados${suffix}`] += 1;
+        if (i.asistio) {
+          comunasMap[c][`Asistentes${suffix}`] += 1;
+        }
+      });
     });
   };
   

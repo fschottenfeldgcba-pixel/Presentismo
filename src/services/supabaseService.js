@@ -171,6 +171,8 @@ export const getReuniones = async ({ historico = false } = {}) => {
     if (!historico) {
       const cutoff = new Date(Date.now() - 180 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
       query = query.gte('fecha', cutoff);
+    } else {
+      query = query.range(0, 9999);
     }
 
     const { data, error } = await query;
@@ -308,6 +310,94 @@ export const cambiarDniVecino = async (oldDni, newDni, updates = {}) => {
   }
 };
 
+/**
+ * Unifica dos registros de vecinos duplicados (masterDni y duplicateDni),
+ * transfiriendo asistencias y oratorios al master, actualizando datos y eliminando el duplicado.
+ */
+export const unificarVecinos = async (masterDni, duplicateDni, mergedFields = {}) => {
+  try {
+    // 1. Actualizar el registro maestro con los datos consolidados
+    const { error: errUpdateMaster } = await supabase
+      .from('vecinos')
+      .update(mergedFields)
+      .eq('dni', masterDni);
+    if (errUpdateMaster) throw errUpdateMaster;
+
+    // 2. Manejar inscripciones_asistencias
+    const { data: masterInscs } = await supabase
+      .from('inscripciones_asistencias')
+      .select('reunion_id, asistio, id')
+      .eq('vecino_id', masterDni);
+
+    const { data: dupInscs } = await supabase
+      .from('inscripciones_asistencias')
+      .select('reunion_id, asistio, id')
+      .eq('vecino_id', duplicateDni);
+
+    const masterReunionMap = {};
+    (masterInscs || []).forEach(i => { masterReunionMap[i.reunion_id] = i; });
+
+    if (dupInscs && dupInscs.length > 0) {
+      for (const dup of dupInscs) {
+        const existingMaster = masterReunionMap[dup.reunion_id];
+        if (existingMaster) {
+          if (dup.asistio && !existingMaster.asistio) {
+            await supabase
+              .from('inscripciones_asistencias')
+              .update({ asistio: true, hora_marcado: new Date().toISOString() })
+              .eq('id', existingMaster.id);
+          }
+          await supabase
+            .from('inscripciones_asistencias')
+            .delete()
+            .eq('id', dup.id);
+        } else {
+          await supabase
+            .from('inscripciones_asistencias')
+            .update({ vecino_id: masterDni })
+            .eq('id', dup.id);
+        }
+      }
+    }
+
+    // 3. Manejar oradores
+    const { data: dupOradores } = await supabase
+      .from('oradores')
+      .select('id, reunion_id')
+      .eq('vecino_id', duplicateDni);
+
+    if (dupOradores && dupOradores.length > 0) {
+      for (const o of dupOradores) {
+        const { data: masterOrador } = await supabase
+          .from('oradores')
+          .select('id')
+          .eq('reunion_id', o.reunion_id)
+          .eq('vecino_id', masterDni)
+          .maybeSingle();
+
+        if (masterOrador) {
+          await supabase.from('oradores').delete().eq('id', o.id);
+        } else {
+          await supabase.from('oradores').update({ vecino_id: masterDni }).eq('id', o.id);
+        }
+      }
+    }
+
+    // 4. Eliminar el registro duplicado del padrón central
+    if (masterDni !== duplicateDni) {
+      await supabase
+        .from('vecinos')
+        .delete()
+        .eq('dni', duplicateDni);
+    }
+
+    return { data: { masterDni }, error: null };
+  } catch (error) {
+    console.error('Error al unificar vecinos:', error);
+    return { data: null, error };
+  }
+};
+
 // =========================================================================
 // 4. INSCRIPCIONES Y ASISTENCIAS (EL CORAZÓN DEL SISTEMA)
 // =========================================================================
@@ -432,7 +522,7 @@ export const getOradores = async (reunionId) => {
   try {
     const { data, error } = await supabase
       .from('oradores')
-      .select('id, reunion_id, vecino_id, estado, orden, tema_original, tema_efectivo, created_at, vecino:vecinos(dni, nombre, apellido, barrio, comuna, celular, email)')
+      .select('id, reunion_id, vecino_id, estado, orden, tema_original, tema_efectivo, tags, duracion_segundos, created_at, vecino:vecinos(dni, nombre, apellido, barrio, comuna, celular, email)')
       .eq('reunion_id', reunionId)
       .order('orden', { ascending: true });
 
@@ -574,7 +664,7 @@ export const updateOradorTema = async (oradorId, temaOriginal) => {
 };
 
 /**
- * Actualiza cualquier propiedad de un registro de orador (estado, tema_original, tema_efectivo).
+ * Actualiza cualquier propiedad de un registro de orador (estado, tema_original, tema_efectivo, tags, etc.).
  */
 export const updateOradorDetails = async (oradorId, updates) => {
   try {
@@ -589,6 +679,28 @@ export const updateOradorDetails = async (oradorId, updates) => {
     return { data, error: null };
   } catch (error) {
     console.error('Error en updateOradorDetails:', error);
+    return { data: null, error };
+  }
+};
+
+/**
+ * Guarda los tags temáticos de un orador (auto-save al hacer click en un chip).
+ * @param {string|number} oradorId – ID del orador
+ * @param {string[]} tags – array de labels de tags seleccionados
+ */
+export const updateOradorTags = async (oradorId, tags) => {
+  try {
+    const { data, error } = await supabase
+      .from('oradores')
+      .update({ tags })
+      .eq('id', oradorId)
+      .select('id, tags')
+      .single();
+
+    if (error) throw error;
+    return { data, error: null };
+  } catch (error) {
+    console.error('Error en updateOradorTags:', error);
     return { data: null, error };
   }
 };
@@ -644,14 +756,21 @@ export const getFuncionariosList = async () => {
   try {
     const { data, error } = await supabase
       .from('reuniones')
-      .select('funcionario');
+      .select('funcionario')
+      .not('funcionario', 'is', null)
+      .range(0, 9999);
 
     if (error) throw error;
 
-    // Obtener nombres únicos y filtrar nulos/vacíos
-    const list = [...new Set(data.map(r => r.funcionario))]
-      .filter(f => f && f.trim() !== '')
-      .sort((a, b) => a.localeCompare(b));
+    // Obtener nombres únicos y filtrar nulos/vacíos, dividiendo por coma o barra
+    const setOfFuncs = new Set();
+    (data || []).forEach(r => {
+      if (!r.funcionario) return;
+      const parts = r.funcionario.split(/[,/]/).map(s => s.trim()).filter(Boolean);
+      parts.forEach(p => setOfFuncs.add(p));
+    });
+
+    const list = [...setOfFuncs].sort((a, b) => a.localeCompare(b));
 
     return { data: list, error: null };
   } catch (error) {

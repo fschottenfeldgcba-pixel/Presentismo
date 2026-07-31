@@ -131,7 +131,7 @@ export const fetchDashboardData = async (filtros) => {
       .range(page * pageSize, (page + 1) * pageSize - 1);
 
     // Filtros server-side opcionales
-    if (selectedFuncionario) query = query.eq('funcionario', selectedFuncionario);
+    if (selectedFuncionario) query = query.ilike('funcionario', `%${selectedFuncionario}%`);
     if (selectedTipoReunion) query = query.eq('tipo_reunion', selectedTipoReunion);
     if (selectedBarrio) query = query.eq('barrio', selectedBarrio);
     if (fechaHasta) query = query.lte('fecha', fechaHasta);
@@ -167,7 +167,7 @@ export const fetchDashboardData = async (filtros) => {
   const reunionesFiltradas = validReuniones.filter(r => {
     if (selectedComunas && selectedComunas.length > 0 && !selectedComunas.includes(r.comuna)) return false;
     if (selectedBarrio && r.barrio !== selectedBarrio) return false;
-    if (selectedFuncionario && r.funcionario !== selectedFuncionario) return false;
+    if (selectedFuncionario && (!r.funcionario || !r.funcionario.toLowerCase().includes(selectedFuncionario.toLowerCase()))) return false;
     if (selectedTipoReunion && r.tipo_reunion !== selectedTipoReunion) return false;
     if (selectedTema) {
       const temaStr = (r.tema || '').toLowerCase();
@@ -215,7 +215,7 @@ export const fetchDashboardData = async (filtros) => {
   page = 0;
   if (actualIds.length > 0) {
     while (true) {
-      const { data } = await supabase.from('oradores').select('vecino_id, reunion_id, estado, tema_original, tema_efectivo').in('reunion_id', actualIds).order('vecino_id').range(page * pageSize, (page + 1) * pageSize - 1);
+      const { data } = await supabase.from('oradores').select('vecino_id, reunion_id, estado, tema_original, tema_efectivo, tags').in('reunion_id', actualIds).order('vecino_id').range(page * pageSize, (page + 1) * pageSize - 1);
       if (!data || data.length === 0) break;
       oradoresActual = oradoresActual.concat(data);
       if (data.length < pageSize) break;
@@ -254,9 +254,10 @@ export const fetchDashboardData = async (filtros) => {
     for (let i = 0; i < asistentesDnis.length; i += chunkSize) {
       const chunk = asistentesDnis.slice(i, i + chunkSize);
       const { data } = await supabase.from('inscripciones_asistencias')
-        .select('vecino_id')
+        .select('vecino_id, reunion_id')
         .in('vecino_id', chunk)
-        .eq('asistio', true);
+        .eq('asistio', true)
+        .range(0, 9999);
       
       if (data) {
         const counts = {};

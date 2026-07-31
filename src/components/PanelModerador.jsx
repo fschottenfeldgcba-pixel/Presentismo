@@ -1,9 +1,11 @@
 import React, { useState, useEffect } from 'react';
 import { ArrowLeft, Save, Mic, Users, Trash2, ArrowUp, ArrowDown, Share2, Clipboard, Check, RefreshCw, Plus, Clock, MessageSquare, Award } from 'lucide-react';
-import { updateReunion, getOradores, updateOradorDetails, getAsistentesPorReunion, registrarOrador, guardarAsistencia } from '../services/supabaseService';
+import { updateReunion, getOradores, updateOradorDetails, updateOradorTags, getAsistentesPorReunion, registrarOrador, guardarAsistencia } from '../services/supabaseService';
+import OradorTagSelector, { OradorTagsDisplay } from './OradorTagSelector';
 import { supabase } from '../lib/supabaseClient';
 import { TIPOS_REUNION } from '../data/mockData';
 import PreguntasTematicas from './PreguntasTematicas';
+import { autoDetectTags } from '../constants/oradorTags';
 
 const SEMAFORO_MAP = {
   verde: { label: '🟢 Verde - Sin riesgo', waLabel: '🟢 sin riesgo' },
@@ -70,6 +72,8 @@ export default function PanelModerador({ reunion: initialReunion, onBack }) {
   const [editingFinishedId, setEditingFinishedId] = useState(null);
   const [editingFinishedText, setEditingFinishedText] = useState('');
   const [editingFinishedDuration, setEditingFinishedDuration] = useState('');
+  // ID del orador cuyo selector de tags está expandido para corrección manual
+  const [editingTagsFor, setEditingTagsFor] = useState(null);
 
   // Estados para Procesos Participativos - Co Creación
   const [cantMesas, setCantMesas] = useState(1);
@@ -430,7 +434,6 @@ export default function PanelModerador({ reunion: initialReunion, onBack }) {
     if (!error) {
       setSelectedLastMinuteDni('');
       await loadOradores();
-      alert('Orador agregado exitosamente a la cola.');
     } else {
       alert(`Error al registrar orador: ${error.message}`);
     }
@@ -446,7 +449,7 @@ export default function PanelModerador({ reunion: initialReunion, onBack }) {
       const { data, error } = await supabase
         .from('vecinos')
         .select('*')
-        .or(`dni.eq.${q},nombre.ilike.%${q}%,apellido.ilike.%${q}%`)
+        .or(`dni.ilike.%${q}%,nombre.ilike.%${q}%,apellido.ilike.%${q}%,celular.ilike.%${q}%`)
         .limit(5);
         
       if (!error && data) {
@@ -734,6 +737,15 @@ export default function PanelModerador({ reunion: initialReunion, onBack }) {
         return o;
       }));
 
+      // Auto-detectar y guardar tags a partir del texto final
+      const autoTags = autoDetectTags(finalTema || '');
+      if (autoTags.length > 0) {
+        await updateOradorTags(activeSpeaker.id, autoTags);
+        setOradores(prev => prev.map(o =>
+          o.id === activeSpeaker.id ? { ...o, tags: autoTags } : o
+        ));
+      }
+
       setActiveSpeaker(null);
       setLiveMinuta('');
     } catch (err) {
@@ -887,18 +899,43 @@ export default function PanelModerador({ reunion: initialReunion, onBack }) {
       setOradores(prev => prev.map(o => {
         if (o.id === oradorId) {
           const res = { ...o, tema_efectivo: editingFinishedText };
-          if (duracionSegundos !== null) {
-            res.duracion_segundos = duracionSegundos;
-          }
+          if (duracionSegundos !== null) res.duracion_segundos = duracionSegundos;
           return res;
         }
         return o;
       }));
 
+      // Auto-detectar y guardar tags a partir del texto editado
+      const autoTags = autoDetectTags(editingFinishedText || '');
+      await updateOradorTags(oradorId, autoTags);
+      setOradores(prev => prev.map(o =>
+        o.id === oradorId ? { ...o, tags: autoTags } : o
+      ));
+
       setEditingFinishedId(null);
     } catch (err) {
       console.error(err);
       alert(`Error al guardar minuta: ${err.message}`);
+    }
+  };
+
+  const handleToggleTagModerador = async (oradorId, tagLabel) => {
+    const orador = oradores.find(o => o.id === oradorId);
+    if (!orador) return;
+    const baseTags = (orador.tags && orador.tags.length > 0) ? orador.tags : autoDetectTags(orador.tema_efectivo || orador.tema_original || '');
+    const newTags = baseTags.includes(tagLabel)
+      ? baseTags.filter(t => t !== tagLabel)
+      : [...baseTags, tagLabel];
+
+    // Optimistic UI update
+    setOradores(prev => prev.map(o => o.id === oradorId ? { ...o, tags: newTags } : o));
+
+    // Auto-save
+    const { error } = await updateOradorTags(oradorId, newTags);
+    if (error) {
+      console.error('Error al guardar tags:', error);
+      // Revertir en error
+      setOradores(prev => prev.map(o => o.id === oradorId ? { ...o, tags: baseTags } : o));
     }
   };
 
@@ -1445,7 +1482,7 @@ ${oradoresEfectivos.length > 0
               <input
                 type="text"
                 className="form-control form-control-sm"
-                placeholder="DNI o Nombre..."
+                placeholder="DNI, Nombre o Teléfono..."
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
                 style={{ fontSize: '0.85rem', flex: 1 }}
@@ -1471,7 +1508,7 @@ ${oradoresEfectivos.length > 0
                     style={{ padding: '6px 10px', fontSize: '0.8rem', borderBottom: '1px solid #F1F5F9', cursor: 'pointer', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}
                     className="search-item-hover"
                   >
-                    <span><strong>{v.nombre} {v.apellido}</strong> ({v.dni})</span>
+                    <span><strong>{v.nombre} {v.apellido}</strong> ({v.dni}) {v.celular ? `📱 ${v.celular}` : ''}</span>
                     <span style={{ color: 'var(--color-highlight)', fontWeight: 'bold', fontSize: '0.75rem' }}>+ Agregar</span>
                   </div>
                 ))}
@@ -1769,7 +1806,7 @@ ${oradoresEfectivos.length > 0
           {queueFinished.length > 0 ? (
             <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', maxHeight: '250px', overflowY: 'auto' }}>
               {queueFinished.map(item => (
-                <div key={item.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '10px 12px', borderRadius: '8px', border: '1px solid #E2E8F0', backgroundColor: '#FFFFFF', fontSize: '0.85rem', boxShadow: '0 1px 2px rgba(0,0,0,0.02)', gap: '12px' }}>
+                <div key={item.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', padding: '10px 12px', borderRadius: '8px', border: '1px solid #E2E8F0', backgroundColor: '#FFFFFF', fontSize: '0.85rem', boxShadow: '0 1px 2px rgba(0,0,0,0.02)', gap: '12px' }}>
                   <div style={{ minWidth: 0, flex: 1 }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '4px' }}>
                       <strong style={{ color: 'var(--color-primary)' }}>
@@ -1823,6 +1860,43 @@ ${oradoresEfectivos.length > 0
                         </div>
                       )
                     )}
+
+                    {/* Tags: pills de solo lectura (con auto-detect fallback) + expandible para correcciones */}
+                    {item.estado === 'hablo' && (() => {
+                      const effectiveTags = (item.tags && item.tags.length > 0)
+                        ? item.tags
+                        : autoDetectTags(item.tema_efectivo || item.tema_original || '');
+                      return (
+                        <div style={{ marginTop: '6px' }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap', marginBottom: editingTagsFor === item.id ? '5px' : 0 }}>
+                            <span style={{ fontSize: '0.62rem', color: '#94A3B8', fontWeight: '700', textTransform: 'uppercase', letterSpacing: '0.3px', flexShrink: 0 }}>
+                              🤖 Tags
+                            </span>
+                            {effectiveTags.length > 0
+                              ? <OradorTagsDisplay tags={effectiveTags} compact />
+                              : <span style={{ fontSize: '0.68rem', color: '#CBD5E1', fontStyle: 'italic' }}>sin asignar</span>
+                            }
+                            <button
+                              type="button"
+                              onClick={() => setEditingTagsFor(prev => prev === item.id ? null : item.id)}
+                              title="Corregir tags"
+                              style={{ background: 'none', border: '1px solid #CBD5E1', borderRadius: '5px', padding: '1px 6px', fontSize: '0.6rem', color: '#94A3B8', cursor: 'pointer', lineHeight: '1.5', flexShrink: 0 }}
+                            >
+                              {editingTagsFor === item.id ? 'cerrar' : '✏️'}
+                            </button>
+                          </div>
+                          {editingTagsFor === item.id && (
+                            <div style={{ padding: '7px', backgroundColor: '#F8FAFC', borderRadius: '8px', border: '1px solid #E2E8F0' }}>
+                              <OradorTagSelector
+                                selectedTags={effectiveTags}
+                                onToggle={(tag) => handleToggleTagModerador(item.id, tag)}
+                                compact
+                              />
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })()}
                   </div>
                   
                   <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>

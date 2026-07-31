@@ -19,6 +19,8 @@ import { TIPOS_REUNION } from '../data/mockData';
 import EstadisticasFuncionario from './EstadisticasFuncionario';
 import ABMFuncionarios from './ABMFuncionarios';
 import CentralInformes from './CentralInformes';
+import { OradorTagsDisplay } from './OradorTagSelector';
+import { autoDetectTags } from '../constants/oradorTags';
 
 const COMUNAS = [
   "Comuna 1",
@@ -113,13 +115,6 @@ export default function DashboardAdmin({
   // Estados para limitar la carga inicial de histórico
   const [showHistorical, setShowHistorical] = useState(initialShowHistorical || false);
   const [loadingHistorical, setLoadingHistorical] = useState(false);
-
-  useEffect(() => {
-    if (initialShowHistorical) {
-      setShowHistorical(true);
-      loadAllData(true);
-    }
-  }, [initialShowHistorical]);
 
   // Cargar modal inicial si viene en la URL (soporte multi-pestaña)
   useEffect(() => {
@@ -404,7 +399,9 @@ ${(reunion.gestion_presente || '').trim() || '- ' + (reunion.funcionario || 'Fun
 ${oradoresEfectivos.length > 0 
   ? oradoresEfectivos.map(o => {
       const tel = o.vecino?.celular ? ` ${o.vecino.celular}` : '';
-      return `${o.vecino?.nombre || ''} ${o.vecino?.apellido || ''}${tel}: ${o.tema_efectivo || o.tema_original || 'Sin minuta registrada.'}`;
+      const effectiveTags = (o.tags && o.tags.length > 0) ? o.tags : autoDetectTags(o.tema_efectivo || o.tema_original || '');
+      const tagsStr = effectiveTags.length > 0 ? `\n     🏷️ ${effectiveTags.join(' · ')}` : '';
+      return `${o.vecino?.nombre || ''} ${o.vecino?.apellido || ''}${tel}: ${o.tema_efectivo || o.tema_original || 'Sin minuta registrada.'}${tagsStr}`;
     }).join('\n\n')
   : 'No se registraron oradores efectivos.'
 }`;
@@ -724,20 +721,55 @@ ${oradoresEfectivos.length > 0
 
     if (displayedList.length > 0) {
       try {
-        // Consultar asistencias y oradores solo para las reuniones a mostrar
-        const asistenciasPromises = displayedList.map(r => getAsistentesPorReunion(r.id));
-        const oradoresPromises = displayedList.map(r => getOradores(r.id));
+        // Consultar asistencias y oradores en grupos de 20 simultáneos
+        // (el .in() tenía un bug que devolvía 0; .eq() por reunión funciona correctamente)
+        const CONCURRENCY = 20;
+        let allAsistencias = [];
+        let allOradores = [];
 
-        const [resultsAsis, resultsOrad] = await Promise.all([
-          Promise.all(asistenciasPromises),
-          Promise.all(oradoresPromises)
-        ]);
+        for (let i = 0; i < displayedList.length; i += CONCURRENCY) {
+          const batch = displayedList.slice(i, i + CONCURRENCY);
 
-        displayedList.forEach((r, idx) => {
-          const { data: asistencias } = resultsAsis[idx];
-          const { data: oradores } = resultsOrad[idx];
-          const listAsis = asistencias || [];
-          const listOrad = oradores || [];
+          const batchResults = await Promise.all(
+            batch.map(async (r) => {
+              const [resAsis, resOrad] = await Promise.all([
+                supabase
+                  .from('inscripciones_asistencias')
+                  .select('reunion_id, asistio, estado_convocatoria')
+                  .eq('reunion_id', r.id),
+                supabase
+                  .from('oradores')
+                  .select('reunion_id, estado')
+                  .eq('reunion_id', r.id)
+              ]);
+              return {
+                asisData: resAsis.data || [],
+                oradData: resOrad.data || []
+              };
+            })
+          );
+
+          batchResults.forEach(({ asisData, oradData }) => {
+            allAsistencias = allAsistencias.concat(asisData);
+            allOradores = allOradores.concat(oradData);
+          });
+        }
+
+        const asistenciasMap = {};
+        allAsistencias.forEach(a => {
+          if (!asistenciasMap[a.reunion_id]) asistenciasMap[a.reunion_id] = [];
+          asistenciasMap[a.reunion_id].push(a);
+        });
+
+        const oradoresMap = {};
+        allOradores.forEach(o => {
+          if (!oradoresMap[o.reunion_id]) oradoresMap[o.reunion_id] = [];
+          oradoresMap[o.reunion_id].push(o);
+        });
+
+        displayedList.forEach((r) => {
+          const listAsis = asistenciasMap[r.id] || [];
+          const listOrad = oradoresMap[r.id] || [];
           
           const isUnoAUno = r.tipo_reunion === 'Uno a Uno';
           const denominator = isUnoAUno 
@@ -757,7 +789,6 @@ ${oradoresEfectivos.length > 0
             }
           });
 
-          // Contar oradores con estado 'hablo' (efectivos) y 'en_espera' (anotados)
           const oradoresEfectivos = listOrad.filter(o => o.estado === 'hablo').length;
           const oradoresEnEspera = listOrad.filter(o => o.estado === 'en_espera').length;
 
@@ -813,7 +844,7 @@ ${oradoresEfectivos.length > 0
   };
 
   useEffect(() => {
-    loadAllData();
+    loadAllData(initialShowHistorical);
   }, []);
 
   useEffect(() => {
@@ -841,7 +872,7 @@ ${oradoresEfectivos.length > 0
       'Reunion ID', 'Reunion Nombre', 'Tipo Reunion', 'DNI Vecino', 'Nombre', 'Apellido', 
       'Celular', 'Email', 'Barrio', 'Comuna', 'Asistio', 'Tipo Convocatoria', 
       'Pregunta Puerta', 'Como se Entero', 'Invitado Por',
-      'Orador', 'Estado Orador', 'Tema Efectivo'
+      'Orador', 'Estado Orador', 'Tema Efectivo', 'Tags Temáticos'
     ];
 
     const rows = data.map(item => {
@@ -873,7 +904,8 @@ ${oradoresEfectivos.length > 0
         `"${item.invitado_por?.replace(/"/g, '""') || ''}"`,
         isOrador,
         estadoOrador,
-        `"${temaEfectivo.replace(/"/g, '""')}"`
+        `"${temaEfectivo.replace(/"/g, '""')}"`,
+        `"${((orad?.tags && orad.tags.length > 0) ? orad.tags : autoDetectTags(temaEfectivo)).join(', ')}"`
       ];
     });
 
@@ -1327,22 +1359,39 @@ ${oradoresEfectivos.length > 0
     }
   };
 
-  const handleExportInscriptosToExcel = () => {
+  const handleExportInscriptosToExcel = async () => {
     if (inscriptosList.length === 0 || !selectedReunionInscriptos) return;
     
-    // Preparar filas para el Excel
-    const dataToExport = inscriptosList.map(item => ({
-      DNI: item.vecino?.dni || item.vecino_id || '',
-      Nombre: item.vecino?.nombre || '',
-      Apellido: item.vecino?.apellido || '',
-      Celular: item.vecino?.celular || '',
-      Email: item.vecino?.email || '',
-      Barrio: item.vecino?.barrio || '',
-      Comuna: item.vecino?.comuna || '',
-      Asistio: item.asistio ? 'Sí' : 'No',
-      'Como se entero': item.como_se_entero || '',
-      'Estado Convocatoria': item.estado_convocatoria || ''
-    }));
+    // Obtener los oradores de esta reunión para mapear minutas/temas planteados
+    let oradoresMap = {};
+    try {
+      const { data: oradoresData } = await getOradores(selectedReunionInscriptos.id);
+      if (oradoresData && Array.isArray(oradoresData)) {
+        oradoresData.forEach(o => {
+          const tema = o.tema_efectivo || o.tema_original || '';
+          if (o.vecino_id) oradoresMap[o.vecino_id] = tema;
+          if (o.vecino?.dni) oradoresMap[o.vecino.dni] = tema;
+        });
+      }
+    } catch (err) {
+      console.error('Error al obtener oradores para exportación XLS:', err);
+    }
+
+    // Preparar filas para el Excel con los encabezados y el orden exactos solicitados
+    const dataToExport = inscriptosList.map(item => {
+      const dniVal = item.vecino?.dni || item.vecino_id || '';
+      const temaOrador = oradoresMap[dniVal] || (item.vecino_id ? oradoresMap[item.vecino_id] : '') || '';
+
+      return {
+        'Nombre de la reunion': selectedReunionInscriptos.nombre || '',
+        'DNI': dniVal,
+        'Nombre y Apellido': `${item.vecino?.nombre || ''} ${item.vecino?.apellido || ''}`.trim(),
+        'Mail': item.vecino?.email || '',
+        'Telefono': item.vecino?.celular || '',
+        'Asistio (SI / NO)': item.asistio ? 'SI' : 'NO',
+        'Tema planteado (en caso que haya sido orador)': temaOrador
+      };
+    });
 
     const worksheet = XLSX.utils.json_to_sheet(dataToExport);
     const workbook = XLSX.utils.book_new();
@@ -2982,10 +3031,10 @@ ${oradoresEfectivos.length > 0
                   
                   {!showHistorical && (
                     <div style={{ display: 'flex', justifyContent: 'center', marginTop: '2rem', marginBottom: '2.5rem' }}>
-                      <a
-                        href="?view=dashboard&show_historical=true"
-                        target="_blank"
-                        rel="noopener noreferrer"
+                      <button
+                        type="button"
+                        onClick={handleLoadHistorical}
+                        disabled={loadingHistorical}
                         className="btn btn-highlight"
                         style={{
                           fontWeight: 'bold',
@@ -2996,12 +3045,13 @@ ${oradoresEfectivos.length > 0
                           backgroundColor: 'var(--color-highlight)',
                           color: 'var(--color-primary)',
                           borderRadius: '8px',
-                          textDecoration: 'none',
+                          border: 'none',
+                          cursor: loadingHistorical ? 'wait' : 'pointer',
                           boxShadow: '0 4px 6px -1px rgba(0,0,0,0.1)'
                         }}
                       >
-                        {loadingHistorical ? 'Cargando Historial...' : '🏛️ Ver todo el Historial de Reuniones'}
-                      </a>
+                        {loadingHistorical ? '⏳ Cargando Historial...' : '🏛️ Ver todo el Historial de Reuniones'}
+                      </button>
                     </div>
                   )}
                 </>
@@ -4620,9 +4670,18 @@ ${oradoresEfectivos.length > 0
                                 <div style={{ fontSize: '0.85rem', color: 'var(--color-text-muted)', marginBottom: '4px' }}>
                                   <strong>Tema Original:</strong> {o.tema_original || 'Sin registrar.'}
                                 </div>
-                                <div style={{ fontSize: '0.85rem', color: 'var(--color-primary)' }}>
+                                <div style={{ fontSize: '0.85rem', color: 'var(--color-primary)', marginBottom: '4px' }}>
                                   <strong>Minuta Efectiva:</strong> {o.tema_efectivo || 'Sin minuta registrada.'}
                                 </div>
+                                {(() => {
+                                  const effectiveTags = (o.tags && o.tags.length > 0) ? o.tags : autoDetectTags(o.tema_efectivo || o.tema_original || '');
+                                  return effectiveTags.length > 0 && (
+                                    <div style={{ marginTop: '4px' }}>
+                                      <span style={{ fontSize: '0.75rem', color: '#94A3B8', fontWeight: '700', textTransform: 'uppercase', letterSpacing: '0.4px', marginRight: '6px' }}>🏷️ Tags:</span>
+                                      <OradorTagsDisplay tags={effectiveTags} compact />
+                                    </div>
+                                  );
+                                })()}
                               </div>
                             );
                           })}

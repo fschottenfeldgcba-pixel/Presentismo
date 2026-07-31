@@ -1,21 +1,25 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { ArrowLeft, Search, Plus, Check, Play, Square, Pause, Shield, Calendar, Users, ClipboardList, Mic, AlertTriangle, Clock, FileSpreadsheet, Trash2, Edit2, Save, X, Download } from 'lucide-react';
+import { ArrowLeft, Search, Plus, Check, Play, Square, Pause, Shield, Calendar, Users, ClipboardList, Mic, AlertTriangle, Clock, FileSpreadsheet, Trash2, Edit2, Save, X, Download, UserPlus, GitMerge } from 'lucide-react';
 import { TIPOS_REUNION } from '../data/mockData';
 import { 
   getAsistentesPorReunion, 
   guardarAsistencia, 
   upsertVecino, 
   cambiarDniVecino,
+  unificarVecinos,
   updateReunion, 
   getOradores, 
   registrarOrador, 
   eliminarOrador, 
   updateOradorTema,
   updateOradorDetails,
+  updateOradorTags,
   cachedQuery
 } from '../services/supabaseService';
+import OradorTagSelector, { OradorTagsDisplay } from './OradorTagSelector';
 import PreguntasTematicas from './PreguntasTematicas';
 import Cronometro1a1 from './Cronometro1a1';
+import { autoDetectTags } from '../constants/oradorTags';
 import { supabase } from '../lib/supabaseClient';
 import * as XLSX from 'xlsx';
 
@@ -171,6 +175,202 @@ export default function ControlAsistencia({ reunion, onBack, mode = 'asistencia'
   const [oradorSearchResults, setOradorSearchResults] = useState([]);
   const [oradorFilterText, setOradorFilterText] = useState('');
   const [modalMinutaState, setModalMinutaState] = useState({});
+  // ID del orador cuyo selector de tags está expandido para corrección manual
+  const [editingTagsFor, setEditingTagsFor] = useState(null);
+
+  // Estados para agregar oradores desde la vista móvil de Territorio
+  const [showAddSpeakerTerritorio, setShowAddSpeakerTerritorio] = useState(false);
+  const [selectedAsistenciaSpeakerDni, setSelectedAsistenciaSpeakerDni] = useState('');
+  const [searchSpeakerQueryTerritorio, setSearchSpeakerQueryTerritorio] = useState('');
+  const [searchSpeakerResultsTerritorio, setSearchSpeakerResultsTerritorio] = useState([]);
+  const [searchingSpeakerTerritorio, setSearchingSpeakerTerritorio] = useState(false);
+  const [showRegisterSpeakerFormTerritorio, setShowRegisterSpeakerFormTerritorio] = useState(false);
+  const [newSpeakerDniTerritorio, setNewSpeakerDniTerritorio] = useState('');
+  const [newSpeakerNombreTerritorio, setNewSpeakerNombreTerritorio] = useState('');
+  const [newSpeakerApellidoTerritorio, setNewSpeakerApellidoTerritorio] = useState('');
+  const [newSpeakerCelularTerritorio, setNewSpeakerCelularTerritorio] = useState('');
+
+  // Estados para Unificación de Vecinos Duplicados
+  const [showUnificarModal, setShowUnificarModal] = useState(false);
+  const [unificarVecinoA, setUnificarVecinoA] = useState(null);
+  const [unificarVecinoB, setUnificarVecinoB] = useState(null);
+  const [masterDniSelection, setMasterDniSelection] = useState('A');
+  const [selectedFieldValues, setSelectedFieldValues] = useState({});
+  const [unificando, setUnificando] = useState(false);
+
+  const handleOpenUnificarModal = (resultsList) => {
+    if (!resultsList || resultsList.length < 2) return;
+    const vA = resultsList[0].vecino;
+    const vB = resultsList[1].vecino;
+    setUnificarVecinoA(vA);
+    setUnificarVecinoB(vB);
+    setMasterDniSelection('A');
+    setSelectedFieldValues({
+      nombre: vA.nombre || vB.nombre || '',
+      apellido: vA.apellido || vB.apellido || '',
+      celular: vA.celular || vB.celular || '',
+      email: vA.email || vB.email || '',
+      barrio: vA.barrio || vB.barrio || '',
+      comuna: vA.comuna || vB.comuna || ''
+    });
+    setShowUnificarModal(true);
+  };
+
+  const handleSelectMasterRecord = (choice) => {
+    setMasterDniSelection(choice);
+    const chosenVecino = choice === 'A' ? unificarVecinoA : unificarVecinoB;
+    const otherVecino = choice === 'A' ? unificarVecinoB : unificarVecinoA;
+    setSelectedFieldValues({
+      nombre: chosenVecino.nombre || otherVecino.nombre || '',
+      apellido: chosenVecino.apellido || otherVecino.apellido || '',
+      celular: chosenVecino.celular || otherVecino.celular || '',
+      email: chosenVecino.email || otherVecino.email || '',
+      barrio: chosenVecino.barrio || otherVecino.barrio || '',
+      comuna: chosenVecino.comuna || otherVecino.comuna || ''
+    });
+  };
+
+  const handleConfirmUnificacion = async () => {
+    if (!unificarVecinoA || !unificarVecinoB) return;
+    setUnificando(true);
+    try {
+      const masterVecino = masterDniSelection === 'A' ? unificarVecinoA : unificarVecinoB;
+      const dupVecino = masterDniSelection === 'A' ? unificarVecinoB : unificarVecinoA;
+
+      const mergedFields = {
+        nombre: selectedFieldValues.nombre ? selectedFieldValues.nombre.trim() : masterVecino.nombre,
+        apellido: selectedFieldValues.apellido ? selectedFieldValues.apellido.trim() : masterVecino.apellido,
+        celular: selectedFieldValues.celular ? selectedFieldValues.celular.trim() : masterVecino.celular,
+        email: selectedFieldValues.email ? selectedFieldValues.email.trim() : masterVecino.email,
+        barrio: selectedFieldValues.barrio ? selectedFieldValues.barrio.trim() : masterVecino.barrio,
+        comuna: selectedFieldValues.comuna ? selectedFieldValues.comuna.trim() : masterVecino.comuna,
+      };
+
+      const { error } = await unificarVecinos(masterVecino.dni, dupVecino.dni, mergedFields);
+      if (error) throw error;
+
+      alert(`¡Vecinos unificados con éxito! El DNI ${masterVecino.dni} quedó como registro único principal.`);
+      setShowUnificarModal(false);
+      
+      if (searchQuery) {
+        handleSearch();
+      }
+    } catch (err) {
+      console.error('Error al unificar vecinos:', err);
+      alert('Error al unificar vecinos.');
+    } finally {
+      setUnificando(false);
+    }
+  };
+
+  const handleSearchVecinosTerritorio = async () => {
+    if (!searchSpeakerQueryTerritorio.trim()) return;
+    setSearchingSpeakerTerritorio(true);
+    setSearchSpeakerResultsTerritorio([]);
+    setShowRegisterSpeakerFormTerritorio(false);
+    try {
+      const q = searchSpeakerQueryTerritorio.trim();
+      const { data, error } = await supabase
+        .from('vecinos')
+        .select('*')
+        .or(`dni.ilike.%${q}%,nombre.ilike.%${q}%,apellido.ilike.%${q}%,celular.ilike.%${q}%`)
+        .limit(5);
+
+      if (!error && data) {
+        setSearchSpeakerResultsTerritorio(data);
+        if (data.length === 0) {
+          if (/^\d+$/.test(q)) {
+            setNewSpeakerDniTerritorio(q);
+          } else {
+            setNewSpeakerDniTerritorio('');
+          }
+          setShowRegisterSpeakerFormTerritorio(true);
+        }
+      }
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setSearchingSpeakerTerritorio(false);
+    }
+  };
+
+  const handleAddSpeakerTerritorio = async (vecino) => {
+    try {
+      const { data: attendance } = await supabase
+        .from('inscripciones_asistencias')
+        .select('*')
+        .eq('reunion_id', reunion.id)
+        .eq('vecino_id', vecino.dni)
+        .maybeSingle();
+
+      if (!attendance) {
+        await supabase.from('inscripciones_asistencias').insert([{
+          reunion_id: reunion.id,
+          vecino_id: vecino.dni,
+          asistio: true,
+          estado_convocatoria: 'walk_in',
+          como_se_entero: 'Territorio',
+          hora_marcado: new Date().toISOString()
+        }]);
+      } else if (!attendance.asistio) {
+        await supabase
+          .from('inscripciones_asistencias')
+          .update({ asistio: true, hora_marcado: new Date().toISOString() })
+          .eq('id', attendance.id);
+      }
+
+      const currentCount = oradoresModalList.length;
+      const { data: newOrador, error: errOrador } = await supabase
+        .from('oradores')
+        .insert([{
+          reunion_id: reunion.id,
+          vecino_id: vecino.dni,
+          estado: 'en_espera',
+          orden: currentCount + 1
+        }])
+        .select('*, vecino:vecinos(*)')
+        .single();
+
+      if (!errOrador && newOrador) {
+        setOradoresModalList(prev => [...prev, newOrador]);
+        setOradoresCount(c => c + 1);
+        setSelectedAsistenciaSpeakerDni('');
+        setSearchSpeakerQueryTerritorio('');
+        setSearchSpeakerResultsTerritorio([]);
+        setShowRegisterSpeakerFormTerritorio(false);
+      }
+    } catch (err) {
+      console.error('Error al agregar orador en territorio:', err);
+      alert('Error al agregar orador.');
+    }
+  };
+
+  const handleCreateAndAddSpeakerTerritorio = async () => {
+    if (!newSpeakerDniTerritorio || !newSpeakerNombreTerritorio || !newSpeakerApellidoTerritorio) {
+      alert('Por favor completa DNI, Nombre y Apellido.');
+      return;
+    }
+    try {
+      const { data: vecino, error: errVec } = await supabase
+        .from('vecinos')
+        .upsert([{
+          dni: newSpeakerDniTerritorio.trim(),
+          nombre: newSpeakerNombreTerritorio.trim(),
+          apellido: newSpeakerApellidoTerritorio.trim(),
+          celular: newSpeakerCelularTerritorio.trim()
+        }])
+        .select()
+        .single();
+
+      if (errVec) throw errVec;
+      if (vecino) {
+        await handleAddSpeakerTerritorio(vecino);
+      }
+    } catch (err) {
+      console.error('Error al registrar vecino y orador:', err);
+      alert('Error al registrar vecino.');
+    }
+  };
 
   // Exportar Lista Completa de Oradores a Excel (.xlsx)
   const handleExportOradoresXLS = () => {
@@ -214,16 +414,48 @@ export default function ControlAsistencia({ reunion, onBack, mode = 'asistencia'
 
   const handleSaveOradorMinutaInModal = async (oradorId, newMinutaText) => {
     try {
+      // 1. Guardar el texto de la minuta
       const { error } = await supabase
         .from('oradores')
         .update({ tema_efectivo: newMinutaText })
         .eq('id', oradorId);
       if (error) throw error;
-      setOradoresModalList(prev => prev.map(o => o.id === oradorId ? { ...o, tema_efectivo: newMinutaText } : o));
-      alert('¡Minuta del orador guardada con éxito!');
+
+      // 2. Auto-detectar tags a partir del nuevo texto (2+ coincidencias por tag)
+      const newTags = autoDetectTags(newMinutaText);
+
+      // 3. Actualizar estado local (texto + tags)
+      setOradoresModalList(prev => prev.map(o =>
+        o.id === oradorId ? { ...o, tema_efectivo: newMinutaText, tags: newTags } : o
+      ));
+
+      // 4. Persistir tags en Supabase
+      await updateOradorTags(oradorId, newTags);
     } catch (err) {
       console.error('Error al guardar minuta:', err);
       alert('No se pudo guardar la minuta.');
+    }
+  };
+
+  const handleToggleTagTerritorio = async (oradorId, tagLabel) => {
+    // Calcular nuevo array de tags toggleando el label recibido
+    const orador = oradoresModalList.find(o => o.id === oradorId);
+    if (!orador) return;
+    const currentTema = modalMinutaState[oradorId] !== undefined ? modalMinutaState[oradorId] : (orador.tema_efectivo || orador.tema_original || '');
+    const baseTags = (orador.tags && orador.tags.length > 0) ? orador.tags : autoDetectTags(currentTema);
+    const newTags = baseTags.includes(tagLabel)
+      ? baseTags.filter(t => t !== tagLabel)
+      : [...baseTags, tagLabel];
+
+    // Actualizar optimistamente en UI
+    setOradoresModalList(prev => prev.map(o => o.id === oradorId ? { ...o, tags: newTags } : o));
+
+    // Auto-save en Supabase
+    const { error } = await updateOradorTags(oradorId, newTags);
+    if (error) {
+      console.error('Error al guardar tags:', error);
+      // Revertir en caso de error
+      setOradoresModalList(prev => prev.map(o => o.id === oradorId ? { ...o, tags: baseTags } : o));
     }
   };
 
@@ -281,7 +513,16 @@ export default function ControlAsistencia({ reunion, onBack, mode = 'asistencia'
     
     loadStatsCounts();
 
-    // Cargar agentes territoriales (con caché de sesión de 5 minutos)
+    // Cargar agentes territoriales (con caché de sesión y fallback si la tabla no existe o está vacía)
+    const DEFAULT_AGENTES = [
+      { id: 'ag_1', nombre_completo: 'Esteban Martínez' },
+      { id: 'ag_2', nombre_completo: 'Mariela Blanco' },
+      { id: 'ag_3', nombre_completo: 'Carlos Rodríguez' },
+      { id: 'ag_4', nombre_completo: 'Sofía Gómez' },
+      { id: 'ag_5', nombre_completo: 'Lucas Peralta' },
+      { id: 'ag_6', nombre_completo: 'Valeria Fernández' }
+    ];
+
     const fetchAgentes = async () => {
       try {
         const { data, error } = await cachedQuery('agentes_territorio', async () => {
@@ -291,11 +532,14 @@ export default function ControlAsistencia({ reunion, onBack, mode = 'asistencia'
             .order('nombre_completo', { ascending: true });
           return result;
         });
-        if (!error && data) {
+        if (!error && data && data.length > 0) {
           setAgentesTerritorio(data);
+        } else {
+          setAgentesTerritorio(DEFAULT_AGENTES);
         }
       } catch (err) {
         console.error('Error al cargar agentes de territorio:', err);
+        setAgentesTerritorio(DEFAULT_AGENTES);
       }
     };
     fetchAgentes();
@@ -744,7 +988,6 @@ export default function ControlAsistencia({ reunion, onBack, mode = 'asistencia'
     try {
       const { error } = await updateOradorTema(oradorId, nuevoTema);
       if (error) throw error;
-      alert('¡Tema del orador guardado con éxito!');
       await triggerSearchRefresh();
     } catch (err) {
       console.error(err);
@@ -828,20 +1071,131 @@ export default function ControlAsistencia({ reunion, onBack, mode = 'asistencia'
             </span>
           </div>
 
-          {/* Buscador de filtro */}
-          <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+          {/* Buscador de filtro y Botón Agregar Orador */}
+          <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
             <input
               type="text"
               className="form-control"
-              placeholder="🔍 Buscar por DNI, Nombre o Tema..."
+              placeholder="🔍 Filtrar por DNI, Nombre o Tema..."
               value={oradorFilterText}
               onChange={(e) => setOradorFilterText(e.target.value)}
-              style={{ fontSize: '0.9rem', padding: '10px 12px', borderRadius: '8px', flex: 1 }}
+              style={{ fontSize: '0.9rem', padding: '10px 12px', borderRadius: '8px', flex: 1, minWidth: '180px' }}
             />
-            <span className="badge badge-info" style={{ padding: '8px 12px', fontSize: '0.85rem', whiteSpace: 'nowrap' }}>
-              {oradoresModalList.length} oradores
-            </span>
+            <button
+              type="button"
+              className="btn btn-primary"
+              onClick={() => setShowAddSpeakerTerritorio(!showAddSpeakerTerritorio)}
+              style={{ padding: '9px 14px', fontSize: '0.85rem', fontWeight: 'bold', display: 'flex', alignItems: 'center', gap: '6px', borderRadius: '8px', whiteSpace: 'nowrap' }}
+            >
+              <UserPlus size={16} /> {showAddSpeakerTerritorio ? 'Ocultar Panel' : '+ Agregar Orador'}
+            </button>
           </div>
+
+          {/* Panel para Agregar Orador (Territorio) */}
+          {showAddSpeakerTerritorio && (
+            <div style={{ backgroundColor: '#F8FAFC', border: '1px solid #CBD5E1', borderRadius: '10px', padding: '14px', marginTop: '4px' }}>
+              <h4 style={{ fontSize: '0.95rem', color: 'var(--color-primary)', margin: '0 0 10px 0', fontWeight: '700', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                <UserPlus size={18} style={{ color: 'var(--color-highlight)' }} /> Sumar nuevo orador a la lista
+              </h4>
+
+              {/* Opción A: Vecinos Presentes en Acreditación */}
+              <div style={{ marginBottom: '12px' }}>
+                <label style={{ fontSize: '0.8rem', fontWeight: '600', color: 'var(--color-text-muted)', display: 'block', marginBottom: '4px' }}>
+                  Opción A: Vecinos Presentes en Acreditaciones
+                </label>
+                <div style={{ display: 'flex', gap: '8px' }}>
+                  <select
+                    className="form-control form-control-sm"
+                    value={selectedAsistenciaSpeakerDni}
+                    onChange={(e) => setSelectedAsistenciaSpeakerDni(e.target.value)}
+                    style={{ fontSize: '0.85rem', flex: 1 }}
+                  >
+                    <option value="">-- Seleccionar Vecino Presente --</option>
+                    {asistencias
+                      .filter(a => a.asistio && !oradoresModalList.some(o => (o.vecino_id || o.vecino?.dni) === a.vecino_id))
+                      .map(a => (
+                        <option key={a.vecino_id} value={a.vecino_id}>
+                          {a.vecino?.nombre} {a.vecino?.apellido} ({a.vecino_id}) {a.vecino?.celular ? `📱 ${a.vecino.celular}` : ''}
+                        </option>
+                      ))}
+                  </select>
+                  <button
+                    type="button"
+                    className="btn btn-primary btn-sm"
+                    disabled={!selectedAsistenciaSpeakerDni}
+                    onClick={() => {
+                      const item = asistencias.find(a => a.vecino_id === selectedAsistenciaSpeakerDni);
+                      if (item && item.vecino) handleAddSpeakerTerritorio(item.vecino);
+                    }}
+                    style={{ whiteSpace: 'nowrap', padding: '6px 12px' }}
+                  >
+                    + Agregar
+                  </button>
+                </div>
+              </div>
+
+              {/* Opción B: Buscar en Padrón por DNI, Nombre o Teléfono */}
+              <div>
+                <label style={{ fontSize: '0.8rem', fontWeight: '600', color: 'var(--color-text-muted)', display: 'block', marginBottom: '4px' }}>
+                  Opción B: Buscar en Padrón por DNI, Nombre o Teléfono
+                </label>
+                <div style={{ display: 'flex', gap: '8px', marginBottom: '8px' }}>
+                  <input
+                    type="text"
+                    className="form-control form-control-sm"
+                    placeholder="DNI, Nombre o Teléfono..."
+                    value={searchSpeakerQueryTerritorio}
+                    onChange={(e) => setSearchSpeakerQueryTerritorio(e.target.value)}
+                    style={{ fontSize: '0.85rem', flex: 1 }}
+                    onKeyDown={(e) => e.key === 'Enter' && handleSearchVecinosTerritorio()}
+                  />
+                  <button
+                    type="button"
+                    className="btn btn-secondary btn-sm"
+                    onClick={handleSearchVecinosTerritorio}
+                    disabled={searchingSpeakerTerritorio}
+                    style={{ whiteSpace: 'nowrap', padding: '6px 12px' }}
+                  >
+                    {searchingSpeakerTerritorio ? 'Buscando...' : 'Buscar'}
+                  </button>
+                </div>
+
+                {/* Resultados de Búsqueda */}
+                {searchSpeakerResultsTerritorio.length > 0 && (
+                  <div style={{ backgroundColor: '#FFFFFF', border: '1px solid #CBD5E1', borderRadius: '8px', maxHeight: '140px', overflowY: 'auto', marginBottom: '8px' }}>
+                    {searchSpeakerResultsTerritorio.map(v => (
+                      <div
+                        key={v.dni}
+                        onClick={() => handleAddSpeakerTerritorio(v)}
+                        style={{ padding: '8px 12px', fontSize: '0.85rem', borderBottom: '1px solid #F1F5F9', cursor: 'pointer', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}
+                      >
+                        <span><strong>{v.nombre} {v.apellido}</strong> ({v.dni}) {v.celular ? `📱 ${v.celular}` : ''}</span>
+                        <span style={{ color: 'var(--color-highlight)', fontWeight: 'bold', fontSize: '0.8rem' }}>+ Agregar Orador</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {/* Formulario para registrar espontáneo si no se encuentra */}
+                {showRegisterSpeakerFormTerritorio && (
+                  <div style={{ backgroundColor: '#EFF6FF', border: '1px solid #93C5FD', borderRadius: '8px', padding: '10px', marginTop: '8px' }}>
+                    <span style={{ fontSize: '0.8rem', fontWeight: 'bold', color: '#1E40AF', display: 'block', marginBottom: '6px' }}>
+                      Vecino no encontrado. Registrar espontáneo:
+                    </span>
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '6px', marginBottom: '6px' }}>
+                      <input type="text" className="form-control form-control-sm" placeholder="DNI *" value={newSpeakerDniTerritorio} onChange={(e) => setNewSpeakerDniTerritorio(e.target.value)} />
+                      <input type="text" className="form-control form-control-sm" placeholder="Nombre *" value={newSpeakerNombreTerritorio} onChange={(e) => setNewSpeakerNombreTerritorio(e.target.value)} />
+                      <input type="text" className="form-control form-control-sm" placeholder="Apellido *" value={newSpeakerApellidoTerritorio} onChange={(e) => setNewSpeakerApellidoTerritorio(e.target.value)} />
+                      <input type="text" className="form-control form-control-sm" placeholder="Teléfono / Celular" value={newSpeakerCelularTerritorio} onChange={(e) => setNewSpeakerCelularTerritorio(e.target.value)} />
+                    </div>
+                    <button type="button" className="btn btn-primary btn-sm" style={{ width: '100%' }} onClick={handleCreateAndAddSpeakerTerritorio}>
+                      Registrar y Agregar como Orador
+                    </button>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
         </div>
 
         {/* Listado en Tarjetas de 1 Columna adaptado 100% a Celular */}
@@ -892,17 +1246,60 @@ export default function ControlAsistencia({ reunion, onBack, mode = 'asistencia'
                     </div>
                   </div>
 
-                  {/* Textarea optimizado para teclado de smartphone */}
-                  <div style={{ marginBottom: '10px' }}>
+                  {/* Textarea – auto-guarda y auto-tagea al perder el foco */}
+                  <div style={{ marginBottom: '8px' }}>
                     <textarea
                       className="form-control"
                       rows={3}
                       placeholder="Escribí acá los temas hablados por este vecino..."
                       value={currentTema}
                       onChange={(e) => setModalMinutaState(prev => ({ ...prev, [o.id]: e.target.value }))}
+                      onBlur={() => {
+                        // Auto-guarda y auto-tagea al salir del campo
+                        if (modalMinutaState[o.id] !== undefined) {
+                          handleSaveOradorMinutaInModal(o.id, modalMinutaState[o.id]);
+                        }
+                      }}
                       style={{ fontSize: '0.9rem', lineHeight: '1.4', borderRadius: '8px', padding: '10px', width: '100%' }}
                     />
                   </div>
+
+                  {/* Tags: pills de solo lectura (con auto-detect fallback) + expandible para correcciones */}
+                  {(() => {
+                    const effectiveTags = (o.tags && o.tags.length > 0) 
+                      ? o.tags 
+                      : autoDetectTags(currentTema || o.tema_efectivo || o.tema_original || '');
+                    return (
+                      <div style={{ marginBottom: '10px' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap', marginBottom: editingTagsFor === o.id ? '6px' : 0 }}>
+                          <span style={{ fontSize: '0.65rem', color: '#94A3B8', fontWeight: '700', textTransform: 'uppercase', letterSpacing: '0.3px', flexShrink: 0 }}>
+                            🤖 Tags
+                          </span>
+                          {effectiveTags.length > 0
+                            ? <OradorTagsDisplay tags={effectiveTags} compact />
+                            : <span style={{ fontSize: '0.7rem', color: '#CBD5E1', fontStyle: 'italic' }}>sin asignar</span>
+                          }
+                          <button
+                            type="button"
+                            onClick={() => setEditingTagsFor(prev => prev === o.id ? null : o.id)}
+                            title="Corregir tags"
+                            style={{ background: 'none', border: '1px solid #CBD5E1', borderRadius: '6px', padding: '1px 7px', fontSize: '0.63rem', color: '#94A3B8', cursor: 'pointer', lineHeight: '1.5', flexShrink: 0 }}
+                          >
+                            {editingTagsFor === o.id ? 'cerrar' : '✏️'}
+                          </button>
+                        </div>
+                        {editingTagsFor === o.id && (
+                          <div style={{ padding: '8px', backgroundColor: '#F8FAFC', borderRadius: '8px', border: '1px solid #E2E8F0' }}>
+                            <OradorTagSelector
+                              selectedTags={effectiveTags}
+                              onToggle={(tag) => handleToggleTagTerritorio(o.id, tag)}
+                              compact
+                            />
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })()}
 
                   {/* Botones táctiles de acción */}
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '8px' }}>
@@ -1286,9 +1683,21 @@ export default function ControlAsistencia({ reunion, onBack, mode = 'asistencia'
                 {/* 2. CON BÚSQUEDA Y CON RESULTADOS (Niveles 1 y 2) */}
                 {searched && searchResults.length > 0 && (
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
-                    <h3 style={{ fontSize: '1.1rem', color: 'var(--color-primary)' }}>
-                      Resultados Encontrados ({searchResults.length})
-                    </h3>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '8px' }}>
+                      <h3 style={{ fontSize: '1.1rem', color: 'var(--color-primary)', margin: 0 }}>
+                        Resultados Encontrados ({searchResults.length})
+                      </h3>
+                      {searchResults.length >= 2 && (
+                        <button
+                          type="button"
+                          className="btn btn-warning btn-sm"
+                          onClick={() => handleOpenUnificarModal(searchResults)}
+                          style={{ fontWeight: 'bold', display: 'flex', alignItems: 'center', gap: '6px', backgroundColor: '#F59E0B', color: '#FFF', border: 'none', borderRadius: '8px', padding: '8px 16px', cursor: 'pointer', boxShadow: '0 2px 4px rgba(0,0,0,0.1)' }}
+                        >
+                          <GitMerge size={16} /> 🔀 Unificar / Fusionar Vecinos
+                        </button>
+                      )}
+                    </div>
 
                     {searchResults.map(result => {
                       const { vecino, inscripcion, orador } = result;
@@ -1894,6 +2303,122 @@ export default function ControlAsistencia({ reunion, onBack, mode = 'asistencia'
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL PARA UNIFICAR VECINOS DUPLICADOS */}
+      {showUnificarModal && unificarVecinoA && unificarVecinoB && (
+        <div className="modal-overlay" style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(15, 23, 42, 0.65)', backdropFilter: 'blur(4px)', display: 'flex', justifyContent: 'center', alignItems: 'center', zIndex: 9999, padding: '16px' }}>
+          <div className="card" style={{ width: '100%', maxWidth: '750px', maxHeight: '90vh', overflowY: 'auto', backgroundColor: '#FFFFFF', borderRadius: '16px', padding: '24px', boxShadow: '0 20px 25px -5px rgba(0,0,0,0.2)' }}>
+            
+            {/* Header del Modal */}
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px', paddingBottom: '12px', borderBottom: '1px solid #E2E8F0' }}>
+              <div>
+                <h3 style={{ margin: 0, color: 'var(--color-primary)', fontSize: '1.2rem', fontWeight: '800', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <GitMerge size={22} style={{ color: '#F59E0B' }} /> Unificar Registros de Vecinos Duplicados
+                </h3>
+                <span style={{ fontSize: '0.82rem', color: 'var(--color-text-muted)', marginTop: '4px', display: 'block' }}>
+                  Revisá los campos de ambos registros para conservar los datos correctos y consolidar las asistencias.
+                </span>
+              </div>
+              <button type="button" onClick={() => setShowUnificarModal(false)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#64748B' }}>
+                <X size={24} />
+              </button>
+            </div>
+
+            {/* 1. Selección del DNI Principal / Registro Maestro */}
+            <div style={{ backgroundColor: '#FEF3C7', border: '1px solid #FCD34D', borderRadius: '10px', padding: '14px', marginBottom: '20px' }}>
+              <span style={{ fontSize: '0.85rem', fontWeight: 'bold', color: '#92400E', display: 'block', marginBottom: '8px' }}>
+                1. Elegí cuál es el DNI CORRECTO que conservará el sistema (Registro Principal):
+              </span>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
+                <label style={{ display: 'flex', alignItems: 'flex-start', gap: '8px', padding: '10px', backgroundColor: masterDniSelection === 'A' ? '#FFFFFF' : 'transparent', border: masterDniSelection === 'A' ? '2px solid #F59E0B' : '1px solid #FDE68A', borderRadius: '8px', cursor: 'pointer' }}>
+                  <input type="radio" name="masterDni" checked={masterDniSelection === 'A'} onChange={() => handleSelectMasterRecord('A')} style={{ marginTop: '3px' }} />
+                  <div>
+                    <span style={{ fontWeight: 'bold', fontSize: '0.9rem', color: '#78350F', display: 'block' }}>
+                      Registro A: DNI {unificarVecinoA.dni}
+                    </span>
+                    <span style={{ fontSize: '0.8rem', color: '#92400E' }}>
+                      {unificarVecinoA.nombre} {unificarVecinoA.apellido}
+                    </span>
+                  </div>
+                </label>
+
+                <label style={{ display: 'flex', alignItems: 'flex-start', gap: '8px', padding: '10px', backgroundColor: masterDniSelection === 'B' ? '#FFFFFF' : 'transparent', border: masterDniSelection === 'B' ? '2px solid #F59E0B' : '1px solid #FDE68A', borderRadius: '8px', cursor: 'pointer' }}>
+                  <input type="radio" name="masterDni" checked={masterDniSelection === 'B'} onChange={() => handleSelectMasterRecord('B')} style={{ marginTop: '3px' }} />
+                  <div>
+                    <span style={{ fontWeight: 'bold', fontSize: '0.9rem', color: '#78350F', display: 'block' }}>
+                      Registro B: DNI {unificarVecinoB.dni}
+                    </span>
+                    <span style={{ fontSize: '0.8rem', color: '#92400E' }}>
+                      {unificarVecinoB.nombre} {unificarVecinoB.apellido}
+                    </span>
+                  </div>
+                </label>
+              </div>
+            </div>
+
+            {/* 2. Comparación y Selección Campo por Campo */}
+            <div style={{ marginBottom: '20px' }}>
+              <span style={{ fontSize: '0.85rem', fontWeight: 'bold', color: 'var(--color-primary)', display: 'block', marginBottom: '10px' }}>
+                2. Revisá y seleccioná el valor real para cada campo:
+              </span>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                {[
+                  { key: 'nombre', label: 'Nombre' },
+                  { key: 'apellido', label: 'Apellido' },
+                  { key: 'celular', label: 'Teléfono / Celular' },
+                  { key: 'email', label: 'Email' },
+                  { key: 'barrio', label: 'Barrio' },
+                  { key: 'comuna', label: 'Comuna' }
+                ].map(field => {
+                  const valA = unificarVecinoA[field.key] || '';
+                  const valB = unificarVecinoB[field.key] || '';
+                  const isDifferent = valA !== valB;
+                  const currentSelected = selectedFieldValues[field.key] || '';
+
+                  return (
+                    <div key={field.key} style={{ padding: '10px 12px', border: isDifferent ? '1px solid #F87171' : '1px solid #E2E8F0', backgroundColor: isDifferent ? '#FEF2F2' : '#F8FAFC', borderRadius: '8px' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
+                        <span style={{ fontSize: '0.8rem', fontWeight: '700', color: isDifferent ? '#991B1B' : '#475569' }}>
+                          {field.label} {isDifferent && '⚠️ (Difieren)'}
+                        </span>
+                        <input
+                          type="text"
+                          className="form-control form-control-sm"
+                          value={currentSelected}
+                          onChange={(e) => setSelectedFieldValues(prev => ({ ...prev, [field.key]: e.target.value }))}
+                          style={{ fontSize: '0.82rem', width: '60%', fontWeight: '600', color: '#0F172A' }}
+                        />
+                      </div>
+                      {isDifferent && (
+                        <div style={{ display: 'flex', gap: '8px', fontSize: '0.78rem' }}>
+                          <button type="button" onClick={() => setSelectedFieldValues(prev => ({ ...prev, [field.key]: valA }))} style={{ background: 'none', border: 'none', color: '#0284C7', textDecoration: 'underline', cursor: 'pointer', padding: 0 }}>
+                            Usar A: "{valA || 'Vacío'}"
+                          </button>
+                          <span>|</span>
+                          <button type="button" onClick={() => setSelectedFieldValues(prev => ({ ...prev, [field.key]: valB }))} style={{ background: 'none', border: 'none', color: '#0284C7', textDecoration: 'underline', cursor: 'pointer', padding: 0 }}>
+                            Usar B: "{valB || 'Vacío'}"
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Modal Actions */}
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px', paddingTop: '16px', borderTop: '1px solid #E2E8F0' }}>
+              <button type="button" className="btn btn-secondary" onClick={() => setShowUnificarModal(false)} disabled={unificando}>
+                Cancelar
+              </button>
+              <button type="button" className="btn btn-primary" onClick={handleConfirmUnificacion} disabled={unificando} style={{ backgroundColor: '#F59E0B', borderColor: '#D97706', fontWeight: 'bold' }}>
+                {unificando ? '⏳ Unificando Registros...' : '🔀 Confirmar Unificación y Fusionar'}
+              </button>
+            </div>
+
           </div>
         </div>
       )}
