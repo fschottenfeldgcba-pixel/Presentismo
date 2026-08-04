@@ -98,6 +98,7 @@ export default function ABMReuniones({ onBack, onSaveSuccess }) {
   const [tipoReunion, setTipoReunion] = useState(TIPOS_REUNION.ENCUENTRO);
   const [arreglo1, setArreglo1] = useState('');
   const [tema, setTema] = useState('');
+  const [horaInicio, setHoraInicio] = useState('17:00');
   
   // Estados para funcionarios y autocompletado
   const [funcionariosList, setFuncionariosList] = useState([]);
@@ -441,6 +442,7 @@ export default function ABMReuniones({ onBack, onSaveSuccess }) {
       tipo_reunion: tipoReunion,
       tema: (tipoReunion === TIPOS_REUNION.TEMATICA || tipoReunion === TIPOS_REUNION.PROCESOS_CO_CREACION || tipoReunion === TIPOS_REUNION.PROCESOS_INFORMATIVA || tipoReunion === TIPOS_REUNION.PRIMERA_PERSONA) ? tema.trim() : null,
       arreglo_1: arreglo1.trim() || null,
+      hora_inicio_real: horaInicio ? horaInicio.trim() : '17:00',
       funcionario_inicio: null,
       funcionario_cierre: null,
       funcionario_interrupciones_minutos: 0,
@@ -526,7 +528,7 @@ export default function ABMReuniones({ onBack, onSaveSuccess }) {
                   Datos Logísticos de la Reunión
                 </h3>
 
-                <div className="grid-2" style={{ gap: '1rem' }}>
+                <div className="grid-3" style={{ gap: '1rem' }}>
                   <div className="form-group">
                     <label htmlFor="fecha">Fecha *</label>
                     <input
@@ -536,6 +538,16 @@ export default function ABMReuniones({ onBack, onSaveSuccess }) {
                       value={fecha}
                       onChange={(e) => setFecha(e.target.value)}
                       required
+                    />
+                  </div>
+                  <div className="form-group">
+                    <label htmlFor="horaInicio">Horario Previsto *</label>
+                    <input
+                      type="time"
+                      id="horaInicio"
+                      className="form-control"
+                      value={horaInicio}
+                      onChange={(e) => setHoraInicio(e.target.value)}
                     />
                   </div>
                   <div className="form-group">

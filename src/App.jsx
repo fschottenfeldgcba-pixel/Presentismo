@@ -8,6 +8,35 @@ import PanelModerador from './components/PanelModerador';
 import { LogOut, ShieldCheck } from 'lucide-react';
 import { supabase } from './lib/supabaseClient';
 
+// Polyfill seguro para prevenir errores de 'removeChild' / 'insertBefore' en React 
+// causados por Google Translate o extensiones del navegador que alteran el DOM
+if (typeof window !== 'undefined' && typeof Node !== 'undefined' && Node.prototype) {
+  const originalRemoveChild = Node.prototype.removeChild;
+  Node.prototype.removeChild = function (child) {
+    if (child.parentNode !== this) {
+      if (console && console.warn) {
+        console.warn('Node.removeChild prevenido:', child, this);
+      }
+      if (child.parentNode) {
+        return child.parentNode.removeChild(child);
+      }
+      return child;
+    }
+    return originalRemoveChild.apply(this, arguments);
+  };
+
+  const originalInsertBefore = Node.prototype.insertBefore;
+  Node.prototype.insertBefore = function (newNode, referenceNode) {
+    if (referenceNode && referenceNode.parentNode !== this) {
+      if (console && console.warn) {
+        console.warn('Node.insertBefore prevenido:', referenceNode, this);
+      }
+      return this.appendChild(newNode);
+    }
+    return originalInsertBefore.apply(this, arguments);
+  };
+}
+
 class ErrorBoundary extends React.Component {
   constructor(props) {
     super(props);
@@ -30,17 +59,26 @@ class ErrorBoundary extends React.Component {
           <p style={{ color: '#475569', maxWidth: '500px', marginBottom: '1.5rem', fontSize: '0.9rem' }}>
             {this.state.error?.message || 'Detalle inesperado en la interfaz.'}
           </p>
-          <button 
-            className="btn btn-primary"
-            onClick={() => {
-              localStorage.removeItem('presentismo_user');
-              sessionStorage.clear();
-              window.location.href = '/';
-            }}
-            style={{ backgroundColor: 'var(--color-primary)', fontWeight: '700', padding: '10px 24px' }}
-          >
-            Reintentar / Volver al Login
-          </button>
+          <div style={{ display: 'flex', gap: '12px' }}>
+            <button 
+              className="btn btn-primary"
+              onClick={() => this.setState({ hasError: false, error: null })}
+              style={{ backgroundColor: 'var(--color-primary)', fontWeight: '700', padding: '10px 24px' }}
+            >
+              Reintentar
+            </button>
+            <button 
+              className="btn btn-secondary"
+              onClick={() => {
+                localStorage.removeItem('presentismo_user');
+                sessionStorage.clear();
+                window.location.href = '/';
+              }}
+              style={{ padding: '10px 20px' }}
+            >
+              Volver al Login
+            </button>
+          </div>
         </div>
       );
     }
@@ -185,7 +223,7 @@ export default function App() {
 
   return (
     <ErrorBoundary>
-      <div className="app-container">
+      <div className="app-container notranslate" translate="no">
         {/* HEADER DE LA APLICACIÓN */}
         {user && (
           <header className="app-header">

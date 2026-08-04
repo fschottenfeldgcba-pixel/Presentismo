@@ -161,17 +161,23 @@ export const recuperarPassword = async (email) => {
  * Obtiene las reuniones. Por defecto limita a los últimos 180 días para reducir egress.
  * Pasar { historico: true } para obtener todas sin límite de fecha.
  */
-export const getReuniones = async ({ historico = false } = {}) => {
+export const getReuniones = async ({ historico = false, limit = null, offset = null } = {}) => {
   try {
     let query = supabase
       .from('reuniones')
-      .select('id, nombre, fecha, lugar, barrio, comuna, tipo_reunion, tema, funcionario, gestion_presente, clima, semaforo_politico, active_orador_id, sintesis_cualitativa, config_uno_a_uno, created_at')
+      .select('id, nombre, fecha, lugar, barrio, comuna, tipo_reunion, tema, funcionario, gestion_presente, clima, semaforo_politico, active_orador_id, sintesis_cualitativa, config_uno_a_uno, hora_inicio_real, hora_fin_real, created_at')
       .order('fecha', { ascending: false });
 
-    if (!historico) {
+    if (!historico && limit === null) {
       const cutoff = new Date(Date.now() - 180 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
       query = query.gte('fecha', cutoff);
-    } else {
+    }
+
+    if (limit !== null) {
+      const from = offset || 0;
+      const to = from + limit - 1;
+      query = query.range(from, to);
+    } else if (historico) {
       query = query.range(0, 9999);
     }
 

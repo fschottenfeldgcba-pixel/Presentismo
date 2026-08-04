@@ -112,9 +112,12 @@ export default function DashboardAdmin({
   const [searchTerm, setSearchTerm] = useState('');
   const [filterTipoReunion, setFilterTipoReunion] = useState('');
 
-  // Estados para limitar la carga inicial de histórico
+  // Estados para limitar la carga inicial de histórico y paginación
   const [showHistorical, setShowHistorical] = useState(initialShowHistorical || false);
   const [loadingHistorical, setLoadingHistorical] = useState(false);
+  const [pageSize, setPageSize] = useState('10');
+  const [fetchLimit, setFetchLimit] = useState(10);
+  const [hasMoreReuniones, setHasMoreReuniones] = useState(true);
 
   // Cargar modal inicial si viene en la URL (soporte multi-pestaña)
   useEffect(() => {
@@ -377,6 +380,12 @@ ${sortedCited.length > 0
         const presentesCount = asistentes.filter(a => a.asistio).length;
         const ratioAsistencia = inscriptosCount > 0 ? Math.round((presentesCount / inscriptosCount) * 100) : 0;
 
+        const totalSegundos = oradoresEfectivos.reduce((sum, o) => sum + (o.duracion_segundos || 0), 0);
+        const avgSegundos = oradoresEfectivos.length > 0 ? Math.round(totalSegundos / oradoresEfectivos.length) : 0;
+        const mins = Math.floor(avgSegundos / 60);
+        const secs = avgSegundos % 60;
+        const avgTimeStr = `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+
         txt = `👨‍👩‍👧‍👦 RDV | *${reunion.funcionario || reunion.nombre}* - ${reunion.comuna}
 📅 ${displayFecha || 'Fecha'} | 🕠 ${displayHora}
 ⏰ Inicio: ${reunion.hora_inicio_real || '--:--'} hs | Finalizó: ${reunion.hora_fin_real || '--:--'} hs
@@ -384,9 +393,9 @@ ${sortedCited.length > 0
 📋 Inscriptos: ${inscriptosCount}
 👥 Asistentes: ${presentesCount} (${ratioAsistencia}%)
 📝 Oradores anotados: ${oradoresAnotados}
-🎤 Oradores efectivos: ${oradoresEfectivos.length}
+ 🎤 Oradores efectivos: ${oradoresEfectivos.length}
+⏱️ Tiempo promedio de oradores: ${avgTimeStr}
 
-🔥 Clima ${CLIMA_MAP[reunion.clima]?.waLabel || reunion.clima || 'bajo'}
 🚦 Semáforo político: ${SEMAFORO_MAP[reunion.semaforo_politico]?.waLabel || reunion.semaforo_politico || 'verde'}
 
 *📝 Síntesis cualitativa:*
@@ -395,13 +404,11 @@ ${(reunion.sintesis_cualitativa || '').trim() || 'La reunión se desarrolló con
 *🏛️ Gestión presente:*
 ${(reunion.gestion_presente || '').trim() || '- ' + (reunion.funcionario || 'Funcionario')}
 
-*📌 Temas más comentados:*
+*📌 Minuta de oradores:*
 ${oradoresEfectivos.length > 0 
   ? oradoresEfectivos.map(o => {
       const tel = o.vecino?.celular ? ` ${o.vecino.celular}` : '';
-      const effectiveTags = (o.tags && o.tags.length > 0) ? o.tags : autoDetectTags(o.tema_efectivo || o.tema_original || '');
-      const tagsStr = effectiveTags.length > 0 ? `\n     🏷️ ${effectiveTags.join(' · ')}` : '';
-      return `${o.vecino?.nombre || ''} ${o.vecino?.apellido || ''}${tel}: ${o.tema_efectivo || o.tema_original || 'Sin minuta registrada.'}${tagsStr}`;
+      return `${o.vecino?.nombre || ''} ${o.vecino?.apellido || ''}${tel}: ${o.tema_efectivo || o.tema_original || 'Sin minuta registrada.'}`;
     }).join('\n\n')
   : 'No se registraron oradores efectivos.'
 }`;
@@ -693,14 +700,31 @@ ${oradoresEfectivos.length > 0
     );
   };
 
-  const loadAllData = async (forceHistorical = false) => {
+  const loadAllData = async (forceHistorical = false, currentLimit = null) => {
     setLoading(true);
     const isHistoricalNeeded = showHistorical || forceHistorical;
-    const { data: list, error: errReuniones } = await getReuniones({ historico: isHistoricalNeeded });
+    
+    let activeLimit = currentLimit !== null ? currentLimit : fetchLimit;
+    if (!isHistoricalNeeded) {
+      activeLimit = 10; // Carga inicial corta para la vista rápida
+    }
+    const queryLimit = pageSize === 'todas' ? null : activeLimit;
+
+    const { data: list, error: errReuniones } = await getReuniones({ 
+      historico: isHistoricalNeeded,
+      limit: queryLimit
+    });
+
     if (errReuniones) {
       console.error('Error al cargar reuniones:', errReuniones);
       setLoading(false);
       return;
+    }
+
+    if (queryLimit && list) {
+      setHasMoreReuniones(list.length >= queryLimit);
+    } else {
+      setHasMoreReuniones(false);
     }
 
     // Clasificar cuáles de la lista son de hoy, de esta semana o de la próxima semana
@@ -839,8 +863,29 @@ ${oradoresEfectivos.length > 0
   const handleLoadHistorical = async () => {
     setLoadingHistorical(true);
     setShowHistorical(true);
-    await loadAllData(true);
+    await loadAllData(true, fetchLimit);
     setLoadingHistorical(false);
+  };
+
+  const handlePageSizeChange = async (newSize) => {
+    setPageSize(newSize);
+    let newLimit = 10;
+    if (newSize === 'todas') {
+      newLimit = 9999;
+    } else {
+      newLimit = parseInt(newSize, 10);
+    }
+    setFetchLimit(newLimit);
+    setShowHistorical(true);
+    await loadAllData(true, newLimit);
+  };
+
+  const handleShowMore = async () => {
+    if (pageSize === 'todas') return;
+    const increment = parseInt(pageSize, 10) || 10;
+    const newLimit = fetchLimit + increment;
+    setFetchLimit(newLimit);
+    await loadAllData(showHistorical, newLimit);
   };
 
   useEffect(() => {
@@ -1377,15 +1422,21 @@ ${oradoresEfectivos.length > 0
       console.error('Error al obtener oradores para exportación XLS:', err);
     }
 
-    // Preparar filas para el Excel con los encabezados y el orden exactos solicitados
+    // Preparar filas para el Excel con las 13 columnas desglosadas en el orden solicitado
     const dataToExport = inscriptosList.map(item => {
       const dniVal = item.vecino?.dni || item.vecino_id || '';
       const temaOrador = oradoresMap[dniVal] || (item.vecino_id ? oradoresMap[item.vecino_id] : '') || '';
 
       return {
-        'Nombre de la reunion': selectedReunionInscriptos.nombre || '',
+        'Fecha de la reunion': selectedReunionInscriptos.fecha || '',
+        'Tipo de reunion': selectedReunionInscriptos.tipo_reunion || '',
+        'Funcionario': selectedReunionInscriptos.funcionario || '',
+        'Comuna de la reunion': selectedReunionInscriptos.comuna || '',
+        'Barrio donde fue la reunion': selectedReunionInscriptos.barrio || 'Convocatoria Comunal',
+        'Nombre completo de la reunion': selectedReunionInscriptos.nombre || '',
         'DNI': dniVal,
-        'Nombre y Apellido': `${item.vecino?.nombre || ''} ${item.vecino?.apellido || ''}`.trim(),
+        'Nombre': item.vecino?.nombre || '',
+        'Apellido': item.vecino?.apellido || '',
         'Mail': item.vecino?.email || '',
         'Telefono': item.vecino?.celular || '',
         'Asistio (SI / NO)': item.asistio ? 'SI' : 'NO',
@@ -2962,6 +3013,21 @@ ${oradoresEfectivos.length > 0
                 Cronograma de Reuniones
               </h3>
               <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                  <span style={{ fontSize: '0.8rem', fontWeight: '600', color: 'var(--color-text-muted)' }}>Mostrar:</span>
+                  <select
+                    className="form-control"
+                    value={pageSize}
+                    onChange={(e) => handlePageSizeChange(e.target.value)}
+                    style={{ minWidth: '85px', maxWidth: '100px', fontSize: '0.85rem', padding: '8px 10px', borderRadius: '8px', border: '1px solid var(--color-border)', backgroundColor: '#ffffff', cursor: 'pointer' }}
+                  >
+                    <option value="10">10</option>
+                    <option value="20">20</option>
+                    <option value="50">50</option>
+                    <option value="100">100</option>
+                    <option value="todas">Todas</option>
+                  </select>
+                </div>
                 <select
                   className="form-control"
                   value={filterTipoReunion}
@@ -3051,6 +3117,29 @@ ${oradoresEfectivos.length > 0
                         }}
                       >
                         {loadingHistorical ? '⏳ Cargando Historial...' : '🏛️ Ver todo el Historial de Reuniones'}
+                      </button>
+                    </div>
+                  )}
+
+                  {showHistorical && hasMoreReuniones && pageSize !== 'todas' && (
+                    <div style={{ display: 'flex', justifyContent: 'center', marginTop: '2rem', marginBottom: '2.5rem' }}>
+                      <button
+                        type="button"
+                        onClick={handleShowMore}
+                        className="btn btn-secondary"
+                        style={{
+                          fontWeight: 'bold',
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          gap: '8px',
+                          padding: '12px 28px',
+                          borderRadius: '8px',
+                          border: '1px solid var(--color-border)',
+                          cursor: 'pointer',
+                          boxShadow: '0 4px 6px -1px rgba(0,0,0,0.05)'
+                        }}
+                      >
+                        ➕ Mostrar más reuniones anteriores
                       </button>
                     </div>
                   )}

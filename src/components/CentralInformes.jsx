@@ -9,6 +9,7 @@ import {
 import { TIPOS_REUNION } from '../data/mockData';
 import { fetchDashboardData, generateInsights, processAndNormalizeWord } from '../services/analyticsService';
 import { getFuncionariosList } from '../services/supabaseService';
+import { autoDetectTags } from '../constants/oradorTags';
 
 const COMUNAS = [
   "Comuna 1", "Comuna 1 Norte", "Comuna 1 Sur", "Comuna 2", "Comuna 3", "Comuna 4", "Comuna 5", "Comuna 6", 
@@ -91,6 +92,8 @@ export default function CentralInformes({ user, onBack }) {
   const [kpis, setKpis] = useState(null);
   const [reuniones, setReuniones] = useState([]);
   const [frasesRaw, setFrasesRaw] = useState([]);
+  const [oradoresRaw, setOradoresRaw] = useState([]);
+  const [inscripcionesRaw, setInscripcionesRaw] = useState([]);
   const [wordCloudData, setWordCloudData] = useState([]);
   const [insights, setInsights] = useState([]);
   
@@ -168,6 +171,8 @@ export default function CentralInformes({ user, onBack }) {
   const [kpisB, setKpisB] = useState(null);
   const [reunionesB, setReunionesB] = useState([]);
   const [frasesRawB, setFrasesRawB] = useState([]);
+  const [oradoresRawB, setOradoresRawB] = useState([]);
+  const [inscripcionesRawB, setInscripcionesRawB] = useState([]);
   const [wordCloudDataB, setWordCloudDataB] = useState([]);
   const [insightsB, setInsightsB] = useState([]);
 
@@ -272,12 +277,16 @@ export default function CentralInformes({ user, onBack }) {
         setKpis(dataA.kpis);
         setReuniones(dataA.reunionesActuales);
         setFrasesRaw(dataA.frasesGlobales);
+        setOradoresRaw(dataA.oradoresActual || []);
+        setInscripcionesRaw(dataA.inscripcionesActual || []);
         setInsights(generateInsights(dataA.kpis.actual, dataA.kpis.anterior, dataA.periodos));
 
         setAllVecinosB(dataB.vecinos);
         setKpisB(dataB.kpis);
         setReunionesB(dataB.reunionesActuales);
         setFrasesRawB(dataB.frasesGlobales);
+        setOradoresRawB(dataB.oradoresActual || []);
+        setInscripcionesRawB(dataB.inscripcionesActual || []);
         setInsightsB(generateInsights(dataB.kpis.actual, dataB.kpis.anterior, dataB.periodos));
 
         const extractFuncs = (list) => {
@@ -298,6 +307,8 @@ export default function CentralInformes({ user, onBack }) {
         setKpis(data.kpis);
         setReuniones(data.reunionesActuales);
         setFrasesRaw(data.frasesGlobales);
+        setOradoresRaw(data.oradoresActual || []);
+        setInscripcionesRaw(data.inscripcionesActual || []);
         setInsights(generateInsights(data.kpis.actual, data.kpis.anterior, data.periodos));
         
         const set = new Set();
@@ -311,6 +322,8 @@ export default function CentralInformes({ user, onBack }) {
         setKpisB(null);
         setReunionesB([]);
         setFrasesRawB([]);
+        setOradoresRawB([]);
+        setInscripcionesRawB([]);
         setInsightsB([]);
       }
     } catch (err) {
@@ -1372,6 +1385,373 @@ export default function CentralInformes({ user, onBack }) {
               )}
             </div>
 
+          </div>
+
+          {/* 2.5. ANALÍTICA DE ORADORES & TIEMPOS */}
+          <div className="card" style={{ padding: '24px', marginBottom: '1.5rem', backgroundColor: '#F8FAFC' }}>
+            <h3 style={{ margin: '0 0 16px 0', fontSize: '1.2rem', display: 'flex', alignItems: 'center', gap: '8px', color: '#0F172A', fontWeight: '700' }}>
+              <Mic size={24} style={{ color: 'var(--color-highlight)' }} /> Analítica de Oradores y Tiempos
+            </h3>
+
+            {(() => {
+              const calculateMetrics = (reunionesList, oradoresList, inscripcionesList) => {
+                // 1. General Meetings
+                const genReuniones = (reunionesList || []).filter(r => r.tipo_reunion !== 'Uno a Uno');
+                const genReunionesIds = new Set(genReuniones.map(r => r.id));
+                const genOradores = (oradoresList || []).filter(o => genReunionesIds.has(o.reunion_id));
+                
+                const efectivosGen = genOradores.filter(o => o.estado === 'hablo');
+                const anotadosGen = genOradores.length;
+
+                let secsGen = 0;
+                let countGenWithDuration = 0;
+                const durations = [];
+                efectivosGen.forEach(o => {
+                  const dur = o.duracion_segundos || 0;
+                  if (dur > 10) {
+                    secsGen += dur;
+                    countGenWithDuration++;
+                    durations.push(dur);
+                  }
+                });
+
+                // 2. Uno a Uno Meetings
+                const unoReuniones = (reunionesList || []).filter(r => r.tipo_reunion === 'Uno a Uno');
+                let anotadosUno = 0;
+                let efectivosUno = 0;
+                let secsUno = 0;
+                let countUnoWithDuration = 0;
+                const unoTags = [];
+
+                unoReuniones.forEach(r => {
+                  try {
+                    const configData = r.config_uno_a_uno || (r.gestion_presente && r.gestion_presente.startsWith('{') ? r.gestion_presente : null);
+                    if (configData) {
+                      const parsed = typeof configData === 'string' ? JSON.parse(configData) : configData;
+                      if (parsed && parsed.timeRecords) {
+                        const keys = Object.keys(parsed.timeRecords);
+                        anotadosUno += keys.length;
+                        keys.forEach(k => {
+                          const record = parsed.timeRecords[k];
+                          if (record && (record.horaSalida || record.duracion)) {
+                            efectivosUno++;
+                            let durationSecs = 0;
+                            if (record.duracion) {
+                              const cleanDur = record.duracion.replace(' min', '').trim();
+                              if (cleanDur.includes(':')) {
+                                const [mins, secs] = cleanDur.split(':').map(Number);
+                                if (!isNaN(mins) && !isNaN(secs)) {
+                                  durationSecs = mins * 60 + secs;
+                                }
+                              }
+                            }
+                            if (durationSecs > 10) {
+                              secsUno += durationSecs;
+                              countUnoWithDuration++;
+                              durations.push(durationSecs);
+                            }
+                            // Buscar tema de inscripción
+                            const vecinoIdStr = String(k).trim();
+                            const matchingInsc = (inscripcionesList || []).find(i => i.reunion_id === r.id && String(i.vecino_id).trim() === vecinoIdStr);
+                            const tema = record.tema || record.minuta || (matchingInsc ? matchingInsc.tema_previo : '') || '';
+                            if (tema) {
+                              const detected = autoDetectTags(tema);
+                              unoTags.push(...detected);
+                            }
+                          }
+                        });
+                      }
+                    }
+                  } catch (e) {}
+                });
+
+                const totalAnotados = anotadosGen + anotadosUno;
+                const totalEfectivos = efectivosGen.length + efectivosUno;
+                const totalSecs = secsGen + secsUno;
+                const totalCountWithDuration = countGenWithDuration + countUnoWithDuration;
+                
+                // Calculate average using only speakers that have real recorded durations (> 10s)
+                const avgSecs = totalCountWithDuration > 0 ? Math.round(totalSecs / totalCountWithDuration) : 0;
+                const conversion = totalAnotados > 0 ? Math.round((totalEfectivos / totalAnotados) * 100) : 0;
+
+                // Calculate percentiles
+                const getPercentile = (sortedArr, p) => {
+                  if (sortedArr.length === 0) return 0;
+                  const idx = (p / 100) * (sortedArr.length - 1);
+                  const lower = Math.floor(idx);
+                  const upper = Math.ceil(idx);
+                  const weight = idx - lower;
+                  return Math.round(sortedArr[lower] * (1 - weight) + sortedArr[upper] * weight);
+                };
+
+                const sortedDurations = [...durations].sort((a, b) => a - b);
+                const mediana = getPercentile(sortedDurations, 50);
+                const p75 = getPercentile(sortedDurations, 75);
+                const p90 = getPercentile(sortedDurations, 90);
+                const p95 = getPercentile(sortedDurations, 95);
+                const maxObs = sortedDurations.length > 0 ? sortedDurations[sortedDurations.length - 1] : 0;
+
+                // Combined Tag Breakdown (only for effective speakers)
+                const counts = {};
+                efectivosGen.forEach(o => {
+                  const tags = (o.tags && o.tags.length > 0) 
+                    ? o.tags 
+                    : autoDetectTags(o.tema_efectivo || o.tema_original || '');
+                  tags.forEach(tag => {
+                    counts[tag] = (counts[tag] || 0) + 1;
+                  });
+                });
+                unoTags.forEach(tag => {
+                  counts[tag] = (counts[tag] || 0) + 1;
+                });
+                const tagsBreakdown = Object.entries(counts)
+                  .map(([tag, count]) => ({ tag, count }))
+                  .sort((a, b) => b.count - a.count);
+
+                return {
+                  anotados: totalAnotados,
+                  efectivos: totalEfectivos,
+                  totalSecs,
+                  avgSecs,
+                  conversion,
+                  mediana,
+                  p75,
+                  p90,
+                  p95,
+                  maxObs,
+                  tagsBreakdown
+                };
+              };
+
+              const formatMinSec = (totalSecs) => {
+                const mins = Math.floor(totalSecs / 60);
+                const secs = totalSecs % 60;
+                return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')} min`;
+              };
+
+              const formatTotalHours = (totalSecs) => {
+                const hrs = Math.floor(totalSecs / 3600);
+                const mins = Math.floor((totalSecs % 3600) / 60);
+                if (hrs > 0) {
+                  return `${hrs} h ${mins} min`;
+                }
+                return `${mins} min`;
+              };
+
+              // Grupo A
+              const metricsA = calculateMetrics(reuniones, oradoresRaw, inscripcionesRaw);
+              const tagsA = metricsA.tagsBreakdown.slice(0, 5);
+
+              // Grupo B
+              const metricsB = calculateMetrics(reunionesB, oradoresRawB, inscripcionesRawB);
+              const tagsB = metricsB.tagsBreakdown.slice(0, 5);
+
+              return (
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: '20px' }}>
+                  {/* Métricas e Indicadores de Oratoria */}
+                  <div style={{ backgroundColor: '#FFFFFF', borderRadius: '8px', padding: '16px', border: '1px solid #E2E8F0' }}>
+                    <h4 style={{ margin: '0 0 12px 0', fontSize: '0.9rem', color: '#64748B', fontWeight: '700', textTransform: 'uppercase', borderBottom: '1px solid #F1F5F9', paddingBottom: '6px' }}>
+                      Métricas de Uso del Micrófono / Atención
+                    </h4>
+                    
+                    {!isComparing || !kpisB ? (
+                      <div>
+                        {/* Resumen General */}
+                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px', marginBottom: '14px', backgroundColor: '#F8FAFC', padding: '10px', borderRadius: '6px', border: '1px solid #E2E8F0' }}>
+                          <div style={{ textAlign: 'center' }}>
+                            <div style={{ fontSize: '0.72rem', color: '#64748B', fontWeight: '600' }}>Anotados / Citados</div>
+                            <div style={{ fontSize: '1.1rem', fontWeight: '800', color: '#0F172A' }}>{metricsA.anotados}</div>
+                          </div>
+                          <div style={{ textAlign: 'center' }}>
+                            <div style={{ fontSize: '0.72rem', color: '#64748B', fontWeight: '600' }}>Efectivos (Conversión)</div>
+                            <div style={{ fontSize: '1.1rem', fontWeight: '800', color: 'var(--color-success)' }}>
+                              {metricsA.efectivos} <span style={{ fontSize: '0.75rem', fontWeight: 'normal', color: '#64748B' }}>({metricsA.conversion}%)</span>
+                            </div>
+                          </div>
+                        </div>
+
+                        {/* Tabla de Percentiles */}
+                        <table style={{ width: '100%', fontSize: '0.85rem', borderCollapse: 'collapse', textAlign: 'left' }}>
+                          <thead>
+                            <tr style={{ borderBottom: '2px solid #E2E8F0', color: '#64748B' }}>
+                              <th style={{ padding: '6px 4px', fontWeight: '700' }}>Métrica</th>
+                              <th style={{ padding: '6px 4px', textAlign: 'right', fontWeight: '700' }}>Resultado</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            <tr style={{ borderBottom: '1px solid #F1F5F9' }}>
+                              <td style={{ padding: '8px 4px', color: '#475569', fontWeight: '500' }}>Promedio</td>
+                              <td style={{ padding: '8px 4px', textAlign: 'right', fontWeight: '700', color: 'var(--color-primary)' }}>{formatMinSec(metricsA.avgSecs)}</td>
+                            </tr>
+                            <tr style={{ borderBottom: '1px solid #F1F5F9' }}>
+                              <td style={{ padding: '8px 4px', color: '#475569', fontWeight: '500' }}>Mediana</td>
+                              <td style={{ padding: '8px 4px', textAlign: 'right', fontWeight: '700' }}>{formatMinSec(metricsA.mediana)}</td>
+                            </tr>
+                            <tr style={{ borderBottom: '1px solid #F1F5F9' }}>
+                              <td style={{ padding: '8px 4px', color: '#475569', fontWeight: '500' }}>Percentil 75</td>
+                              <td style={{ padding: '8px 4px', textAlign: 'right', fontWeight: '700' }}>{formatMinSec(metricsA.p75)}</td>
+                            </tr>
+                            <tr style={{ borderBottom: '1px solid #F1F5F9' }}>
+                              <td style={{ padding: '8px 4px', color: '#475569', fontWeight: '500' }}>Percentil 90</td>
+                              <td style={{ padding: '8px 4px', textAlign: 'right', fontWeight: '700' }}>{formatMinSec(metricsA.p90)}</td>
+                            </tr>
+                            <tr style={{ borderBottom: '1px solid #F1F5F9' }}>
+                              <td style={{ padding: '8px 4px', color: '#475569', fontWeight: '500' }}>Percentil 95</td>
+                              <td style={{ padding: '8px 4px', textAlign: 'right', fontWeight: '700' }}>{formatMinSec(metricsA.p95)}</td>
+                            </tr>
+                            <tr style={{ borderBottom: '1px solid #F1F5F9' }}>
+                              <td style={{ padding: '8px 4px', color: '#475569', fontWeight: '500' }}>Máximo observado</td>
+                              <td style={{ padding: '8px 4px', textAlign: 'right', fontWeight: '700', color: '#EF4444' }}>{formatMinSec(metricsA.maxObs)}</td>
+                            </tr>
+                            <tr>
+                              <td style={{ padding: '8px 4px', color: '#475569', fontWeight: '500' }}>Tiempo Total Hablado</td>
+                              <td style={{ padding: '8px 4px', textAlign: 'right', fontWeight: '700', color: '#F59E0B' }}>{formatTotalHours(metricsA.totalSecs)}</td>
+                            </tr>
+                          </tbody>
+                        </table>
+                      </div>
+                    ) : (
+                      /* Comparativo Grupo A vs Grupo B */
+                      <div style={{ overflowX: 'auto' }}>
+                        <table style={{ width: '100%', fontSize: '0.82rem', borderCollapse: 'collapse', textAlign: 'left' }}>
+                          <thead>
+                            <tr style={{ borderBottom: '2px solid #E2E8F0', color: '#64748B' }}>
+                              <th style={{ padding: '6px 4px', fontWeight: '700' }}>Métrica</th>
+                              <th style={{ padding: '6px 4px', color: '#0D9488', fontWeight: '700' }}>{labelA}</th>
+                              <th style={{ padding: '6px 4px', color: '#D97706', fontWeight: '700' }}>{labelB}</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            <tr style={{ borderBottom: '1px solid #F1F5F9' }}>
+                              <td style={{ padding: '8px 4px', fontWeight: '500' }}>Anotados / Citados</td>
+                              <td style={{ padding: '8px 4px', fontWeight: '700' }}>{metricsA.anotados}</td>
+                              <td style={{ padding: '8px 4px', fontWeight: '700' }}>{metricsB.anotados}</td>
+                            </tr>
+                            <tr style={{ borderBottom: '1px solid #F1F5F9' }}>
+                              <td style={{ padding: '8px 4px', fontWeight: '500' }}>Efectivos (Hablaron)</td>
+                              <td style={{ padding: '8px 4px', fontWeight: '700', color: 'var(--color-success)' }}>{metricsA.efectivos}</td>
+                              <td style={{ padding: '8px 4px', fontWeight: '700', color: 'var(--color-success)' }}>{metricsB.efectivos}</td>
+                            </tr>
+                            <tr style={{ borderBottom: '1px solid #F1F5F9' }}>
+                              <td style={{ padding: '8px 4px', fontWeight: '500' }}>Efectividad %</td>
+                              <td style={{ padding: '8px 4px', fontWeight: '700' }}>{metricsA.conversion}%</td>
+                              <td style={{ padding: '8px 4px', fontWeight: '700' }}>{metricsB.conversion}%</td>
+                            </tr>
+                            <tr style={{ borderBottom: '1px solid #F1F5F9' }}>
+                              <td style={{ padding: '8px 4px', fontWeight: '500', color: 'var(--color-primary)' }}>Promedio</td>
+                              <td style={{ padding: '8px 4px', fontWeight: '700', color: 'var(--color-primary)' }}>{formatMinSec(metricsA.avgSecs)}</td>
+                              <td style={{ padding: '8px 4px', fontWeight: '700', color: 'var(--color-primary)' }}>{formatMinSec(metricsB.avgSecs)}</td>
+                            </tr>
+                            <tr style={{ borderBottom: '1px solid #F1F5F9' }}>
+                              <td style={{ padding: '8px 4px', fontWeight: '500' }}>Mediana</td>
+                              <td style={{ padding: '8px 4px', fontWeight: '700' }}>{formatMinSec(metricsA.mediana)}</td>
+                              <td style={{ padding: '8px 4px', fontWeight: '700' }}>{formatMinSec(metricsB.mediana)}</td>
+                            </tr>
+                            <tr style={{ borderBottom: '1px solid #F1F5F9' }}>
+                              <td style={{ padding: '8px 4px', fontWeight: '500' }}>Percentil 75</td>
+                              <td style={{ padding: '8px 4px', fontWeight: '700' }}>{formatMinSec(metricsA.p75)}</td>
+                              <td style={{ padding: '8px 4px', fontWeight: '700' }}>{formatMinSec(metricsB.p75)}</td>
+                            </tr>
+                            <tr style={{ borderBottom: '1px solid #F1F5F9' }}>
+                              <td style={{ padding: '8px 4px', fontWeight: '500' }}>Percentil 90</td>
+                              <td style={{ padding: '8px 4px', fontWeight: '700' }}>{formatMinSec(metricsA.p90)}</td>
+                              <td style={{ padding: '8px 4px', fontWeight: '700' }}>{formatMinSec(metricsB.p90)}</td>
+                            </tr>
+                            <tr style={{ borderBottom: '1px solid #F1F5F9' }}>
+                              <td style={{ padding: '8px 4px', fontWeight: '500' }}>Percentil 95</td>
+                              <td style={{ padding: '8px 4px', fontWeight: '700' }}>{formatMinSec(metricsA.p95)}</td>
+                              <td style={{ padding: '8px 4px', fontWeight: '700' }}>{formatMinSec(metricsB.p95)}</td>
+                            </tr>
+                            <tr style={{ borderBottom: '1px solid #F1F5F9' }}>
+                              <td style={{ padding: '8px 4px', fontWeight: '500', color: '#EF4444' }}>Máximo observado</td>
+                              <td style={{ padding: '8px 4px', fontWeight: '700', color: '#EF4444' }}>{formatMinSec(metricsA.maxObs)}</td>
+                              <td style={{ padding: '8px 4px', fontWeight: '700', color: '#EF4444' }}>{formatMinSec(metricsB.maxObs)}</td>
+                            </tr>
+                            <tr>
+                              <td style={{ padding: '8px 4px', fontWeight: '500', color: '#F59E0B' }}>Tiempo Total</td>
+                              <td style={{ padding: '8px 4px', fontWeight: '700', color: '#F59E0B' }}>{formatTotalHours(metricsA.totalSecs)}</td>
+                              <td style={{ padding: '8px 4px', fontWeight: '700', color: '#F59E0B' }}>{formatTotalHours(metricsB.totalSecs)}</td>
+                            </tr>
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Temas y Problemáticas Reincidentes en Oratoria */}
+                  <div style={{ backgroundColor: '#FFFFFF', borderRadius: '8px', padding: '16px', border: '1px solid #E2E8F0' }}>
+                    <h4 style={{ margin: '0 0 12px 0', fontSize: '0.9rem', color: '#64748B', fontWeight: '700', textTransform: 'uppercase', borderBottom: '1px solid #F1F5F9', paddingBottom: '6px' }}>
+                      Top 5 Categorías más Planteadas por Oradores
+                    </h4>
+                    
+                    {!isComparing || !kpisB ? (
+                      tagsA.length > 0 ? (
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', marginTop: '6px' }}>
+                          {tagsA.map((t, idx) => {
+                            const maxVal = tagsA[0].count;
+                            const percentage = maxVal > 0 ? Math.round((t.count / maxVal) * 100) : 0;
+                            return (
+                              <div key={idx}>
+                                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.8rem', fontWeight: '600', marginBottom: '3px' }}>
+                                  <span style={{ color: '#334155' }}>🏷️ {t.tag}</span>
+                                  <span style={{ color: '#64748B' }}>{t.count} oradores</span>
+                                </div>
+                                <div style={{ height: '6px', width: '100%', backgroundColor: '#E2E8F0', borderRadius: '3px', overflow: 'hidden' }}>
+                                  <div style={{ height: '100%', width: `${percentage}%`, backgroundColor: 'var(--color-primary)', borderRadius: '3px' }}></div>
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      ) : (
+                        <p style={{ fontSize: '0.8rem', color: '#94A3B8', fontStyle: 'italic', margin: '20px 0', textAlign: 'center' }}>
+                          No hay suficientes etiquetas o minutas registradas en este período.
+                        </p>
+                      )
+                    ) : (
+                      /* Comparación de Etiquetas A vs B */
+                      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
+                        <div>
+                          <div style={{ fontSize: '0.75rem', fontWeight: '700', color: '#0D9488', textAlign: 'center', marginBottom: '8px', borderBottom: '1px dashed #E2E8F0' }}>
+                            {labelA}
+                          </div>
+                          {tagsA.length > 0 ? (
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                              {tagsA.map((t, idx) => (
+                                <div key={idx} style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.72rem', backgroundColor: '#F0FDFA', padding: '4px 6px', borderRadius: '4px', border: '1px solid #CCFBF1' }}>
+                                  <span style={{ fontWeight: '500', color: '#0F766E', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '75%', display: 'block' }}>{t.tag}</span>
+                                  <strong style={{ color: '#0F766E' }}>{t.count}</strong>
+                                </div>
+                              ))}
+                            </div>
+                          ) : (
+                            <div style={{ fontSize: '0.7rem', color: '#94A3B8', textAlign: 'center', fontStyle: 'italic' }}>Sin datos</div>
+                          )}
+                        </div>
+
+                        <div>
+                          <div style={{ fontSize: '0.75rem', fontWeight: '700', color: '#D97706', textAlign: 'center', marginBottom: '8px', borderBottom: '1px dashed #E2E8F0' }}>
+                            {labelB}
+                          </div>
+                          {tagsB.length > 0 ? (
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                              {tagsB.map((t, idx) => (
+                                <div key={idx} style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.72rem', backgroundColor: '#FFFBEB', padding: '4px 6px', borderRadius: '4px', border: '1px solid #FEF3C7' }}>
+                                  <span style={{ fontWeight: '500', color: '#B45309', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '75%', display: 'block' }}>{t.tag}</span>
+                                  <strong style={{ color: '#B45309' }}>{t.count}</strong>
+                                </div>
+                              ))}
+                            </div>
+                          ) : (
+                            <div style={{ fontSize: '0.7rem', color: '#94A3B8', textAlign: 'center', fontStyle: 'italic' }}>Sin datos</div>
+                          )}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              );
+            })()}
           </div>
 
           {/* 3. DEMANDA CIUDADANA */}

@@ -939,10 +939,9 @@ export default function PanelModerador({ reunion: initialReunion, onBack }) {
     }
   };
 
-  // Copiar resumen con formato WhatsApp solicitado al portapapeles
-  const handleCopyWhatsAppText = async () => {
+  // Copiar mensaje de INICIO de reunión formateado para WhatsApp
+  const handleCopyWhatsAppInicioText = async () => {
     try {
-      // Formatear la fecha
       let displayFecha = '';
       let displayHora = '17 hs';
       if (reunion.fecha) {
@@ -951,8 +950,7 @@ export default function PanelModerador({ reunion: initialReunion, onBack }) {
           displayFecha = `${parts[2]}/${parts[1]}`;
         }
       }
-      
-      // Obtener hora de la reunion formateada si existe
+
       if (reunion.nombre && reunion.nombre.includes('-')) {
         const nameParts = reunion.nombre.split('-');
         const lastPart = nameParts[nameParts.length - 1].trim();
@@ -960,9 +958,6 @@ export default function PanelModerador({ reunion: initialReunion, onBack }) {
           displayHora = lastPart.toLowerCase().replace('hs', ' hs').replace('h', ' hs');
         }
       }
-
-      const oradoresAnotados = oradores.length;
-      const oradoresEfectivos = oradores.filter(o => o.estado === 'hablo');
 
       const presentesList = asistentes.filter(a => a.asistio);
       const dnisPresentes = presentesList.map(a => a.vecino_id);
@@ -982,7 +977,87 @@ export default function PanelModerador({ reunion: initialReunion, onBack }) {
         }
       });
 
+      // Formatear Gestión Presente como viñetas
+      let gestionLines = (gestionPresente || '').trim();
+      if (!gestionLines) {
+        gestionLines = `- ${reunion.funcionario || 'Funcionario'}`;
+      } else {
+        gestionLines = gestionLines.split('\n')
+          .map(l => l.trim().startsWith('-') ? l.trim() : `- ${l.trim()}`)
+          .filter(Boolean)
+          .join('\n');
+      }
+
       const txt = `👨‍👩‍👧‍👦 RDV | *${reunion.funcionario || reunion.nombre}* - ${reunion.comuna}
+📅 ${displayFecha || 'Fecha'} | 🕠 ${displayHora}
+⏰ Inicio: ${horaInicioReal || '--:--'} hs
+
+📋 Inscriptos: ${inscriptosCount}
+👥 Asistentes: ${presentesCount} (${ratioAsistencia}%)
+   🌱 Vecinos Primera Vez: ${primerVezCount}
+   🔄 Vecinos Recurrentes: ${recurrentesCount}
+📝 Oradores anotados: ${oradores.length}
+
+*🏛️ Gestión presente:*
+${gestionLines}`;
+
+      await navigator.clipboard.writeText(txt);
+      alert('¡Mensaje de Inicio para WhatsApp copiado con éxito al portapapeles!');
+    } catch (err) {
+      console.error(err);
+      alert('No se pudo copiar automáticamente.');
+    }
+  };
+
+  // Generador dinámico del resumen ejecutivo final formateado para WhatsApp
+  const generateWhatsAppFinalText = () => {
+    let displayFecha = '';
+    let displayHora = '17 hs';
+    if (reunion.fecha) {
+      const parts = reunion.fecha.split('-');
+      if (parts.length === 3) {
+        displayFecha = `${parts[2]}/${parts[1]}`;
+      }
+    }
+    
+    if (reunion.nombre && reunion.nombre.includes('-')) {
+      const nameParts = reunion.nombre.split('-');
+      const lastPart = nameParts[nameParts.length - 1].trim();
+      if (lastPart.toLowerCase().includes('hs') || lastPart.toLowerCase().includes('h')) {
+        displayHora = lastPart.toLowerCase().replace('hs', ' hs').replace('h', ' hs');
+      }
+    }
+
+    const oradoresAnotados = oradores.length;
+    const oradoresEfectivos = oradores.filter(o => o.estado === 'hablo');
+    const totalSegundos = oradoresEfectivos.reduce((sum, o) => sum + (o.duracion_segundos || 0), 0);
+    const avgSegundos = oradoresEfectivos.length > 0 ? Math.round(totalSegundos / oradoresEfectivos.length) : 0;
+    const avgTimeStr = formatSpeakerTime(avgSegundos);
+
+    const presentesList = asistentes.filter(a => a.asistio);
+    let primerVezCount = 0;
+    let recurrentesCount = 0;
+
+    presentesList.forEach(a => {
+      const otras = vecinoStatsMap[a.vecino_id]?.otrasAsistencias || 0;
+      if (otras > 0) {
+        recurrentesCount++;
+      } else {
+        primerVezCount++;
+      }
+    });
+
+    let gestionLines = (gestionPresente || '').trim();
+    if (!gestionLines) {
+      gestionLines = `- ${reunion.funcionario || 'Funcionario'}`;
+    } else {
+      gestionLines = gestionLines.split('\n')
+        .map(l => l.trim().startsWith('-') ? l.trim() : `- ${l.trim()}`)
+        .filter(Boolean)
+        .join('\n');
+    }
+
+    return `👨‍👩‍👧‍👦 RDV | *${reunion.funcionario || reunion.nombre}* - ${reunion.comuna}
 📅 ${displayFecha || 'Fecha'} | 🕠 ${displayHora}
 ⏰ Inicio: ${horaInicioReal || '--:--'} hs | Finalizó: ${horaFinReal || '--:--'} hs
 
@@ -992,25 +1067,36 @@ export default function PanelModerador({ reunion: initialReunion, onBack }) {
    🔄 Vecinos Recurrentes: ${recurrentesCount}
 📝 Oradores anotados: ${oradoresAnotados}
  🎤 Oradores efectivos: ${oradoresEfectivos.length}
+⏱️ Tiempo promedio de oradores: ${avgTimeStr}
 
-🔥 Clima ${CLIMA_MAP[clima]?.waLabel || clima}
 🚦 Semáforo político: ${SEMAFORO_MAP[semaforoPolitico]?.waLabel || semaforoPolitico}
 
 *📝 Síntesis cualitativa:*
 ${sintesisCualitativa.trim() || 'La reunión se desarrolló con normalidad.'}
 
 *🏛️ Gestión presente:*
-${gestionPresente.trim() || '- ' + (reunion.funcionario || 'Funcionario')}
+${gestionLines}
 
-*📌 Temas más comentados:*
+*📌 Minuta de oradores:*
 ${oradoresEfectivos.length > 0 
   ? oradoresEfectivos.map(o => {
       const tel = o.vecino?.celular ? ` ${o.vecino.celular}` : '';
-      return `${o.vecino?.nombre} ${o.vecino?.apellido}${tel}: ${o.tema_efectivo || o.tema_original || 'Sin minuta registrada.'}`;
+      return `${o.vecino?.nombre || ''} ${o.vecino?.apellido || ''}${tel}: ${o.tema_efectivo || o.tema_original || 'Sin minuta registrada.'}`;
     }).join('\n\n')
   : 'No se registraron oradores efectivos.'
 }`;
+  };
 
+  // Copiar resumen con formato WhatsApp solicitado al portapapeles
+  const handleCopyWhatsAppText = async () => {
+    try {
+      const presentesList = asistentes.filter(a => a.asistio);
+      const dnisPresentes = presentesList.map(a => a.vecino_id);
+      if (dnisPresentes.length > 0) {
+        await loadHistoricalStatsForVecinos(dnisPresentes);
+      }
+
+      const txt = generateWhatsAppFinalText();
       await navigator.clipboard.writeText(txt);
       alert('¡Resumen de WhatsApp copiado con éxito al portapapeles!');
     } catch (err) {
@@ -1419,19 +1505,85 @@ ${oradoresEfectivos.length > 0
       ) : (
         /* VISTA POR DEFECTO CON COLA DE ORADORES TRADICIONAL */
         <>
-          {/* AGREGAR ORADORES DE ÚLTIMO MOMENTO */}
-      <div className="card" style={{ marginBottom: '1.5rem', padding: '16px', backgroundColor: '#F8FAFC', border: '1px dashed var(--color-border)' }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px', flexWrap: 'wrap', gap: '8px' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-            <Users size={16} style={{ color: 'var(--color-highlight)' }} />
-            <h4 style={{ margin: 0, fontSize: '0.95rem', color: 'var(--color-primary)', fontWeight: '700' }}>
-              Agregar oradores de último momento
-            </h4>
+          {/* 1. INICIO DE REUNIÓN + GESTIÓN PRESENTE + COPIAR WHATSAPP INICIO */}
+          <div className="card" style={{ marginBottom: '1.5rem', backgroundColor: '#FFFFFF', border: '1px solid var(--color-border)', borderTop: '4px solid var(--color-highlight)', padding: '16px' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px', flexWrap: 'wrap', gap: '8px', borderBottom: '1px solid #E2E8F0', paddingBottom: '8px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <Clock size={18} style={{ color: 'var(--color-highlight)' }} />
+                <h3 style={{ margin: 0, fontSize: '1.05rem', color: 'var(--color-primary)', fontWeight: '700' }}>
+                  1. Inicio de Reunión & Gestión Presente
+                </h3>
+              </div>
+              <button
+                className="btn btn-secondary btn-sm"
+                onClick={handleCopyWhatsAppInicioText}
+                style={{ display: 'flex', alignItems: 'center', gap: '6px', backgroundColor: '#DCFCE7', color: '#166534', border: '1px solid #86EFAC', fontWeight: '700', fontSize: '0.8rem', padding: '6px 12px' }}
+                title="Copiar mensaje de inicio formateado para WhatsApp"
+              >
+                <Clipboard size={14} /> Copiar WhatsApp Inicio
+              </button>
+            </div>
+
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: '1rem', marginBottom: '12px' }}>
+              <div>
+                <label style={{ fontSize: '0.8rem', fontWeight: '700', color: 'var(--color-primary)', display: 'block', marginBottom: '4px' }}>
+                  ⏰ Horario de Inicio Real
+                </label>
+                <input
+                  type="time"
+                  className="form-control form-control-sm"
+                  value={horaInicioReal}
+                  onChange={(e) => setHoraInicioReal(e.target.value)}
+                  style={{ fontSize: '0.9rem', fontWeight: '600' }}
+                />
+                <span style={{ fontSize: '0.72rem', color: 'var(--color-text-muted)', display: 'block', marginTop: '3px' }}>
+                  Precargado desde los datos de la reunión. Editable si arrancó a otra hora.
+                </span>
+              </div>
+
+              <div>
+                <label style={{ fontSize: '0.8rem', fontWeight: '700', color: 'var(--color-primary)', display: 'block', marginBottom: '4px' }}>
+                  🏛️ Gestión Presente (Autoridades / Funcionarios)
+                </label>
+                <textarea
+                  className="form-control form-control-sm"
+                  rows={3}
+                  placeholder="- Nombre Apellido, Cargo (uno por línea)"
+                  value={gestionPresente}
+                  onChange={(e) => setGestionPresente(e.target.value)}
+                  style={{ fontSize: '0.85rem' }}
+                />
+              </div>
+            </div>
+
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', backgroundColor: '#F8FAFC', padding: '8px 12px', borderRadius: '6px', border: '1px solid #E2E8F0', flexWrap: 'wrap', gap: '8px' }}>
+              <span style={{ fontSize: '0.78rem', color: '#475569' }}>
+                📋 Inscriptos: <strong>{inscriptosCount}</strong> | 👥 Asistentes: <strong>{presentesCount} ({ratioAsistencia}%)</strong> | 📝 Oradores: <strong>{oradores.length}</strong>
+              </span>
+              <button
+                className="btn btn-primary btn-sm"
+                onClick={handleSaveCualitativos}
+                disabled={savingReunion}
+                style={{ fontSize: '0.78rem', padding: '4px 10px', display: 'flex', alignItems: 'center', gap: '4px' }}
+              >
+                <Save size={12} /> {savingReunion ? 'Guardando...' : 'Guardar Inicio'}
+              </button>
+            </div>
           </div>
-          <span style={{ fontSize: '0.8rem', color: 'var(--color-text-muted)' }}>
-            Permite sumar vecinos anotados en asistencia o registrar nuevos vecinos espontáneos.
-          </span>
-        </div>
+
+          {/* 2. AGREGAR ORADORES DE ÚLTIMO MOMENTO */}
+          <div className="card" style={{ marginBottom: '1.5rem', padding: '16px', backgroundColor: '#F8FAFC', border: '1px dashed var(--color-border)' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px', flexWrap: 'wrap', gap: '8px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <Users size={16} style={{ color: 'var(--color-highlight)' }} />
+                <h4 style={{ margin: 0, fontSize: '0.95rem', color: 'var(--color-primary)', fontWeight: '700' }}>
+                  2. Oradores de Último Momento (Inscripción espontánea en vivo)
+                </h4>
+              </div>
+              <span style={{ fontSize: '0.8rem', color: 'var(--color-text-muted)' }}>
+                Permite sumar vecinos anotados en asistencia o registrar nuevos vecinos espontáneos.
+              </span>
+            </div>
 
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '1.5rem' }}>
           
@@ -1570,13 +1722,13 @@ ${oradoresEfectivos.length > 0
         </div>
       </div>
 
-      {/* SECCIÓN SUPERIOR: COLA ACTIVA (65%) Y MICRÓFONO EN VIVO (35%) */}
+      {/* 3. COLA ACTIVA (65%) Y MICRÓFONO EN VIVO (35%) */}
       <div style={{ display: 'grid', gridTemplateColumns: '65fr 35fr', gap: '1.5rem', alignItems: 'start', marginBottom: '1.5rem' }}>
-        {/* 1. COLA DE ORADORES ACTIVOS */}
+        {/* COLA DE ORADORES ACTIVOS */}
         <div className="card" style={{ margin: 0 }}>
           <h3 style={{ fontSize: '1.15rem', color: 'var(--color-primary)', marginTop: 0, marginBottom: '1rem', display: 'flex', alignItems: 'center', gap: '8px', borderBottom: '1px solid var(--color-border)', paddingBottom: '8px', fontWeight: '700' }}>
             <Users size={18} style={{ color: 'var(--color-highlight)' }} />
-            Cola Activa ({queueActive.length})
+            3. Cola Activa ({queueActive.length})
           </h3>
 
           {loadingOradores ? (
@@ -1796,11 +1948,11 @@ ${oradoresEfectivos.length > 0
       </div>
 
         
-        {/* 3. HISTORIAL / FINALIZADOS (100% WIDTH) */}
+        {/* 4. YA EXPUSIERON / SE BAJARON (100% WIDTH) */}
         <div className="card" style={{ margin: 0, backgroundColor: '#F8FAFC' }}>
           <h3 style={{ fontSize: '1.1rem', color: 'var(--color-primary)', marginTop: 0, marginBottom: '1rem', display: 'flex', alignItems: 'center', gap: '8px', borderBottom: '1px solid var(--color-border)', paddingBottom: '8px', fontWeight: '700' }}>
             <Check size={18} style={{ color: 'var(--color-success)' }} />
-            Ya expusieron / Se bajaron ({queueFinished.length})
+            4. Ya expusieron / Se bajaron ({queueFinished.length})
           </h3>
 
           {queueFinished.length > 0 ? (
@@ -1971,48 +2123,23 @@ ${oradoresEfectivos.length > 0
     )}
       {/* STACK VERTICAL DE COMPONENTES AL 100% ANCHO (SECCIÓN INFERIOR) */}
       <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem', marginTop: '1.5rem' }}>
-        {/* 4. VARIABLES CUALITATIVAS (AL FINAL) (100% WIDTH) */}
+        {/* 5. VARIABLES CUALITATIVAS (AL CIERRE DE LA REUNIÓN) (100% WIDTH) */}
         <div className="card" style={{ margin: 0 }}>
           <h3 style={{ fontSize: '1.15rem', color: 'var(--color-primary)', marginTop: 0, marginBottom: '1rem', display: 'flex', alignItems: 'center', gap: '8px', borderBottom: '1px solid var(--color-border)', paddingBottom: '8px', fontWeight: '700' }}>
             <Save size={18} style={{ color: 'var(--color-highlight)' }} />
-            Variables Cualitativas (Al cierre de la reunión)
+            5. Variables Cualitativas (Al cierre de la reunión)
           </h3>
 
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px', marginBottom: '12px' }}>
             <div className="form-group" style={{ margin: 0 }}>
-              <label style={{ fontSize: '0.8rem', fontWeight: '600' }}>Hora Inicio Real</label>
-              <input
-                type="text"
-                className="form-control form-control-sm"
-                placeholder="Ej: 17:07"
-                value={horaInicioReal}
-                onChange={(e) => setHoraInicioReal(e.target.value)}
-              />
-            </div>
-            <div className="form-group" style={{ margin: 0 }}>
               <label style={{ fontSize: '0.8rem', fontWeight: '600' }}>Hora Fin Real</label>
               <input
-                type="text"
+                type="time"
                 className="form-control form-control-sm"
-                placeholder="Ej: 18:39"
                 value={horaFinReal}
                 onChange={(e) => setHoraFinReal(e.target.value)}
+                style={{ fontSize: '0.9rem', fontWeight: '600' }}
               />
-            </div>
-          </div>
-
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px', marginBottom: '12px' }}>
-            <div className="form-group" style={{ margin: 0 }}>
-              <label style={{ fontSize: '0.8rem', fontWeight: '600' }}>Clima de la Reunión</label>
-              <select
-                className="form-control form-control-sm"
-                value={clima}
-                onChange={(e) => setClima(e.target.value)}
-              >
-                {Object.keys(CLIMA_MAP).map(key => (
-                  <option key={key} value={key}>{CLIMA_MAP[key].label}</option>
-                ))}
-              </select>
             </div>
             <div className="form-group" style={{ margin: 0 }}>
               <label style={{ fontSize: '0.8rem', fontWeight: '600' }}>Semáforo Político</label>
@@ -2028,26 +2155,14 @@ ${oradoresEfectivos.length > 0
             </div>
           </div>
 
-          <div className="form-group" style={{ marginBottom: '12px' }}>
+          <div className="form-group" style={{ marginBottom: '1.25rem' }}>
             <label style={{ fontSize: '0.8rem', fontWeight: '600' }}>Síntesis Cualitativa</label>
             <textarea
               className="form-control"
-              rows={4}
-              placeholder="Escribí un resumen corto sobre el clima, comportamiento y temas generales..."
+              rows={3}
+              placeholder="Escribí un resumen corto sobre el desarrollo y temas generales..."
               value={sintesisCualitativa}
               onChange={(e) => setSintesisCualitativa(e.target.value)}
-              style={{ fontSize: '0.85rem' }}
-            />
-          </div>
-
-          <div className="form-group" style={{ marginBottom: '1.25rem' }}>
-            <label style={{ fontSize: '0.8rem', fontWeight: '600' }}>Gestión Presente</label>
-            <textarea
-              className="form-control"
-              rows={2}
-              placeholder="- Nombre Apellido, Cargo"
-              value={gestionPresente}
-              onChange={(e) => setGestionPresente(e.target.value)}
               style={{ fontSize: '0.85rem' }}
             />
           </div>
@@ -2058,33 +2173,22 @@ ${oradoresEfectivos.length > 0
             disabled={savingReunion}
             style={{ width: '100%', padding: '10px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px', fontWeight: '600' }}
           >
-            <Save size={16} /> {savingReunion ? 'Guardando...' : 'Guardar Datos Cualitativos'}
+            <Save size={16} /> {savingReunion ? 'Guardando...' : 'Guardar Cierre de Reunión'}
           </button>
         </div>
 
-        {/* 5. EXPORTADOR PARA WHATSAPP (DEBAJO DE TODO) (100% WIDTH) */}
+        {/* 6. EXPORTADOR PARA WHATSAPP (DEBAJO DE TODO) (100% WIDTH) */}
         <div className="card" style={{ margin: 0, borderTop: '4px solid var(--color-highlight)' }}>
           <h3 style={{ fontSize: '1.15rem', color: 'var(--color-primary)', marginTop: 0, marginBottom: '0.5rem', display: 'flex', alignItems: 'center', gap: '8px', fontWeight: '700' }}>
             <Share2 size={18} style={{ color: 'var(--color-highlight)' }} />
-            Exportador para WhatsApp
+            6. Exportador para WhatsApp (Resumen Final)
           </h3>
-          <p style={{ color: 'var(--color-text-muted)', fontSize: '0.8rem', marginBottom: '1.25rem' }}>
-            Genera y copia al portapapeles el resumen ejecutivo de la reunión formateado con emojis para compartir de forma directa con el equipo.
+          <p style={{ color: 'var(--color-text-muted)', fontSize: '0.8rem', marginBottom: '1rem' }}>
+            Previsualización exacta del resumen ejecutivo de la reunión formateado para compartir con el equipo:
           </p>
 
-          <div style={{ backgroundColor: '#F8FAFC', borderRadius: '8px', padding: '14px', border: '1px solid var(--color-border)', marginBottom: '1.25rem', fontSize: '0.85rem' }}>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px', marginBottom: '10px' }}>
-              <div>Inscriptos: <strong>{inscriptosCount}</strong></div>
-              <div>Asistentes: <strong>{presentesCount} ({ratioAsistencia}%)</strong></div>
-            </div>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px', marginBottom: '10px' }}>
-              <div>Primera vez: <strong>🌱 {asistentes.filter(a => a.asistio && (vecinoStatsMap[a.vecino_id]?.otrasAsistencias || 0) <= 0).length}</strong></div>
-              <div>Recurrentes: <strong>🔄 {asistentes.filter(a => a.asistio && (vecinoStatsMap[a.vecino_id]?.otrasAsistencias || 0) > 0).length}</strong></div>
-            </div>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
-              <div>Anotados: <strong>{oradores.length}</strong></div>
-              <div>Efectivos: <strong>{oradores.filter(o => o.estado === 'hablo').length}</strong></div>
-            </div>
+          <div style={{ backgroundColor: '#F8FAFC', borderRadius: '8px', padding: '14px', border: '1px solid var(--color-border)', marginBottom: '1.25rem', fontFamily: 'monospace', fontSize: '0.82rem', whiteSpace: 'pre-wrap', lineHeight: '1.5', color: '#1E293B', maxHeight: '300px', overflowY: 'auto' }}>
+            {generateWhatsAppFinalText()}
           </div>
 
           <button
