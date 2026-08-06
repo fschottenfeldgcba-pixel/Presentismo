@@ -572,7 +572,7 @@ Barrio convocado: ${barrioStr}
 
 1️⃣ *Inscriptos Confirmados:* ${inscriptosCount}
 2️⃣ *Encabeza:* ${encabezaStr}
-3️⃣ *Acompañantes:* ${acompanantesStr}
+3️⃣ *Funcionarios Invitados:* ${acompanantesStr}
 4️⃣ *Responsable del Equipo:* ${responsableStr}
 5️⃣ *Integrantes Asignados:* ${integrantesStr}
 6️⃣ *Tareas a Realizar de los Integrantes Asignados:*
@@ -684,7 +684,7 @@ ${obsStr}`;
       doc.setFont('helvetica', 'normal');
       doc.text(`• Encabeza: ${encabezaStr}`, 18, y); y += 5;
       
-      const splitAcompanantes = doc.splitTextToSize(`• Acompañantes: ${acompanantesStr}`, 175);
+      const splitAcompanantes = doc.splitTextToSize(`• Funcionarios Invitados: ${acompanantesStr}`, 175);
       doc.text(splitAcompanantes, 18, y);
       y += (splitAcompanantes.length * 5);
       
