@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { Calendar, MapPin, User, FileText, Upload, AlertCircle, ArrowLeft, Check, FileSpreadsheet } from 'lucide-react';
 import { TIPOS_REUNION } from '../data/mockData';
-import { createReunion, upsertVecino, guardarAsistencia, normalizeComuna, normalizeCanalDifusion, cachedQuery } from '../services/supabaseService';
+import { createReunion, upsertVecino, guardarAsistencia, bulkUpsertVecinos, bulkGuardarAsistencias, normalizeComuna, normalizeCanalDifusion, cachedQuery, getEquipoCercania, getAgentesTerritorio, DEFAULT_EQUIPO_CERCANIA, DEFAULT_AGENTES_TERRITORIO } from '../services/supabaseService';
 import { supabase } from '../lib/supabaseClient';
 import * as XLSX from 'xlsx';
 
@@ -93,12 +93,34 @@ export default function ABMReuniones({ onBack, onSaveSuccess }) {
   const [selectedComunas, setSelectedComunas] = useState([]);
   const [showComunaDropdown, setShowComunaDropdown] = useState(false);
   const dropdownComunaRef = useRef(null);
+  const calculateEndTime = (timeStr, minutesToAdd = 90) => {
+    if (!timeStr) return '';
+    const parts = timeStr.split(':');
+    if (parts.length < 2) return '';
+    const h = parseInt(parts[0], 10);
+    const m = parseInt(parts[1], 10);
+    if (isNaN(h) || isNaN(m)) return '';
+    const totalMins = h * 60 + m + minutesToAdd;
+    const newH = Math.floor(totalMins / 60) % 24;
+    const newM = totalMins % 60;
+    return `${newH.toString().padStart(2, '0')}:${newM.toString().padStart(2, '0')}`;
+  };
+
+  const [barrioEvento, setBarrioEvento] = useState('');
   const [barrio, setBarrio] = useState('Convocatoria Comunal');
   const [funcionario, setFuncionario] = useState('');
   const [tipoReunion, setTipoReunion] = useState(TIPOS_REUNION.ENCUENTRO);
   const [arreglo1, setArreglo1] = useState('');
   const [tema, setTema] = useState('');
   const [horaInicio, setHoraInicio] = useState('17:00');
+  const [horaFin, setHoraFin] = useState('18:30');
+
+  const handleHoraInicioChange = (val) => {
+    setHoraInicio(val);
+    if (val) {
+      setHoraFin(calculateEndTime(val, 90));
+    }
+  };
   
   // Estados para funcionarios y autocompletado
   const [funcionariosList, setFuncionariosList] = useState([]);
@@ -107,25 +129,46 @@ export default function ABMReuniones({ onBack, onSaveSuccess }) {
   const [funcSearchTerm, setFuncSearchTerm] = useState('');
   const dropdownRef = useRef(null);
 
-  // Cargar funcionarios de Supabase (con caché de sesión de 5 minutos)
+  // Nuevos campos para Planificación y Cobertura (Reunión de Mañana)
+  const [funcionariosAcompanantes, setFuncionariosAcompanantes] = useState('');
+
+  const [selectedEquipoCercania, setSelectedEquipoCercania] = useState([]);
+  const [showCercaniaDropdown, setShowCercaniaDropdown] = useState(false);
+  const [cercaniaSearchTerm, setCercaniaSearchTerm] = useState('');
+  const [equipoCercaniaList, setEquipoCercaniaList] = useState(DEFAULT_EQUIPO_CERCANIA);
+  const dropdownCercaniaRef = useRef(null);
+
+  const [selectedIntegrantes, setSelectedIntegrantes] = useState([]);
+  const [showIntegrantesDropdown, setShowIntegrantesDropdown] = useState(false);
+  const [integrantesSearchTerm, setIntegrantesSearchTerm] = useState('');
+  const [agentesList, setAgentesList] = useState(DEFAULT_AGENTES_TERRITORIO);
+  const dropdownIntegrantesRef = useRef(null);
+
+  const [observacionesPreparacion, setObservacionesPreparacion] = useState('');
+
+  // Cargar funcionarios, equipo cercania y agentes territorio de Supabase
   useEffect(() => {
-    const fetchFuncionarios = async () => {
+    const fetchDropdownData = async () => {
       try {
-        const { data, error } = await cachedQuery('funcionarios', async () => {
-          const result = await supabase
-            .from('funcionarios')
-            .select('id, nombre_completo, cargo')
-            .order('nombre_completo', { ascending: true });
-          return result;
-        });
-        if (!error && data) {
-          setFuncionariosList(data);
-        }
+        const [resFunc, resCercania, resAgentes] = await Promise.all([
+          cachedQuery('funcionarios', async () => {
+            return await supabase
+              .from('funcionarios')
+              .select('id, nombre_completo, cargo')
+              .order('nombre_completo', { ascending: true });
+          }),
+          getEquipoCercania(),
+          getAgentesTerritorio()
+        ]);
+
+        if (resFunc?.data) setFuncionariosList(resFunc.data);
+        if (resCercania?.data) setEquipoCercaniaList(resCercania.data);
+        if (resAgentes?.data) setAgentesList(resAgentes.data);
       } catch (err) {
-        console.error(err);
+        console.error('Error cargando dropdowns:', err);
       }
     };
-    fetchFuncionarios();
+    fetchDropdownData();
   }, []);
 
   // Cerrar dropdown al hacer click fuera
@@ -136,6 +179,12 @@ export default function ABMReuniones({ onBack, onSaveSuccess }) {
       }
       if (dropdownComunaRef.current && !dropdownComunaRef.current.contains(event.target)) {
         setShowComunaDropdown(false);
+      }
+      if (dropdownCercaniaRef.current && !dropdownCercaniaRef.current.contains(event.target)) {
+        setShowCercaniaDropdown(false);
+      }
+      if (dropdownIntegrantesRef.current && !dropdownIntegrantesRef.current.contains(event.target)) {
+        setShowIntegrantesDropdown(false);
       }
     };
     document.addEventListener("mousedown", handleClickOutside);
@@ -437,16 +486,22 @@ export default function ABMReuniones({ onBack, onSaveSuccess }) {
       comuna: (tipoReunion === TIPOS_REUNION.PROCESOS_CO_CREACION || tipoReunion === TIPOS_REUNION.PROCESOS_INFORMATIVA) 
                ? (selectedComunas.length > 0 ? selectedComunas.join(', ') : comuna)
                : comuna,
+      barrio_evento: barrioEvento.trim() || null,
       barrio: barrio === 'Convocatoria Comunal' ? null : barrio,
       funcionario: funcionario.trim() || null,
       tipo_reunion: tipoReunion,
       tema: (tipoReunion === TIPOS_REUNION.TEMATICA || tipoReunion === TIPOS_REUNION.PROCESOS_CO_CREACION || tipoReunion === TIPOS_REUNION.PROCESOS_INFORMATIVA || tipoReunion === TIPOS_REUNION.PRIMERA_PERSONA) ? tema.trim() : null,
       arreglo_1: arreglo1.trim() || null,
       hora_inicio_real: horaInicio ? horaInicio.trim() : '17:00',
+      hora_fin_real: horaFin ? horaFin.trim() : '18:30',
       funcionario_inicio: null,
       funcionario_cierre: null,
       funcionario_interrupciones_minutos: 0,
-      duracion_total_minutos: null
+      duracion_total_minutos: null,
+      funcionarios_acompanantes: funcionariosAcompanantes.trim() ? [funcionariosAcompanantes.trim()] : null,
+      responsable_cercania_id: selectedEquipoCercania.length > 0 ? selectedEquipoCercania[0].id : null,
+      integrantes_asignados: selectedIntegrantes.length > 0 ? selectedIntegrantes.map(a => a.nombre_completo) : null,
+      observaciones_preparacion: observacionesPreparacion.trim() || null
     });
 
     if (createError) {
@@ -541,13 +596,23 @@ export default function ABMReuniones({ onBack, onSaveSuccess }) {
                     />
                   </div>
                   <div className="form-group">
-                    <label htmlFor="horaInicio">Horario Previsto *</label>
+                    <label htmlFor="horaInicio">Horario Previsto Inicio *</label>
                     <input
                       type="time"
                       id="horaInicio"
                       className="form-control"
                       value={horaInicio}
-                      onChange={(e) => setHoraInicio(e.target.value)}
+                      onChange={(e) => handleHoraInicioChange(e.target.value)}
+                    />
+                  </div>
+                  <div className="form-group">
+                    <label htmlFor="horaFin">Horario Previsto Fin (+90m)</label>
+                    <input
+                      type="time"
+                      id="horaFin"
+                      className="form-control"
+                      value={horaFin}
+                      onChange={(e) => setHoraFin(e.target.value)}
                     />
                   </div>
                   <div className="form-group">
@@ -679,7 +744,21 @@ export default function ABMReuniones({ onBack, onSaveSuccess }) {
                     )}
                   </div>
                   <div className="form-group">
-                    <label htmlFor="barrio">Barrio</label>
+                    <label htmlFor="barrioEvento">Barrio del Evento (Lugar Físico)</label>
+                    <select
+                      id="barrioEvento"
+                      className="form-control"
+                      value={barrioEvento}
+                      onChange={(e) => setBarrioEvento(e.target.value)}
+                    >
+                      <option value="">-- Seleccionar Barrio Físico del Evento --</option>
+                      {BARRIOS.filter(b => b !== 'Convocatoria Comunal').map(b => (
+                        <option key={b} value={b}>{b}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="form-group">
+                    <label htmlFor="barrio">Barrio Visitado / Convocatoria</label>
                     <select
                       id="barrio"
                       className="form-control"
@@ -825,6 +904,235 @@ export default function ABMReuniones({ onBack, onSaveSuccess }) {
                   )}
                 </div>
 
+                {/* --- SECCIÓN COBERTURA Y PLANIFICACIÓN (REUNIÓN DE MAÑANA) --- */}
+                <div style={{ marginTop: '1.5rem', marginBottom: '1.5rem', padding: '16px', backgroundColor: '#F8FAFC', borderRadius: '8px', border: '1px solid #E2E8F0' }}>
+                  <h4 style={{ margin: '0 0 14px 0', fontSize: '0.95rem', color: 'var(--color-primary)', fontWeight: '700', borderBottom: '1px solid #E2E8F0', paddingBottom: '6px' }}>
+                    📋 Planificación y Cobertura (Reunión de Mañana / Ficha Técnica)
+                  </h4>
+
+                  {/* 1. Funcionarios Acompañantes (Texto Libre) */}
+                  <div className="form-group">
+                    <label style={{ fontWeight: '600' }}>Funcionarios Acompañantes</label>
+                    <input
+                      type="text"
+                      className="form-control"
+                      placeholder="Ingresá o pegá funcionarios acompañantes de cualquier jerarquía..."
+                      value={funcionariosAcompanantes}
+                      onChange={(e) => setFuncionariosAcompanantes(e.target.value)}
+                    />
+                  </div>
+
+                  {/* 2. Responsable / Equipo de Cercanía (Multi-select) */}
+                  <div className="form-group" style={{ position: 'relative' }} ref={dropdownCercaniaRef}>
+                    <label style={{ fontWeight: '600' }}>Responsable del Equipo (Cercanía)</label>
+                    <div 
+                      onClick={() => setShowCercaniaDropdown(!showCercaniaDropdown)}
+                      style={{ 
+                        border: '1px solid var(--color-border)', 
+                        borderRadius: 'var(--border-radius)', 
+                        minHeight: '38px', 
+                        cursor: 'pointer',
+                        display: 'flex',
+                        flexWrap: 'wrap',
+                        gap: '6px',
+                        alignItems: 'center',
+                        padding: '4px 8px',
+                        backgroundColor: '#FFFFFF'
+                      }}
+                    >
+                      {selectedEquipoCercania.length === 0 ? (
+                        <span style={{ color: 'var(--color-text-muted)', fontSize: '0.85rem' }}>Seleccioná integrantes de Cercanía...</span>
+                      ) : (
+                        selectedEquipoCercania.map(r => (
+                          <span 
+                            key={r.id} 
+                            style={{ 
+                              backgroundColor: '#EFF6FF', 
+                              color: '#1D4ED8', 
+                              border: '1px solid #BFDBFE',
+                              padding: '2px 8px', 
+                              borderRadius: '12px', 
+                              fontSize: '0.75rem', 
+                              fontWeight: '600', 
+                              display: 'inline-flex', 
+                              alignItems: 'center', 
+                              gap: '4px' 
+                            }}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setSelectedEquipoCercania(prev => prev.filter(x => x.id !== r.id));
+                            }}
+                          >
+                            {r.nombre_completo} {r.telefono ? `(${r.telefono})` : ''}
+                            <span style={{ cursor: 'pointer', marginLeft: '2px', fontWeight: 'bold' }}>×</span>
+                          </span>
+                        ))
+                      )}
+                    </div>
+                    
+                    {showCercaniaDropdown && (
+                      <div 
+                        style={{ 
+                          position: 'absolute', 
+                          top: '100%', 
+                          left: 0, 
+                          right: 0, 
+                          backgroundColor: '#FFFFFF', 
+                          border: '1px solid var(--color-border)', 
+                          borderRadius: 'var(--border-radius)', 
+                          boxShadow: '0 4px 6px rgba(0,0,0,0.1)', 
+                          zIndex: 50, 
+                          maxHeight: '200px', 
+                          overflowY: 'auto',
+                          marginTop: '4px',
+                          padding: '4px'
+                        }}
+                      >
+                        <div style={{ padding: '4px', borderBottom: '1px solid var(--color-border)', backgroundColor: '#F8FAFC' }}>
+                          <input
+                            type="text"
+                            placeholder="🔍 Buscar integrante de Cercanía..."
+                            value={cercaniaSearchTerm}
+                            onChange={(e) => setCercaniaSearchTerm(e.target.value)}
+                            onClick={(e) => e.stopPropagation()}
+                            style={{ width: '100%', padding: '6px 10px', fontSize: '0.85rem', border: '1px solid var(--color-border)', borderRadius: '4px', outline: 'none' }}
+                          />
+                        </div>
+                        {equipoCercaniaList.filter(r => r.nombre_completo?.toLowerCase().includes(cercaniaSearchTerm.toLowerCase())).map(r => {
+                          const isSelected = selectedEquipoCercania.some(x => x.id === r.id);
+                          return (
+                            <div 
+                              key={r.id} 
+                              onClick={() => {
+                                if (isSelected) {
+                                  setSelectedEquipoCercania(prev => prev.filter(x => x.id !== r.id));
+                                } else {
+                                  setSelectedEquipoCercania(prev => [...prev, r]);
+                                }
+                              }}
+                              style={{ padding: '8px 12px', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'space-between', backgroundColor: isSelected ? '#F0F9FF' : 'transparent', borderBottom: '1px solid #F1F5F9', fontSize: '0.85rem' }}
+                            >
+                              <span>{r.nombre_completo} {r.telefono ? <small style={{ color: '#64748B' }}>({r.telefono})</small> : ''}</span>
+                              <input type="checkbox" checked={isSelected} readOnly />
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* 3. Integrantes Asignados (Multi-select / Buscador) */}
+                  <div className="form-group" style={{ position: 'relative' }} ref={dropdownIntegrantesRef}>
+                    <label style={{ fontWeight: '600' }}>Integrantes Asignados (Agentes de Territorio)</label>
+                    <div 
+                      onClick={() => setShowIntegrantesDropdown(!showIntegrantesDropdown)}
+                      style={{ 
+                        border: '1px solid var(--color-border)', 
+                        borderRadius: 'var(--border-radius)', 
+                        minHeight: '38px', 
+                        cursor: 'pointer',
+                        display: 'flex',
+                        flexWrap: 'wrap',
+                        gap: '6px',
+                        alignItems: 'center',
+                        padding: '4px 8px',
+                        backgroundColor: '#FFFFFF'
+                      }}
+                    >
+                      {selectedIntegrantes.length === 0 ? (
+                        <span style={{ color: 'var(--color-text-muted)', fontSize: '0.85rem' }}>Seleccioná integrantes asignados...</span>
+                      ) : (
+                        selectedIntegrantes.map(a => (
+                          <span 
+                            key={a.id} 
+                            style={{ 
+                              backgroundColor: '#FEF3C7', 
+                              color: '#92400E', 
+                              border: '1px solid #FDE68A',
+                              padding: '2px 8px', 
+                              borderRadius: '12px', 
+                              fontSize: '0.75rem', 
+                              fontWeight: '600', 
+                              display: 'inline-flex', 
+                              alignItems: 'center', 
+                              gap: '4px' 
+                            }}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setSelectedIntegrantes(prev => prev.filter(x => x.id !== a.id));
+                            }}
+                          >
+                            {a.nombre_completo}
+                            <span style={{ cursor: 'pointer', marginLeft: '2px', fontWeight: 'bold' }}>×</span>
+                          </span>
+                        ))
+                      )}
+                    </div>
+                    
+                    {showIntegrantesDropdown && (
+                      <div 
+                        style={{ 
+                          position: 'absolute', 
+                          top: '100%', 
+                          left: 0, 
+                          right: 0, 
+                          backgroundColor: '#FFFFFF', 
+                          border: '1px solid var(--color-border)', 
+                          borderRadius: 'var(--border-radius)', 
+                          boxShadow: '0 4px 6px rgba(0,0,0,0.1)', 
+                          zIndex: 50, 
+                          maxHeight: '200px', 
+                          overflowY: 'auto',
+                          marginTop: '4px',
+                          padding: '4px'
+                        }}
+                      >
+                        <div style={{ padding: '4px', borderBottom: '1px solid var(--color-border)', backgroundColor: '#F8FAFC' }}>
+                          <input
+                            type="text"
+                            placeholder="🔍 Buscar integrante de territorio..."
+                            value={integrantesSearchTerm}
+                            onChange={(e) => setIntegrantesSearchTerm(e.target.value)}
+                            onClick={(e) => e.stopPropagation()}
+                            style={{ width: '100%', padding: '6px 10px', fontSize: '0.85rem', border: '1px solid var(--color-border)', borderRadius: '4px', outline: 'none' }}
+                          />
+                        </div>
+                        {agentesList.filter(a => a.nombre_completo?.toLowerCase().includes(integrantesSearchTerm.toLowerCase())).map(a => {
+                          const isSelected = selectedIntegrantes.some(x => x.id === a.id);
+                          return (
+                            <div 
+                              key={a.id} 
+                              onClick={() => {
+                                if (isSelected) {
+                                  setSelectedIntegrantes(prev => prev.filter(x => x.id !== a.id));
+                                } else {
+                                  setSelectedIntegrantes(prev => [...prev, a]);
+                                }
+                              }}
+                              style={{ padding: '8px 12px', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'space-between', backgroundColor: isSelected ? '#FEF3C7' : 'transparent', borderBottom: '1px solid #F1F5F9', fontSize: '0.85rem' }}
+                            >
+                              <span>{a.nombre_completo} {a.equipo ? <small style={{ color: '#64748B' }}>({a.equipo})</small> : ''}</span>
+                              <input type="checkbox" checked={isSelected} readOnly />
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* 4. Estado / Observaciones de Preparación */}
+                  <div className="form-group" style={{ marginBottom: 0 }}>
+                    <label style={{ fontWeight: '600' }}>📅 Cierre de Inscripción / Observaciones de Preparación</label>
+                    <textarea
+                      className="form-control"
+                      rows="2"
+                      placeholder="Ej: Formulario de inscripción cierra el Jueves 12/08 a las 12:00 hs. Anotaciones previas..."
+                      value={observacionesPreparacion}
+                      onChange={(e) => setObservacionesPreparacion(e.target.value)}
+                    />
+                  </div>
+                </div>
+
                 <div className="form-group">
                   <label htmlFor="observaciones">Observaciones / Arreglo Histórico</label>
                   <textarea
@@ -914,14 +1222,6 @@ export default function ABMReuniones({ onBack, onSaveSuccess }) {
                       onClick={triggerFileSelect}
                     >
                       Seleccionar Archivo
-                    </button>
-                    <button
-                      type="button"
-                      className="btn btn-primary btn-sm"
-                      onClick={handleSimulateImport}
-                      disabled={importStatus === 'loading'}
-                    >
-                      Simular Datos Mock
                     </button>
                   </div>
 

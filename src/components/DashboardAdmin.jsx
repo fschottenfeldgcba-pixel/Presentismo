@@ -471,6 +471,15 @@ ${oradoresEfectivos.length > 0
       return 'hoy';
     }
     
+    const tomorrow = new Date(today);
+    tomorrow.setDate(today.getDate() + 1);
+    tomorrow.setHours(0, 0, 0, 0);
+
+    // 2. ¿Mañana?
+    if (meetingDate.getTime() === tomorrow.getTime()) {
+      return 'manana';
+    }
+    
     // 2. ¿Esta semana (Lunes a Domingo)?
     const dayOfWeek = today.getDay();
     const diffToMonday = dayOfWeek === 0 ? -6 : 1 - dayOfWeek;
@@ -506,6 +515,237 @@ ${oradoresEfectivos.length > 0
     }
     
     return 'historicas';
+  };
+
+  const formatArrayOrString = (val, fallback = '') => {
+    if (!val) return fallback;
+    if (Array.isArray(val)) return val.length > 0 ? val.join(', ') : fallback;
+    if (typeof val === 'string') return val.trim() || fallback;
+    return fallback;
+  };
+
+  const calculateEndTimeStr = (timeStr, minutesToAdd = 90) => {
+    if (!timeStr) return '18:30';
+    const parts = timeStr.split(':');
+    if (parts.length < 2) return '18:30';
+    const h = parseInt(parts[0], 10);
+    const m = parseInt(parts[1], 10);
+    if (isNaN(h) || isNaN(m)) return '18:30';
+    const totalMins = h * 60 + m + minutesToAdd;
+    const newH = Math.floor(totalMins / 60) % 24;
+    const newM = totalMins % 60;
+    return `${newH.toString().padStart(2, '0')}:${newM.toString().padStart(2, '0')}`;
+  };
+
+  const copyWhatsAppManana = (r) => {
+    const displayFecha = r.fecha ? r.fecha.split('-').reverse().join('/') : '';
+    const horaIni = r.hora_inicio_real || '17:00';
+    const horaFin = (r.hora_fin_real && r.hora_fin_real !== r.hora_inicio_real && r.hora_fin_real !== '19:00')
+      ? r.hora_fin_real
+      : calculateEndTimeStr(horaIni, 90);
+
+    const comunaStr = r.comuna || 'Sin especificar';
+    const barrioStr = r.barrio || 'Convocatoria Comunal';
+    const lugarStr = r.lugar ? r.lugar.trim() : 'Sin especificar';
+    
+    const inscriptosCount = r.totalInscriptos || 0;
+    const encabezaStr = r.funcionario || 'Sin especificar';
+    const acompanantesStr = formatArrayOrString(r.funcionarios_acompanantes, 'Sin acompañantes especificados');
+    
+    let responsableStr = 'Sin responsable asignado';
+    if (r.equipo_cercania) {
+      responsableStr = `${r.equipo_cercania.nombre_completo}${r.equipo_cercania.telefono ? ` (${r.equipo_cercania.telefono})` : ''}`;
+    } else if (r.responsable_cercania_id) {
+      const match = DEFAULT_EQUIPO_CERCANIA.find(x => x.id === r.responsable_cercania_id);
+      if (match) responsableStr = match.nombre_completo;
+    }
+    
+    const integrantesStr = formatArrayOrString(r.integrantes_asignados, 'Sin integrantes asignados');
+    const obsStr = r.observaciones_preparacion || 'Sin especificación';
+
+    const text = `📋 *Planificación Semanal de Reuniones y Cobertura*
+📌 *${r.nombre || 'Reunión'}*
+📅 ${displayFecha}, de ${horaIni} a ${horaFin} hs
+Comuna convocada: ${comunaStr}
+Barrio convocado: ${barrioStr}
+📍 Dirección del encuentro: ${lugarStr}
+
+1️⃣ *Inscriptos Confirmados:* ${inscriptosCount}
+2️⃣ *Encabeza:* ${encabezaStr}
+3️⃣ *Acompañantes:* ${acompanantesStr}
+4️⃣ *Responsable del Equipo:* ${responsableStr}
+5️⃣ *Integrantes Asignados:* ${integrantesStr}
+6️⃣ *Tareas a Realizar de los Integrantes Asignados:*
+Las tareas se designan en territorio por parte del moderador. Las tareas a realizar por los agentes incluyen:
+• Acreditación / Toma de Asistencia
+• Recepción y Anfitrión de las reuniones. Entrega, recepción y escaneo de fichas de reclamo: Asesoramiento a los vecinos para completar.
+• Chequeo de fichas completadas vs oradores
+• Toma de minuta de oradores
+• Fotografía de los 4 ángulos al inicio de la reunión
+
+7️⃣ *Cierre del formulario de inscripción:*
+${obsStr}`;
+
+    navigator.clipboard.writeText(text);
+    alert('📋 ¡Planificación de la reunión copiada al portapapeles!');
+  };
+
+  const generatePDFPrevio = async (r) => {
+    try {
+      let jspdfObj = window.jspdf;
+      if (!jspdfObj) {
+        await new Promise((resolve, reject) => {
+          const s = document.createElement('script');
+          s.src = 'https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js';
+          s.onload = () => resolve();
+          s.onerror = reject;
+          document.body.appendChild(s);
+        });
+        jspdfObj = window.jspdf;
+      }
+
+      if (!jspdfObj || !jspdfObj.jsPDF) {
+        alert('No se pudo cargar la librería PDF. Reintente en un instante.');
+        return;
+      }
+
+      const { jsPDF } = jspdfObj;
+      const doc = new jsPDF();
+
+      // Header Banner Institutional
+      doc.setFillColor(15, 23, 42); // #0F172A
+      doc.rect(0, 0, 210, 24, 'F');
+
+      doc.setTextColor(255, 255, 255);
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(13);
+      doc.text('GOBIERNO DE LA CIUDAD DE BUENOS AIRES', 14, 11);
+
+      doc.setFontSize(8.5);
+      doc.setFont('helvetica', 'normal');
+      doc.text('SISTEMA CENTRAL DE PRESENTISMO Y COBERTURA TERRITORIAL', 14, 18);
+
+      let y = 34;
+      doc.setTextColor(15, 23, 42);
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(13);
+      doc.text('FICHA TÉCNICA Y PLANIFICACIÓN DE REUNIÓN', 14, y);
+      y += 7;
+
+      doc.setFontSize(10.5);
+      doc.setTextColor(13, 148, 136); // #0D9488
+      const splitNombre = doc.splitTextToSize(r.nombre || 'Reunión sin nombre', 180);
+      doc.text(splitNombre, 14, y);
+      y += (splitNombre.length * 5) + 3;
+
+      // Line separator
+      doc.setDrawColor(226, 232, 240);
+      doc.setLineWidth(0.5);
+      doc.line(14, y, 196, y);
+      y += 7;
+
+      // Section 1: Datos de la Reunión
+      doc.setFontSize(10.5);
+      doc.setFont('helvetica', 'bold');
+      doc.setTextColor(15, 23, 42);
+      doc.text('1. Datos Generales y Ubicación', 14, y);
+      y += 6;
+
+      const displayFecha = r.fecha ? r.fecha.split('-').reverse().join('/') : '';
+      const horaIni = r.hora_inicio_real || '17:00';
+      const horaFin = r.hora_fin_real || '19:00';
+      const lugarStr = [r.lugar, r.barrio, r.comuna].filter(Boolean).join(', ');
+
+      doc.setFontSize(9);
+      doc.setFont('helvetica', 'normal');
+      doc.text(`• Fecha y Horario: ${displayFecha}, de ${horaIni} a ${horaFin} hs`, 18, y); y += 5;
+      
+      const splitUbicacion = doc.splitTextToSize(`• Ubicación: ${lugarStr}`, 175);
+      doc.text(splitUbicacion, 18, y);
+      y += (splitUbicacion.length * 5);
+      
+      doc.text(`• Asistentes Confirmados: ${r.totalInscriptos || 0} inscriptos`, 18, y); y += 8;
+
+      // Section 2: Autoridades y Equipo
+      doc.setFontSize(10.5);
+      doc.setFont('helvetica', 'bold');
+      doc.text('2. Autoridades y Cobertura Asignada', 14, y);
+      y += 6;
+
+      const encabezaStr = r.funcionario || 'Sin especificar';
+      const acompanantesStr = formatArrayOrString(r.funcionarios_acompanantes, 'Sin acompañantes especificados');
+      let responsableStr = 'Sin responsable asignado';
+      if (r.equipo_cercania) {
+        responsableStr = `${r.equipo_cercania.nombre_completo}${r.equipo_cercania.telefono ? ` (${r.equipo_cercania.telefono})` : ''}`;
+      }
+      const integrantesStr = formatArrayOrString(r.integrantes_asignados, 'Sin integrantes asignados');
+
+      doc.setFontSize(9);
+      doc.setFont('helvetica', 'normal');
+      doc.text(`• Encabeza: ${encabezaStr}`, 18, y); y += 5;
+      
+      const splitAcompanantes = doc.splitTextToSize(`• Acompañantes: ${acompanantesStr}`, 175);
+      doc.text(splitAcompanantes, 18, y);
+      y += (splitAcompanantes.length * 5);
+      
+      doc.text(`• Responsable del Equipo: ${responsableStr}`, 18, y); y += 5;
+      
+      const splitIntegrantes = doc.splitTextToSize(`• Integrantes Asignados: ${integrantesStr}`, 175);
+      doc.text(splitIntegrantes, 18, y);
+      y += (splitIntegrantes.length * 5) + 3;
+
+      // Section 3: Tareas a Realizar por Integrantes
+      doc.setFontSize(10.5);
+      doc.setFont('helvetica', 'bold');
+      doc.text('3. Tareas a Realizar por los Agentes Asignados', 14, y);
+      y += 6;
+
+      doc.setFontSize(8.5);
+      doc.setFont('helvetica', 'italic');
+      doc.text('Las tareas se designan en territorio por parte del moderador e incluyen:', 18, y);
+      y += 5;
+
+      doc.setFont('helvetica', 'normal');
+      const tasks = [
+        'Acreditación / Toma de Asistencia',
+        'Recepción y Anfitrión de las reuniones. Entrega, recepción y escaneo de fichas de reclamo: Asesoramiento a los vecinos para completar.',
+        'Chequeo de fichas completadas vs oradores',
+        'Toma de minuta de oradores',
+        'Fotografía de los 4 ángulos al inicio de la reunión'
+      ];
+
+      tasks.forEach(task => {
+        const splitTask = doc.splitTextToSize(`• ${task}`, 170);
+        doc.text(splitTask, 20, y);
+        y += (splitTask.length * 4.5);
+      });
+      y += 4;
+
+      // Section 4: Estado / Observaciones
+      doc.setFontSize(10.5);
+      doc.setFont('helvetica', 'bold');
+      doc.text('4. Estado / Observaciones de Preparación', 14, y);
+      y += 6;
+
+      const obsStr = r.observaciones_preparacion || 'Sin observaciones';
+      doc.setFontSize(9);
+      doc.setFont('helvetica', 'normal');
+      const splitObs = doc.splitTextToSize(obsStr, 175);
+      doc.text(splitObs, 18, y);
+      y += (splitObs.length * 5) + 8;
+
+      // Footer
+      doc.setFontSize(8);
+      doc.setFont('helvetica', 'italic');
+      doc.setTextColor(148, 163, 184);
+      doc.text('Documento oficial generado automáticamente por el Sistema Central de Presentismo y Cobertura.', 14, 285);
+
+      const fileName = `Ficha_Previa_${(r.nombre || 'reunion').replace(/[^a-zA-Z0-9]/g, '_')}.pdf`;
+      doc.save(fileName);
+    } catch (err) {
+      console.error(err);
+      alert('Error al generar la Ficha Técnica PDF.');
+    }
   };
 
   // Renderizador genérico de sección de tabla de reuniones
@@ -626,6 +866,15 @@ ${oradoresEfectivos.length > 0
                         </a>
                         {isCercaniaOrGerencia && (
                           <>
+                            <button
+                              type="button"
+                              onClick={() => copyWhatsAppManana(r)}
+                              className="btn btn-secondary btn-sm"
+                              title="Copiar WhatsApp Planificación y Cobertura"
+                              style={{ padding: '3px 6px', display: 'flex', alignItems: 'center', gap: '3px', fontSize: '0.7rem', backgroundColor: '#F0FDF4', color: '#15803D', border: '1px solid #BBF7D0' }}
+                            >
+                              📋 WhatsApp
+                            </button>
                             <a 
                               href={`?view=administrar_reunion&reunion_id=${r.id}`}
                               target="_blank"
@@ -727,10 +976,10 @@ ${oradoresEfectivos.length > 0
       setHasMoreReuniones(false);
     }
 
-    // Clasificar cuáles de la lista son de hoy, de esta semana o de la próxima semana
+    // Clasificar cuáles de la lista son de hoy, de mañana, de esta semana o de la próxima semana
     const filtered = (list || []).filter(r => {
       const cat = getMeetingCategory(r.fecha);
-      return cat === 'hoy' || cat === 'semana' || cat === 'proxima_semana';
+      return cat === 'hoy' || cat === 'manana' || cat === 'semana' || cat === 'proxima_semana';
     });
 
     // Si está vacío y no estamos en modo histórico, tomar las 5 reuniones más recientes para evitar pantalla en blanco
@@ -1407,6 +1656,13 @@ ${oradoresEfectivos.length > 0
   const handleExportInscriptosToExcel = async () => {
     if (inscriptosList.length === 0 || !selectedReunionInscriptos) return;
     
+    // Filtrar SOLO a los vecinos asistentes
+    const asistentesList = inscriptosList.filter(item => item.asistio === true);
+    if (asistentesList.length === 0) {
+      alert('No hay asistentes confirmados para exportar en esta reunión.');
+      return;
+    }
+
     // Obtener los oradores de esta reunión para mapear minutas/temas planteados
     let oradoresMap = {};
     try {
@@ -1422,34 +1678,68 @@ ${oradoresEfectivos.length > 0
       console.error('Error al obtener oradores para exportación XLS:', err);
     }
 
-    // Preparar filas para el Excel con las 13 columnas desglosadas en el orden solicitado
-    const dataToExport = inscriptosList.map(item => {
+    // Consultar asistencias históricas en otras reuniones para los asistentes desde inscripciones_asistencias
+    const dnis = asistentesList.map(item => item.vecino?.dni || item.vecino_id).filter(Boolean);
+    let recurrentesDniSet = new Set();
+    
+    if (dnis.length > 0) {
+      try {
+        const chunkSize = 100;
+        for (let i = 0; i < dnis.length; i += chunkSize) {
+          const chunkDnis = dnis.slice(i, i + chunkSize);
+          const { data: histData } = await supabase
+            .from('inscripciones_asistencias')
+            .select('vecino_id, reunion_id')
+            .eq('asistio', true)
+            .neq('reunion_id', selectedReunionInscriptos.id)
+            .in('vecino_id', chunkDnis);
+
+          if (histData && Array.isArray(histData)) {
+            histData.forEach(h => {
+              if (h.vecino_id && h.reunion_id !== selectedReunionInscriptos.id) {
+                recurrentesDniSet.add(h.vecino_id);
+              }
+            });
+          }
+        }
+      } catch (err) {
+        console.error('Error al consultar historial de asistencias para exportación:', err);
+      }
+    }
+
+    // Preparar filas para el Excel en el orden y formato exacto solicitado
+    const isPrimeraPersona = selectedReunionInscriptos.tipo_reunion === TIPOS_REUNION.PRIMERA_PERSONA;
+
+    const dataToExport = asistentesList.map(item => {
       const dniVal = item.vecino?.dni || item.vecino_id || '';
-      const temaOrador = oradoresMap[dniVal] || (item.vecino_id ? oradoresMap[item.vecino_id] : '') || '';
+      const isRecurrente = recurrentesDniSet.has(dniVal) || recurrentesDniSet.has(item.vecino_id);
+      const vezStr = isRecurrente ? 'Recurrente' : '1ª Vez';
+      const temaOrador = oradoresMap[dniVal] || (item.vecino_id ? oradoresMap[item.vecino_id] : '') || item.tema_previo || selectedReunionInscriptos.tema || '';
 
       return {
-        'Fecha de la reunion': selectedReunionInscriptos.fecha || '',
-        'Tipo de reunion': selectedReunionInscriptos.tipo_reunion || '',
-        'Funcionario': selectedReunionInscriptos.funcionario || '',
-        'Comuna de la reunion': selectedReunionInscriptos.comuna || '',
-        'Barrio donde fue la reunion': selectedReunionInscriptos.barrio || 'Convocatoria Comunal',
-        'Nombre completo de la reunion': selectedReunionInscriptos.nombre || '',
-        'DNI': dniVal,
-        'Nombre': item.vecino?.nombre || '',
-        'Apellido': item.vecino?.apellido || '',
-        'Mail': item.vecino?.email || '',
-        'Telefono': item.vecino?.celular || '',
-        'Asistio (SI / NO)': item.asistio ? 'SI' : 'NO',
-        'Tema planteado (en caso que haya sido orador)': temaOrador
+        'fecha': selectedReunionInscriptos.fecha || '',
+        'comuna': selectedReunionInscriptos.comuna || '',
+        'medio': item.como_se_entero || item.vecino?.como_se_entero || '',
+        'vez': vezStr,
+        'nombre': item.vecino?.nombre || '',
+        'apellido': item.vecino?.apellido || '',
+        'dni': dniVal,
+        'email': item.vecino?.email || '',
+        'telefono': item.vecino?.celular || '',
+        'campaña': item.invitado_por || item.campana || '',
+        'funcionario': selectedReunionInscriptos.funcionario || '',
+        'barrio': selectedReunionInscriptos.barrio_evento || selectedReunionInscriptos.barrio || item.vecino?.barrio || '',
+        'tema': temaOrador,
+        'personalidad': isPrimeraPersona ? (selectedReunionInscriptos.tema || selectedReunionInscriptos.funcionario || '') : ''
       };
     });
 
     const worksheet = XLSX.utils.json_to_sheet(dataToExport);
     const workbook = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(workbook, worksheet, 'Inscriptos');
+    XLSX.utils.book_append_sheet(workbook, worksheet, 'Asistentes');
     
     const cleanName = selectedReunionInscriptos.nombre.replace(/[^a-zA-Z0-9]/g, '_');
-    const fileName = `Inscriptos_${cleanName}.xlsx`;
+    const fileName = `Asistentes_${cleanName}.xlsx`;
     XLSX.writeFile(workbook, fileName);
   };
 
@@ -3078,17 +3368,19 @@ ${oradoresEfectivos.length > 0
               }
 
               const hoy = filtered.filter(r => getMeetingCategory(r.fecha) === 'hoy');
+              const manana = filtered.filter(r => getMeetingCategory(r.fecha) === 'manana');
               const semana = filtered.filter(r => getMeetingCategory(r.fecha) === 'semana');
               const proximaSemana = filtered.filter(r => getMeetingCategory(r.fecha) === 'proxima_semana');
               const mes = showHistorical ? filtered.filter(r => getMeetingCategory(r.fecha) === 'mes') : [];
               const historicas = showHistorical ? filtered.filter(r => getMeetingCategory(r.fecha) === 'historicas') : [];
               
-              // Si no se muestra histórico y no hay reuniones de hoy, esta semana ni la próxima semana, mostramos las recientes
-              const recientes = (!showHistorical && hoy.length === 0 && semana.length === 0 && proximaSemana.length === 0) ? filtered : [];
+              // Si no se muestra histórico y no hay reuniones de hoy, mañana, esta semana ni la próxima semana, mostramos las recientes
+              const recientes = (!showHistorical && hoy.length === 0 && manana.length === 0 && semana.length === 0 && proximaSemana.length === 0) ? filtered : [];
 
               return (
                 <>
                   {renderMeetingTableSection('Reuniones de HOY', '📅', hoy, true)}
+                  {renderMeetingTableSection('Reuniones de MAÑANA', '🌅', manana, true)}
                   {renderMeetingTableSection('Reuniones de esta semana', '🗓️', semana, true)}
                   {renderMeetingTableSection('Reuniones de la PRÓXIMA SEMANA', '🚀', proximaSemana, true)}
                   {renderMeetingTableSection('Reuniones Recientes', '⏱️', recientes)}

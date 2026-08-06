@@ -179,6 +179,7 @@ export default function CentralInformes({ user, onBack }) {
   // Filtros de gráficos
   const [minFrequency, setMinFrequency] = useState(1);
   const [selectedWord, setSelectedWord] = useState(null);
+  const [searchWordInput, setSearchWordInput] = useState('');
   const [chartGranularity, setChartGranularity] = useState('Semanal');
   const [semaforoViewMode, setSemaforoViewMode] = useState('matrix');
   const [selectedComunaChart, setSelectedComunaChart] = useState('TODAS');
@@ -430,15 +431,100 @@ export default function CentralInformes({ user, onBack }) {
       .slice(0, 10);
   }, [wordCloudDataB, frasesRawB, isComparing]);
 
-  const getFrasesForWord = (word) => {
+  const getFrasesForWord = (word, group = 'A') => {
     const frases = [];
-    frasesRaw.forEach(o => {
-      const txt = o.tema_efectivo || o.tema_original || o.transcripcion_texto;
+    const raw = group === 'A' ? frasesRaw : frasesRawB;
+    const wordClean = word.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+    (raw || []).forEach(o => {
+      const txt = o.tema_efectivo || o.tema_original || o.transcripcion_texto || '';
       if (!txt) return;
       const clean = txt.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
-      if (clean.includes(word)) frases.push(txt);
+      if (clean.includes(wordClean)) frases.push(txt);
     });
     return [...new Set(frases)].slice(0, 20); // Top 20 frases únicas
+  };
+
+  const getVecinosForWord = (word, group = 'A') => {
+    const matched = [];
+    const seenVecinos = new Set();
+    const wordClean = word.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+
+    const oRaw = group === 'A' ? oradoresRaw : oradoresRawB;
+    const iRaw = group === 'A' ? inscripcionesRaw : inscripcionesRawB;
+    const vList = group === 'A' ? allVecinos : allVecinosB;
+
+    (oRaw || []).forEach(o => {
+      const txt = o.tema_efectivo || o.tema_original || '';
+      if (!txt) return;
+      const clean = txt.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+      if (clean.includes(wordClean)) {
+        const v = vList.find(vec => String(vec.dni).trim() === String(o.vecino_id).trim());
+        if (v) {
+          const key = `${v.dni}-${txt}`;
+          if (!seenVecinos.has(key)) {
+            seenVecinos.add(key);
+            matched.push({
+              vecino: v,
+              tema: txt,
+              reunion_id: o.reunion_id,
+              tipo: 'General'
+            });
+          }
+        }
+      }
+    });
+
+    (iRaw || []).forEach(i => {
+      const txt = i.tema_previo || '';
+      if (!txt) return;
+      const clean = txt.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+      if (clean.includes(wordClean)) {
+        const v = vList.find(vec => String(vec.dni).trim() === String(i.vecino_id).trim());
+        if (v) {
+          const key = `${v.dni}-${txt}`;
+          if (!seenVecinos.has(key)) {
+            seenVecinos.add(key);
+            matched.push({
+              vecino: v,
+              tema: txt,
+              reunion_id: i.reunion_id,
+              tipo: 'Uno a Uno'
+            });
+          }
+        }
+      }
+    });
+
+    return matched;
+  };
+
+  const handleExportWordVecinos = (word, group = 'A') => {
+    const list = getVecinosForWord(word, group);
+    if (list.length === 0) return alert('No hay vecinos registrados con esta temática en el período.');
+    
+    const headers = ['DNI', 'Nombre', 'Apellido', 'Celular', 'Email', 'Comuna', 'Barrio', 'Reunión ID', 'Tipo Formato', 'Tema / Minuta'];
+    const rows = list.map(item => [
+      item.vecino.dni,
+      item.vecino.nombre,
+      item.vecino.apellido,
+      item.vecino.celular,
+      item.vecino.email,
+      item.vecino.comuna,
+      item.vecino.barrio,
+      item.reunion_id,
+      item.tipo,
+      item.tema
+    ]);
+
+    let csvContent = '\uFEFF' + headers.join(',') + '\n';
+    rows.forEach(r => { csvContent += r.map(c => `"${String(c || '').replace(/"/g, '""')}"`).join(',') + '\n' });
+    
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `vecinos_tema_${word.replace(/\s+/g, '_')}_grupo_${group}.csv`;
+    link.click();
   };
 
   const handleExportCSV = () => {
@@ -1756,37 +1842,142 @@ export default function CentralInformes({ user, onBack }) {
 
           {/* 3. DEMANDA CIUDADANA */}
           <div className="card" style={{ padding: '24px', marginBottom: '1.5rem', backgroundColor: '#F8FAFC' }}>
-            <h3 style={{ margin: '0 0 16px 0', fontSize: '1.2rem', display: 'flex', alignItems: 'center', gap: '8px', color: '#0F172A' }}>
-              <MessageSquare size={24} style={{ color: 'var(--color-highlight)' }} /> Demanda Ciudadana
-            </h3>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '10px', marginBottom: '16px', borderBottom: '1px solid #E2E8F0', paddingBottom: '12px' }}>
+              <h3 style={{ margin: 0, fontSize: '1.2rem', display: 'flex', alignItems: 'center', gap: '8px', color: '#0F172A', fontWeight: '700' }}>
+                <MessageSquare size={24} style={{ color: 'var(--color-highlight)' }} /> Demanda Ciudadana
+              </h3>
+              
+              <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                <input 
+                  type="text" 
+                  placeholder="🔍 Buscar palabra clave (ej: discapacidad)..." 
+                  value={searchWordInput} 
+                  onChange={(e) => setSearchWordInput(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && searchWordInput.trim()) {
+                      setSelectedWord(searchWordInput.trim());
+                    }
+                  }}
+                  style={{ 
+                    padding: '6px 12px', 
+                    fontSize: '0.85rem', 
+                    borderRadius: '6px', 
+                    border: '1px solid #CBD5E1', 
+                    minWidth: '260px',
+                    outline: 'none'
+                  }}
+                />
+                <button 
+                  onClick={() => {
+                    if (searchWordInput.trim()) {
+                      setSelectedWord(searchWordInput.trim());
+                    }
+                  }}
+                  className="btn btn-primary"
+                  style={{ fontSize: '0.85rem', padding: '6px 12px' }}
+                >
+                  Buscar
+                </button>
+                {(selectedWord || searchWordInput) && (
+                  <button 
+                    onClick={() => {
+                      setSelectedWord(null);
+                      setSearchWordInput('');
+                    }}
+                    className="btn btn-secondary"
+                    style={{ fontSize: '0.85rem', padding: '6px 12px' }}
+                  >
+                    Limpiar
+                  </button>
+                )}
+              </div>
+            </div>
             
             <div style={{ display: 'flex', gap: '20px', flexWrap: 'wrap' }}>
               <div style={{ flex: '2 1 400px', backgroundColor: '#FFF', borderRadius: '8px', padding: '16px', border: '1px solid #E2E8F0' }}>
                 <div style={{ textAlign: 'center', marginBottom: '12px' }}>
-                  {wordCloudData.slice(0, 35).map((w, i) => {
-                    const maxCount = wordCloudData[0].count;
-                    const size = 14 + (w.count / maxCount) * 26;
-                    return (
-                      <span key={i} onClick={() => setSelectedWord(w.text)} style={{
-                        fontSize: `${size}px`, fontWeight: 800, color: selectedWord === w.text ? '#14B8A6' : '#475569',
-                        margin: '0 8px', cursor: 'pointer', display: 'inline-block', lineHeight: 1.2
-                      }}>
-                        {w.text}
-                      </span>
-                    )
-                  })}
+                  {wordCloudData.length === 0 ? (
+                    <p style={{ color: '#64748B', fontStyle: 'italic', fontSize: '0.85rem' }}>No hay suficientes datos de oradores en este período.</p>
+                  ) : (
+                    wordCloudData.slice(0, 35).map((w, i) => {
+                      const maxCount = wordCloudData[0].count;
+                      const size = 14 + (w.count / maxCount) * 26;
+                      return (
+                        <span key={i} onClick={() => {
+                          setSelectedWord(w.text);
+                          setSearchWordInput(w.text);
+                        }} style={{
+                          fontSize: `${size}px`, fontWeight: 800, color: selectedWord && selectedWord.toLowerCase() === w.text.toLowerCase() ? '#14B8A6' : '#475569',
+                          margin: '0 8px', cursor: 'pointer', display: 'inline-block', lineHeight: 1.2
+                        }}>
+                          {w.text}
+                        </span>
+                      )
+                    })
+                  )}
                 </div>
               </div>
               
               <div style={{ flex: '1 1 300px', backgroundColor: '#FFF', borderRadius: '8px', padding: '16px', border: '1px solid #E2E8F0' }}>
                 {selectedWord ? (
-                  <>
-                    <h5 style={{ margin: '0 0 12px 0', color: '#0F172A' }}>Frases con "{selectedWord}":</h5>
-                    <ul style={{ margin: 0, paddingLeft: '20px', fontSize: '0.85rem', color: '#475569' }}>
-                      {getFrasesForWord(selectedWord).map((f, i) => <li key={i} style={{ marginBottom: '8px' }}>"{f}"</li>)}
-                    </ul>
-                    <button onClick={() => setSelectedWord(null)} className="btn btn-secondary" style={{ width: '100%', marginTop: '12px' }}>Ver Ranking</button>
-                  </>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+                    <div>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px', borderBottom: '1px solid #F1F5F9', paddingBottom: '4px' }}>
+                        <h5 style={{ margin: 0, color: '#0F172A', fontSize: '0.9rem', fontWeight: '700' }}>
+                          {isComparing ? `Grupo A: Menciones de "${selectedWord}"` : `Menciones de "${selectedWord}"`}
+                        </h5>
+                        <button 
+                          onClick={() => handleExportWordVecinos(selectedWord, 'A')} 
+                          className="btn btn-primary" 
+                          style={{ fontSize: '0.72rem', padding: '3px 8px', display: 'flex', alignItems: 'center', gap: '4px' }}
+                        >
+                          📥 XLS
+                        </button>
+                      </div>
+                      <ul style={{ margin: 0, paddingLeft: '20px', fontSize: '0.82rem', color: '#475569', maxHeight: '180px', overflowY: 'auto' }}>
+                        {getFrasesForWord(selectedWord, 'A').length === 0 ? (
+                          <li style={{ listStyleType: 'none', color: '#94A3B8', fontStyle: 'italic' }}>Sin menciones.</li>
+                        ) : (
+                          getFrasesForWord(selectedWord, 'A').map((f, i) => <li key={i} style={{ marginBottom: '6px' }}>"{f}"</li>)
+                        )}
+                      </ul>
+                    </div>
+
+                    {isComparing && (
+                      <div>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px', borderBottom: '1px solid #F1F5F9', paddingBottom: '4px' }}>
+                          <h5 style={{ margin: 0, color: '#0F172A', fontSize: '0.9rem', fontWeight: '700' }}>
+                            Grupo B: Menciones de "{selectedWord}"
+                          </h5>
+                          <button 
+                            onClick={() => handleExportWordVecinos(selectedWord, 'B')} 
+                            className="btn btn-primary" 
+                            style={{ fontSize: '0.72rem', padding: '3px 8px', display: 'flex', alignItems: 'center', gap: '4px' }}
+                          >
+                            📥 XLS
+                          </button>
+                        </div>
+                        <ul style={{ margin: 0, paddingLeft: '20px', fontSize: '0.82rem', color: '#475569', maxHeight: '180px', overflowY: 'auto' }}>
+                          {getFrasesForWord(selectedWord, 'B').length === 0 ? (
+                            <li style={{ listStyleType: 'none', color: '#94A3B8', fontStyle: 'italic' }}>Sin menciones.</li>
+                          ) : (
+                            getFrasesForWord(selectedWord, 'B').map((f, i) => <li key={i} style={{ marginBottom: '6px' }}>"{f}"</li>)
+                          )}
+                        </ul>
+                      </div>
+                    )}
+
+                    <button 
+                      onClick={() => {
+                        setSelectedWord(null);
+                        setSearchWordInput('');
+                      }} 
+                      className="btn btn-secondary" 
+                      style={{ width: '100%', marginTop: '6px' }}
+                    >
+                      Ver Ranking
+                    </button>
+                  </div>
                 ) : (
                   <div style={{ display: 'flex', gap: '16px', flexWrap: 'wrap' }}>
                     <div style={{ flex: 1, minWidth: '200px' }}>
@@ -1817,7 +2008,7 @@ export default function CentralInformes({ user, onBack }) {
                     {isComparing && (
                       <div style={{ flex: 1, minWidth: '200px' }}>
                         <h5 style={{ margin: '0 0 12px 0', color: '#0F172A', fontWeight: '700', fontSize: '0.95rem' }}>
-                          Top Preocupaciones (${labelB}):
+                          Top Preocupaciones ({labelB}):
                         </h5>
                         {topTopicsB.length === 0 ? (
                           <p style={{ color: '#475569', fontSize: '0.85rem', fontWeight: '500', margin: 0 }}>

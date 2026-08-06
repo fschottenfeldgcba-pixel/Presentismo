@@ -1112,6 +1112,19 @@ ${oradoresEfectivos.length > 0
     !oradores.some(o => o.vecino_id === a.vecino_id)
   );
 
+  // Calcular primera vez vs recurrentes para la barra de métricas de la UI
+  const uiPresentesList = (asistentes || []).filter(a => a.asistio);
+  let uiPrimerVezCount = 0;
+  let uiRecurrentesCount = 0;
+  uiPresentesList.forEach(a => {
+    const otras = vecinoStatsMap[a.vecino_id]?.otrasAsistencias || 0;
+    if (otras > 0) {
+      uiRecurrentesCount++;
+    } else {
+      uiPrimerVezCount++;
+    }
+  });
+
   return (
     <div className="container" style={{ paddingBottom: '4rem', maxWidth: '900px' }}>
       {/* Botón de volver */}
@@ -1557,8 +1570,18 @@ ${oradoresEfectivos.length > 0
             </div>
 
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', backgroundColor: '#F8FAFC', padding: '8px 12px', borderRadius: '6px', border: '1px solid #E2E8F0', flexWrap: 'wrap', gap: '8px' }}>
-              <span style={{ fontSize: '0.78rem', color: '#475569' }}>
-                📋 Inscriptos: <strong>{inscriptosCount}</strong> | 👥 Asistentes: <strong>{presentesCount} ({ratioAsistencia}%)</strong> | 📝 Oradores: <strong>{oradores.length}</strong>
+              <span style={{ fontSize: '0.78rem', color: '#475569', display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+                <span>📋 Inscriptos: <strong>{inscriptosCount}</strong></span>
+                <span style={{ color: '#CBD5E1' }}>|</span>
+                <span>👥 Asistentes: <strong>{presentesCount} ({ratioAsistencia}%)</strong></span>
+                <span style={{ backgroundColor: '#DCFCE7', color: '#15803D', border: '1px solid #86EFAC', padding: '1px 7px', borderRadius: '12px', fontSize: '0.74rem', fontWeight: '600', display: 'inline-flex', alignItems: 'center', gap: '3px' }}>
+                  🌱 1ª Vez: <strong>{uiPrimerVezCount}</strong>
+                </span>
+                <span style={{ backgroundColor: '#DBEAFE', color: '#1D4ED8', border: '1px solid #93C5FD', padding: '1px 7px', borderRadius: '12px', fontSize: '0.74rem', fontWeight: '600', display: 'inline-flex', alignItems: 'center', gap: '3px' }}>
+                  🔄 Recurrentes: <strong>{uiRecurrentesCount}</strong>
+                </span>
+                <span style={{ color: '#CBD5E1' }}>|</span>
+                <span>📝 Oradores: <strong>{oradores.length}</strong></span>
               </span>
               <button
                 className="btn btn-primary btn-sm"
@@ -1949,13 +1972,29 @@ ${oradoresEfectivos.length > 0
 
         
         {/* 4. YA EXPUSIERON / SE BAJARON (100% WIDTH) */}
-        <div className="card" style={{ margin: 0, backgroundColor: '#F8FAFC' }}>
-          <h3 style={{ fontSize: '1.1rem', color: 'var(--color-primary)', marginTop: 0, marginBottom: '1rem', display: 'flex', alignItems: 'center', gap: '8px', borderBottom: '1px solid var(--color-border)', paddingBottom: '8px', fontWeight: '700' }}>
-            <Check size={18} style={{ color: 'var(--color-success)' }} />
-            4. Ya expusieron / Se bajaron ({queueFinished.length})
-          </h3>
+        {(() => {
+          const oradoresEfectivosFinished = queueFinished.filter(o => o.estado === 'hablo');
+          const totalSegsFinished = oradoresEfectivosFinished.reduce((sum, o) => sum + (o.duracion_segundos || 0), 0);
+          const avgSegsFinished = oradoresEfectivosFinished.length > 0 ? Math.round(totalSegsFinished / oradoresEfectivosFinished.length) : 0;
+          const avgTimeStrFinished = formatSpeakerTime(avgSegsFinished);
 
-          {queueFinished.length > 0 ? (
+          const expusieronCount = oradoresEfectivosFinished.length;
+          const seBajaronCount = queueFinished.filter(o => o.estado === 'se_bajo' || o.estado === 'no_hablo').length;
+
+          return (
+            <div className="card" style={{ margin: 0, backgroundColor: '#F8FAFC' }}>
+              <h3 style={{ fontSize: '1.05rem', color: 'var(--color-primary)', marginTop: 0, marginBottom: '1rem', display: 'flex', alignItems: 'center', gap: '8px', borderBottom: '1px solid var(--color-border)', paddingBottom: '8px', fontWeight: '700', flexWrap: 'wrap' }}>
+                <Check size={18} style={{ color: 'var(--color-success)' }} />
+                <span>
+                  4. Ya expusieron: <strong style={{ color: 'var(--color-primary)' }}>{expusieronCount}</strong>
+                  {" - "}
+                  Se bajaron: <strong style={{ color: 'var(--color-primary)' }}>{seBajaronCount}</strong>
+                  {" - "}
+                  Tiempo Promedio: <strong style={{ color: 'var(--color-primary)' }}>{avgTimeStrFinished} min</strong>
+                </span>
+              </h3>
+
+              {queueFinished.length > 0 ? (
             <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', maxHeight: '250px', overflowY: 'auto' }}>
               {queueFinished.map(item => (
                 <div key={item.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', padding: '10px 12px', borderRadius: '8px', border: '1px solid #E2E8F0', backgroundColor: '#FFFFFF', fontSize: '0.85rem', boxShadow: '0 1px 2px rgba(0,0,0,0.02)', gap: '12px' }}>
@@ -2119,6 +2158,8 @@ ${oradoresEfectivos.length > 0
             </div>
           )}
         </div>
+      );
+    })()}
       </>
     )}
       {/* STACK VERTICAL DE COMPONENTES AL 100% ANCHO (SECCIÓN INFERIOR) */}

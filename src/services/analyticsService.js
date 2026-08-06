@@ -227,12 +227,19 @@ export const fetchDashboardData = async (filtros) => {
   const uniqueDnis = [...new Set([...inscripcionesActual.map(i => String(i.vecino_id).trim()), ...oradoresActual.map(o => String(o.vecino_id).trim())])].filter(Boolean);
   let vecinos = [];
   if (uniqueDnis.length > 0) {
-    const chunkSize = 500;
+    const chunkSize = 1000;
+    const promises = [];
     for (let i = 0; i < uniqueDnis.length; i += chunkSize) {
       const chunk = uniqueDnis.slice(i, i + chunkSize);
-      const { data } = await supabase.from('vecinos').select('dni, nombre, apellido, comuna, barrio, celular, email').in('dni', chunk);
-      if (data) vecinos = vecinos.concat(data);
+      promises.push(
+        supabase.from('vecinos').select('dni, nombre, apellido, comuna, barrio, celular, email').in('dni', chunk)
+      );
     }
+    const results = await Promise.all(promises);
+    results.forEach(({ data, error }) => {
+      if (error) throw error;
+      if (data) vecinos = vecinos.concat(data);
+    });
   }
   
   if (searchQuery) {
@@ -250,26 +257,32 @@ export const fetchDashboardData = async (filtros) => {
   let fielesDnis = new Set();
   
   if (asistentesDnis.length > 0) {
-    const chunkSize = 500;
+    const chunkSize = 1000;
+    const promises = [];
     for (let i = 0; i < asistentesDnis.length; i += chunkSize) {
       const chunk = asistentesDnis.slice(i, i + chunkSize);
-      const { data } = await supabase.from('inscripciones_asistencias')
-        .select('vecino_id, reunion_id')
-        .in('vecino_id', chunk)
-        .eq('asistio', true)
-        .range(0, 9999);
-      
+      promises.push(
+        supabase.from('inscripciones_asistencias')
+          .select('vecino_id, reunion_id')
+          .in('vecino_id', chunk)
+          .eq('asistio', true)
+          .range(0, 9999)
+      );
+    }
+    const results = await Promise.all(promises);
+    const counts = {};
+    results.forEach(({ data, error }) => {
+      if (error) throw error;
       if (data) {
-        const counts = {};
         data.forEach(d => {
           const dni = String(d.vecino_id).trim();
           counts[dni] = (counts[dni] || 0) + 1;
         });
-        Object.keys(counts).forEach(dni => {
-          if (counts[dni] >= 2) fielesDnis.add(dni);
-        });
       }
-    }
+    });
+    Object.keys(counts).forEach(dni => {
+      if (counts[dni] >= 2) fielesDnis.add(dni);
+    });
   }
 
   // Procesar lista vecinos

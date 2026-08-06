@@ -154,9 +154,94 @@ export const recuperarPassword = async (email) => {
 // 2. REUNIONES
 // =========================================================================
 
+export const DEFAULT_EQUIPO_CERCANIA = [
+  { id: '29cabb27-8c37-4c3a-a967-e4930d4dbe4a', nombre_completo: 'Ana Laura Franchini' },
+  { id: '8fa6cbaf-89a5-417b-ae4f-0ac9a9b6a6db', nombre_completo: 'Araceli Arleo' },
+  { id: 'cd8733ed-225a-4228-91d5-ec0f264d063f', nombre_completo: 'Federico pereyra' },
+  { id: 'a2fac56b-eec9-48d3-9f65-eb9e26255583', nombre_completo: 'Federico Pereyra' },
+  { id: '40dfaef7-ed69-4e99-8ff5-a9298de79d4b', nombre_completo: 'Germán Severina' },
+  { id: 'c14c372c-5715-44ed-9c44-2243a592a22f', nombre_completo: 'Ibelis Florencia Holzer' },
+  { id: 'c45c1ff4-5538-4718-b8fa-88d8ceb88dcb', nombre_completo: 'José Ignacio Pais' },
+  { id: '3201d47e-e6c7-4611-992a-c4e00df85f5a', nombre_completo: 'Julian Gonzalez' },
+  { id: 'db89054a-0603-430d-a7d4-1943039a963f', nombre_completo: 'Julian Gonzalez Dematine' },
+  { id: '9cf32e04-5676-4ee0-a4be-8deabf695c2a', nombre_completo: 'Participación BA' },
+  { id: 'f9a8d71e-eff9-4d90-9549-c441d9675221', nombre_completo: 'Ramiro' },
+  { id: 'b8937be1-affe-4824-aa4d-1c9cd0d7eaca', nombre_completo: 'Tomas Lamas' }
+];
+
+export const DEFAULT_AGENTES_TERRITORIO = [
+  { id: '3303553a-24cf-49de-9353-cbab2dfb8e26', nombre_completo: 'Bayo Franco Ezequiel' },
+  { id: '5d32fe3e-fe16-4a14-83ca-15454a846411', nombre_completo: 'Borrelli Emanuel' },
+  { id: '929d1d80-f7e2-4922-9fad-06f1fdafab1a', nombre_completo: 'Brenda Sarubbi' },
+  { id: 'e1c99a36-81c9-4edc-ae2f-26f05467f9a0', nombre_completo: 'Camila Gonzalez' },
+  { id: 'ac979583-b359-47aa-86b9-7256fc620733', nombre_completo: 'Carlos Rodríguez' },
+  { id: 'd7194093-01f5-4cbc-ae73-a8c7351fd3c4', nombre_completo: 'Caro Matias Ezequiel' },
+  { id: '5a859e5a-0fad-4f39-9cb0-2d5d36dfe0ed', nombre_completo: 'Diaz Lucia Macarena' },
+  { id: 'a6ddcfd2-989a-4123-8136-a80237575bf6', nombre_completo: 'Equipo Territorio' },
+  { id: '777e52c2-0f48-497a-b792-86f9f3d232df', nombre_completo: 'Esteban Martínez' },
+  { id: 'c25ca015-e9a4-47a5-8869-f206bae7c576', nombre_completo: 'Franco Ezequiel Bayo' },
+  { id: '7e2e7c3b-a24b-495b-8ed9-ce6da0ebd718', nombre_completo: 'Gonzalez Camila Milagros' },
+  { id: '853b4d88-2761-48d3-9753-56e1f8e892a6', nombre_completo: 'Javier Alberto Margaruccio' },
+  { id: 'a9f469a4-70e9-4c77-857b-bbac5746d655', nombre_completo: 'Lautaro Senin' },
+  { id: '3e7b152f-b1da-4c05-9aaa-99107895f57b', nombre_completo: 'Lucas Peralta' },
+  { id: '0577c567-95a8-4cb9-96e1-24344ba05116', nombre_completo: 'Lucchetta Antonella Daiana' },
+  { id: 'b34381a2-c6cb-4bf7-996e-e7b5fa83dafd', nombre_completo: 'Margaruccio Javier Alberto' },
+  { id: '74d7bb74-4697-43b1-a49b-2ef86a771804', nombre_completo: 'Mariela Blanco' },
+  { id: '9fabfebf-41a1-46b6-8741-9315b88cdb6b', nombre_completo: 'Martinez Donde Tomas' },
+  { id: '4b6a47f2-6bdf-4ef8-93ec-e8bdc89b7cb2', nombre_completo: 'Miriam Benavidez' },
+  { id: '65188232-d840-4204-ad0b-053391936ae0', nombre_completo: 'Nicolas Peroni' },
+  { id: '1eb165d4-d95f-4bbd-b744-1b817cdcec83', nombre_completo: 'Nicolás Benítez' },
+  { id: '8c7cdb67-b79c-45bc-a951-59aac3d52bb4', nombre_completo: 'Ruiz Diaz Brenda' },
+  { id: '9405f1cd-bf80-431f-a486-e97212852c6d', nombre_completo: 'Santino Angrisani' },
+  { id: 'c13d2cb4-8c42-4cff-9323-15a5f357b30f', nombre_completo: 'Sassani Valentina Sol' },
+  { id: 'cc92253c-8b32-4204-ac85-425ed4ac6e1d', nombre_completo: 'Silvia Castiiglio' },
+  { id: '5d46a772-21c2-4b41-afb0-c7aae7085e7d', nombre_completo: 'Sofía Gómez' },
+  { id: '8a8b8b1d-8167-42fa-83c0-6ad2f8103cb3', nombre_completo: 'Tobar Cao Erick' },
+  { id: '227c0bb8-5900-447d-a882-1780169d3765', nombre_completo: 'Valeria Fernández' }
+];
+
 /**
- * Obtiene todas las reuniones ordenadas por fecha en orden descendente.
+ * Obtiene la lista de integrantes del Equipo de Cercanía desde la tabla equipo_cercania.
  */
+export const getEquipoCercania = async () => {
+  try {
+    const { data, error } = await supabase
+      .from('equipo_cercania')
+      .select('id, nombre_completo, telefono')
+      .order('nombre_completo', { ascending: true });
+
+    if (!error && data && data.length > 0) {
+      return { data, error: null };
+    }
+  } catch (err) {
+    console.error('Error al consultar equipo_cercania:', err);
+  }
+
+  // Resguardo con los integrantes oficiales de la tabla equipo_cercania
+  return { data: DEFAULT_EQUIPO_CERCANIA, error: null };
+};
+
+/**
+ * Obtiene la lista de Agentes de Territorio desde la tabla agentes_territorio.
+ */
+export const getAgentesTerritorio = async () => {
+  try {
+    const { data, error } = await supabase
+      .from('agentes_territorio')
+      .select('id, nombre_completo')
+      .order('nombre_completo', { ascending: true });
+
+    if (!error && data && data.length > 0) {
+      return { data, error: null };
+    }
+  } catch (err) {
+    console.error('Error al consultar agentes_territorio:', err);
+  }
+
+  // Resguardo con los integrantes oficiales de la tabla agentes_territorio
+  return { data: DEFAULT_AGENTES_TERRITORIO, error: null };
+};
+
 /**
  * Obtiene las reuniones. Por defecto limita a los últimos 180 días para reducir egress.
  * Pasar { historico: true } para obtener todas sin límite de fecha.
@@ -165,7 +250,7 @@ export const getReuniones = async ({ historico = false, limit = null, offset = n
   try {
     let query = supabase
       .from('reuniones')
-      .select('id, nombre, fecha, lugar, barrio, comuna, tipo_reunion, tema, funcionario, gestion_presente, clima, semaforo_politico, active_orador_id, sintesis_cualitativa, config_uno_a_uno, hora_inicio_real, hora_fin_real, created_at')
+      .select('id, nombre, fecha, lugar, barrio, comuna, tipo_reunion, tema, funcionario, gestion_presente, clima, semaforo_politico, active_orador_id, sintesis_cualitativa, config_uno_a_uno, hora_inicio_real, hora_fin_real, created_at, funcionarios_acompanantes, responsable_cercania_id, integrantes_asignados, observaciones_preparacion, equipo_cercania(id, nombre_completo, telefono)')
       .order('fecha', { ascending: false });
 
     if (!historico && limit === null) {

@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { ArrowLeft, Save, Shield, User, FileText, Check, AlertCircle, Mic, RefreshCw, Trash2 } from 'lucide-react';
 import { TIPOS_REUNION } from '../data/mockData';
-import { updateReunion, getOradores, updateOradorDetails, deleteReunionCompleta, cachedQuery } from '../services/supabaseService';
+import { updateReunion, getOradores, updateOradorDetails, deleteReunionCompleta, cachedQuery, getEquipoCercania, getAgentesTerritorio, DEFAULT_EQUIPO_CERCANIA, DEFAULT_AGENTES_TERRITORIO } from '../services/supabaseService';
 import { supabase } from '../lib/supabaseClient';
 
 const COMUNAS = [
@@ -78,15 +78,16 @@ const BARRIOS = [
 
 export default function AdministrarReunion({ reunion, onBack, onSaveSuccess }) {
   // Formulario general
-  const [nombre, setNombre] = useState(reunion.nombre || '');
-  const [funcionario, setFuncionario] = useState(reunion.funcionario || '');
-  const [fecha, setFecha] = useState(reunion.fecha || '');
-  const [lugar, setLugar] = useState(reunion.lugar || '');
-  const [tipoReunion, setTipoReunion] = useState(reunion.tipo_reunion || '');
-  const [comuna, setComuna] = useState(reunion.comuna || 'Comuna 1');
-  const [barrio, setBarrio] = useState(reunion.barrio || 'Convocatoria Comunal');
-  const [arreglo1, setArreglo1] = useState(reunion.arreglo_1 || '');
-  const [tema, setTema] = useState(reunion.tema || '');
+  const [nombre, setNombre] = useState(reunion?.nombre || '');
+  const [funcionario, setFuncionario] = useState(reunion?.funcionario || '');
+  const [fecha, setFecha] = useState(reunion?.fecha || '');
+  const [lugar, setLugar] = useState(reunion?.lugar || '');
+  const [tipoReunion, setTipoReunion] = useState(reunion?.tipo_reunion || '');
+  const [comuna, setComuna] = useState(reunion?.comuna || 'Comuna 1');
+  const [barrioEvento, setBarrioEvento] = useState(reunion?.barrio_evento || '');
+  const [barrio, setBarrio] = useState(reunion?.barrio || 'Convocatoria Comunal');
+  const [arreglo1, setArreglo1] = useState(reunion?.arreglo_1 || '');
+  const [tema, setTema] = useState(reunion?.tema || '');
 
   // Estados para funcionarios y autocompletado
   const [funcionariosList, setFuncionariosList] = useState([]);
@@ -95,42 +96,104 @@ export default function AdministrarReunion({ reunion, onBack, onSaveSuccess }) {
   const [funcSearchTerm, setFuncSearchTerm] = useState('');
   const dropdownRef = useRef(null);
 
-  // Cargar funcionarios de Supabase e inicializar seleccionados (con caché de sesión de 5 minutos)
+  // Nuevos campos para Planificación y Cobertura (Reunión de Mañana)
+  const [funcionariosAcompanantes, setFuncionariosAcompanantes] = useState(
+    Array.isArray(reunion?.funcionarios_acompanantes)
+      ? reunion.funcionarios_acompanantes.join(', ')
+      : (reunion?.funcionarios_acompanantes || '')
+  );
+
+  const [selectedEquipoCercania, setSelectedEquipoCercania] = useState([]);
+  const [showCercaniaDropdown, setShowCercaniaDropdown] = useState(false);
+  const [cercaniaSearchTerm, setCercaniaSearchTerm] = useState('');
+  const [equipoCercaniaList, setEquipoCercaniaList] = useState(DEFAULT_EQUIPO_CERCANIA);
+  const dropdownCercaniaRef = useRef(null);
+
+  const [selectedIntegrantes, setSelectedIntegrantes] = useState([]);
+  const [showIntegrantesDropdown, setShowIntegrantesDropdown] = useState(false);
+  const [integrantesSearchTerm, setIntegrantesSearchTerm] = useState('');
+  const [agentesList, setAgentesList] = useState(DEFAULT_AGENTES_TERRITORIO);
+  const dropdownIntegrantesRef = useRef(null);
+
+  const [observacionesPreparacion, setObservacionesPreparacion] = useState(reunion?.observaciones_preparacion || '');
+
+  // Sincronizar estados si la reunión se carga asincrónicamente desde la URL
   useEffect(() => {
-    const fetchFuncionarios = async () => {
+    if (reunion) {
+      if (reunion.nombre) setNombre(reunion.nombre);
+      if (reunion.funcionario) setFuncionario(reunion.funcionario);
+      if (reunion.fecha) setFecha(reunion.fecha);
+      if (reunion.lugar) setLugar(reunion.lugar);
+      if (reunion.tipo_reunion) setTipoReunion(reunion.tipo_reunion);
+      if (reunion.comuna) setComuna(reunion.comuna);
+      if (reunion.barrio_evento) setBarrioEvento(reunion.barrio_evento);
+      if (reunion.barrio) setBarrio(reunion.barrio);
+      if (reunion.arreglo_1) setArreglo1(reunion.arreglo_1);
+      if (reunion.tema) setTema(reunion.tema);
+      if (reunion.funcionarios_acompanantes) {
+        const val = Array.isArray(reunion.funcionarios_acompanantes)
+          ? reunion.funcionarios_acompanantes.join(', ')
+          : String(reunion.funcionarios_acompanantes);
+        setFuncionariosAcompanantes(val);
+      }
+      if (reunion.responsable_cercania_id || reunion.equipo_cercania) {
+        const targetId = reunion.responsable_cercania_id || reunion.equipo_cercania?.id;
+        const match = equipoCercaniaList.find(r => r.id === targetId);
+        if (match) {
+          setSelectedEquipoCercania([match]);
+        } else if (reunion.equipo_cercania) {
+          setSelectedEquipoCercania([reunion.equipo_cercania]);
+        }
+      }
+      if (reunion.observaciones_preparacion) setObservacionesPreparacion(reunion.observaciones_preparacion);
+    }
+  }, [reunion, equipoCercaniaList]);
+
+  // Cargar dropdowns de Supabase e inicializar seleccionados
+  useEffect(() => {
+    const fetchDropdownData = async () => {
       try {
-        const { data, error } = await cachedQuery('funcionarios', async () => {
-          const result = await supabase
-            .from('funcionarios')
-            .select('id, nombre_completo, cargo')
-            .order('nombre_completo', { ascending: true });
-          return result;
-        });
-        if (!error && data) {
-          setFuncionariosList(data);
+        const [resFunc, resCercania, resAgentes] = await Promise.all([
+          cachedQuery('funcionarios', async () => {
+            return await supabase
+              .from('funcionarios')
+              .select('id, nombre_completo, cargo')
+              .order('nombre_completo', { ascending: true });
+          }),
+          getEquipoCercania(),
+          getAgentesTerritorio()
+        ]);
+
+        if (resFunc?.data) {
+          setFuncionariosList(resFunc.data);
           
-          // Inicializar funcionarios ya seleccionados para esta reunión
-          if (reunion.funcionario) {
+          if (reunion?.funcionario) {
             const currentNames = reunion.funcionario.split(' / ').map(n => n.trim());
-            const preselected = data.filter(f => currentNames.includes(f.nombre_completo));
-            
-            // Ordenar los preseleccionados en el orden en que venían en la base de datos
-            const orderedPreselected = [];
-            currentNames.forEach(name => {
-              const matched = preselected.find(f => f.nombre_completo === name);
-              if (matched) {
-                orderedPreselected.push(matched);
-              }
-            });
-            setSelectedFuncionarios(orderedPreselected);
+            const preselected = resFunc.data.filter(f => currentNames.includes(f.nombre_completo));
+            setSelectedFuncionarios(preselected);
+          }
+        }
+
+        if (resCercania?.data) {
+          setEquipoCercaniaList(resCercania.data);
+        }
+
+        if (resAgentes?.data) {
+          setAgentesList(resAgentes.data);
+          if (reunion?.integrantes_asignados) {
+            const currentNames = Array.isArray(reunion.integrantes_asignados)
+              ? reunion.integrantes_asignados
+              : reunion.integrantes_asignados.split(',').map(n => n.trim());
+            const preselected = resAgentes.data.filter(a => currentNames.includes(a.nombre_completo));
+            setSelectedIntegrantes(preselected);
           }
         }
       } catch (err) {
-        console.error(err);
+        console.error('Error cargando listas de dropdowns:', err);
       }
     };
-    fetchFuncionarios();
-  }, [reunion.funcionario]);
+    fetchDropdownData();
+  }, [reunion]);
 
   // Cerrar dropdown al hacer click fuera
   useEffect(() => {
@@ -138,12 +201,18 @@ export default function AdministrarReunion({ reunion, onBack, onSaveSuccess }) {
       if (dropdownRef.current && !dropdownRef.current.contains(event.target)) {
         setShowFuncDropdown(false);
       }
+      if (dropdownCercaniaRef.current && !dropdownCercaniaRef.current.contains(event.target)) {
+        setShowCercaniaDropdown(false);
+      }
+      if (dropdownIntegrantesRef.current && !dropdownIntegrantesRef.current.contains(event.target)) {
+        setShowIntegrantesDropdown(false);
+      }
     };
     document.addEventListener("mousedown", handleClickOutside);
     return () => {
       document.removeEventListener("mousedown", handleClickOutside);
     };
-  }, [dropdownRef]);
+  }, []);
 
   // Autocompletar el nombre de la reunión
   useEffect(() => {
@@ -224,9 +293,14 @@ export default function AdministrarReunion({ reunion, onBack, onSaveSuccess }) {
       lugar: lugar.trim(),
       tipo_reunion: tipoReunion,
       comuna,
+      barrio_evento: barrioEvento.trim() || null,
       barrio: barrio === 'Convocatoria Comunal' ? null : barrio,
       tema: (tipoReunion === TIPOS_REUNION.TEMATICA || tipoReunion === TIPOS_REUNION.PROCESOS_CO_CREACION || tipoReunion === TIPOS_REUNION.PROCESOS_INFORMATIVA || tipoReunion === TIPOS_REUNION.PRIMERA_PERSONA) ? tema.trim() : null,
-      arreglo_1: arreglo1.trim() || null
+      arreglo_1: arreglo1.trim() || null,
+      funcionarios_acompanantes: funcionariosAcompanantes.trim() ? [funcionariosAcompanantes.trim()] : null,
+      responsable_cercania_id: selectedEquipoCercania.length > 0 ? selectedEquipoCercania[0].id : null,
+      integrantes_asignados: selectedIntegrantes.length > 0 ? selectedIntegrantes.map(a => a.nombre_completo) : null,
+      observaciones_preparacion: observacionesPreparacion.trim() || null
     });
     setSavingReunion(false);
 
@@ -506,17 +580,261 @@ export default function AdministrarReunion({ reunion, onBack, onSaveSuccess }) {
                   </select>
                 </div>
                 <div className="form-group">
-                  <label htmlFor="barrio">Barrio</label>
+                  <label htmlFor="barrioEvento">Barrio del Evento (Lugar Físico)</label>
                   <select
-                    id="barrio"
+                    id="barrioEvento"
                     className="form-control"
-                    value={barrio}
-                    onChange={(e) => setBarrio(e.target.value)}
+                    value={barrioEvento}
+                    onChange={(e) => setBarrioEvento(e.target.value)}
                   >
-                    {BARRIOS.map(b => (
+                    <option value="">-- Seleccionar Barrio Físico del Evento --</option>
+                    {BARRIOS.filter(b => b !== 'Convocatoria Comunal').map(b => (
                       <option key={b} value={b}>{b}</option>
                     ))}
                   </select>
+                </div>
+              </div>
+
+              <div className="form-group">
+                <label htmlFor="barrio">Barrio Visitado / Convocatoria</label>
+                <select
+                  id="barrio"
+                  className="form-control"
+                  value={barrio}
+                  onChange={(e) => setBarrio(e.target.value)}
+                >
+                  {BARRIOS.map(b => (
+                    <option key={b} value={b}>{b}</option>
+                  ))}
+                </select>
+              </div>
+
+              {/* --- SECCIÓN COBERTURA Y PLANIFICACIÓN (REUNIÓN DE MAÑANA) --- */}
+              <div style={{ marginTop: '1.5rem', marginBottom: '1.5rem', padding: '16px', backgroundColor: '#F8FAFC', borderRadius: '8px', border: '1px solid #E2E8F0' }}>
+                <h4 style={{ margin: '0 0 14px 0', fontSize: '0.95rem', color: 'var(--color-primary)', fontWeight: '700', borderBottom: '1px solid #E2E8F0', paddingBottom: '6px' }}>
+                  📋 Planificación y Cobertura (Reunión de Mañana / Ficha Técnica)
+                </h4>
+
+                {/* 1. Funcionarios Acompañantes (Texto Libre) */}
+                <div className="form-group">
+                  <label style={{ fontWeight: '600' }}>Funcionarios Acompañantes</label>
+                  <input
+                    type="text"
+                    className="form-control"
+                    placeholder="Ingresá o pegá funcionarios acompañantes de cualquier jerarquía..."
+                    value={funcionariosAcompanantes}
+                    onChange={(e) => setFuncionariosAcompanantes(e.target.value)}
+                  />
+                </div>
+
+                {/* 2. Responsable / Equipo de Cercanía (Multi-select) */}
+                <div className="form-group" style={{ position: 'relative' }} ref={dropdownCercaniaRef}>
+                  <label style={{ fontWeight: '600' }}>Responsable del Equipo (Cercanía)</label>
+                  <div 
+                    onClick={() => setShowCercaniaDropdown(!showCercaniaDropdown)}
+                    style={{ 
+                      border: '1px solid var(--color-border)', 
+                      borderRadius: 'var(--border-radius)', 
+                      minHeight: '38px', 
+                      cursor: 'pointer',
+                      display: 'flex',
+                      flexWrap: 'wrap',
+                      gap: '6px',
+                      alignItems: 'center',
+                      padding: '4px 8px',
+                      backgroundColor: '#FFFFFF'
+                    }}
+                  >
+                    {selectedEquipoCercania.length === 0 ? (
+                      <span style={{ color: 'var(--color-text-muted)', fontSize: '0.85rem' }}>Seleccioná integrantes de Cercanía...</span>
+                    ) : (
+                      selectedEquipoCercania.map(r => (
+                        <span 
+                          key={r.id} 
+                          style={{ 
+                            backgroundColor: '#EFF6FF', 
+                            color: '#1D4ED8', 
+                            border: '1px solid #BFDBFE',
+                            padding: '2px 8px', 
+                            borderRadius: '12px', 
+                            fontSize: '0.75rem', 
+                            fontWeight: '600', 
+                            display: 'inline-flex', 
+                            alignItems: 'center', 
+                            gap: '4px' 
+                          }}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setSelectedEquipoCercania(prev => prev.filter(x => x.id !== r.id));
+                          }}
+                        >
+                          {r.nombre_completo} {r.telefono ? `(${r.telefono})` : ''}
+                          <span style={{ cursor: 'pointer', marginLeft: '2px', fontWeight: 'bold' }}>×</span>
+                        </span>
+                      ))
+                    )}
+                  </div>
+                  
+                  {showCercaniaDropdown && (
+                    <div 
+                      style={{ 
+                        position: 'absolute', 
+                        top: '100%', 
+                        left: 0, 
+                        right: 0, 
+                        backgroundColor: '#FFFFFF', 
+                        border: '1px solid var(--color-border)', 
+                        borderRadius: 'var(--border-radius)', 
+                        boxShadow: '0 4px 6px rgba(0,0,0,0.1)', 
+                        zIndex: 50, 
+                        maxHeight: '200px', 
+                        overflowY: 'auto',
+                        marginTop: '4px',
+                        padding: '4px'
+                      }}
+                    >
+                      <div style={{ padding: '4px', borderBottom: '1px solid var(--color-border)', backgroundColor: '#F8FAFC' }}>
+                        <input
+                          type="text"
+                          placeholder="🔍 Buscar integrante de Cercanía..."
+                          value={cercaniaSearchTerm}
+                          onChange={(e) => setCercaniaSearchTerm(e.target.value)}
+                          onClick={(e) => e.stopPropagation()}
+                          style={{ width: '100%', padding: '6px 10px', fontSize: '0.85rem', border: '1px solid var(--color-border)', borderRadius: '4px', outline: 'none' }}
+                        />
+                      </div>
+                      {equipoCercaniaList.filter(r => r.nombre_completo?.toLowerCase().includes(cercaniaSearchTerm.toLowerCase())).map(r => {
+                        const isSelected = selectedEquipoCercania.some(x => x.id === r.id);
+                        return (
+                          <div 
+                            key={r.id} 
+                            onClick={() => {
+                              if (isSelected) {
+                                setSelectedEquipoCercania(prev => prev.filter(x => x.id !== r.id));
+                              } else {
+                                setSelectedEquipoCercania(prev => [...prev, r]);
+                              }
+                            }}
+                            style={{ padding: '8px 12px', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'space-between', backgroundColor: isSelected ? '#F0F9FF' : 'transparent', borderBottom: '1px solid #F1F5F9', fontSize: '0.85rem' }}
+                          >
+                            <span>{r.nombre_completo} {r.telefono ? <small style={{ color: '#64748B' }}>({r.telefono})</small> : ''}</span>
+                            <input type="checkbox" checked={isSelected} readOnly />
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+
+                {/* 3. Integrantes Asignados (Multi-select / Buscador) */}
+                <div className="form-group" style={{ position: 'relative' }} ref={dropdownIntegrantesRef}>
+                  <label style={{ fontWeight: '600' }}>Integrantes Asignados (Agentes de Territorio)</label>
+                  <div 
+                    onClick={() => setShowIntegrantesDropdown(!showIntegrantesDropdown)}
+                    style={{ 
+                      border: '1px solid var(--color-border)', 
+                      borderRadius: 'var(--border-radius)', 
+                      minHeight: '38px', 
+                      cursor: 'pointer',
+                      display: 'flex',
+                      flexWrap: 'wrap',
+                      gap: '6px',
+                      alignItems: 'center',
+                      padding: '4px 8px',
+                      backgroundColor: '#FFFFFF'
+                    }}
+                  >
+                    {selectedIntegrantes.length === 0 ? (
+                      <span style={{ color: 'var(--color-text-muted)', fontSize: '0.85rem' }}>Seleccioná integrantes asignados...</span>
+                    ) : (
+                      selectedIntegrantes.map(a => (
+                        <span 
+                          key={a.id} 
+                          style={{ 
+                            backgroundColor: '#FEF3C7', 
+                            color: '#92400E', 
+                            border: '1px solid #FDE68A',
+                            padding: '2px 8px', 
+                            borderRadius: '12px', 
+                            fontSize: '0.75rem', 
+                            fontWeight: '600', 
+                            display: 'inline-flex', 
+                            alignItems: 'center', 
+                            gap: '4px' 
+                          }}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setSelectedIntegrantes(prev => prev.filter(x => x.id !== a.id));
+                          }}
+                        >
+                          {a.nombre_completo}
+                          <span style={{ cursor: 'pointer', marginLeft: '2px', fontWeight: 'bold' }}>×</span>
+                        </span>
+                      ))
+                    )}
+                  </div>
+                  
+                  {showIntegrantesDropdown && (
+                    <div 
+                      style={{ 
+                        position: 'absolute', 
+                        top: '100%', 
+                        left: 0, 
+                        right: 0, 
+                        backgroundColor: '#FFFFFF', 
+                        border: '1px solid var(--color-border)', 
+                        borderRadius: 'var(--border-radius)', 
+                        boxShadow: '0 4px 6px rgba(0,0,0,0.1)', 
+                        zIndex: 50, 
+                        maxHeight: '200px', 
+                        overflowY: 'auto',
+                        marginTop: '4px',
+                        padding: '4px'
+                      }}
+                    >
+                      <div style={{ padding: '4px', borderBottom: '1px solid var(--color-border)', backgroundColor: '#F8FAFC' }}>
+                        <input
+                          type="text"
+                          placeholder="🔍 Buscar integrante de territorio..."
+                          value={integrantesSearchTerm}
+                          onChange={(e) => setIntegrantesSearchTerm(e.target.value)}
+                          onClick={(e) => e.stopPropagation()}
+                          style={{ width: '100%', padding: '6px 10px', fontSize: '0.85rem', border: '1px solid var(--color-border)', borderRadius: '4px', outline: 'none' }}
+                        />
+                      </div>
+                      {agentesList.filter(a => a.nombre_completo?.toLowerCase().includes(integrantesSearchTerm.toLowerCase())).map(a => {
+                        const isSelected = selectedIntegrantes.some(x => x.id === a.id);
+                        return (
+                          <div 
+                            key={a.id} 
+                            onClick={() => {
+                              if (isSelected) {
+                                setSelectedIntegrantes(prev => prev.filter(x => x.id !== a.id));
+                              } else {
+                                setSelectedIntegrantes(prev => [...prev, a]);
+                              }
+                            }}
+                            style={{ padding: '8px 12px', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'space-between', backgroundColor: isSelected ? '#FEF3C7' : 'transparent', borderBottom: '1px solid #F1F5F9', fontSize: '0.85rem' }}
+                          >
+                            <span>{a.nombre_completo} {a.equipo ? <small style={{ color: '#64748B' }}>({a.equipo})</small> : ''}</span>
+                            <input type="checkbox" checked={isSelected} readOnly />
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+
+                {/* 4. Estado / Observaciones de Preparación */}
+                <div className="form-group" style={{ marginBottom: 0 }}>
+                  <label style={{ fontWeight: '600' }}>📅 Cierre de Inscripción / Observaciones de Preparación</label>
+                  <textarea
+                    className="form-control"
+                    rows="2"
+                    placeholder="Ej: Formulario de inscripción cierra el Jueves 12/08 a las 12:00 hs. Anotaciones previas..."
+                    value={observacionesPreparacion}
+                    onChange={(e) => setObservacionesPreparacion(e.target.value)}
+                  />
                 </div>
               </div>
 

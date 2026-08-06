@@ -137,7 +137,7 @@ export default function App() {
             try {
               const { data, error } = await supabase
                 .from('reuniones')
-                .select('*')
+                .select('*, equipo_cercania(id, nombre_completo, telefono)')
                 .eq('id', qReunionId)
                 .single();
               if (!error && data) {
