@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Sparkles, Copy, Check, RefreshCw, X, AlertTriangle, FileText, Users, MapPin, Target, MessageSquare } from 'lucide-react';
-import { generateMeetingBrief, calculateInscriptosStats, splitBriefParts, generateWhatsAppPlanificacion, getFuncionarioConversionFactor } from '../services/aiBriefService';
+import { generateMeetingBrief, calculateInscriptosStats, splitBriefParts, generateWhatsAppPlanificacion, getFuncionarioConversionFactor, getVecinosHistorialInscripciones } from '../services/aiBriefService';
 import { getAsistentesPorReunion } from '../services/supabaseService';
 
 export default function ModalBriefIA({ reunion, inscriptosList: initialInscriptos, isOpen, onClose }) {
@@ -42,16 +42,30 @@ export default function ModalBriefIA({ reunion, inscriptosList: initialInscripto
         currentInscriptos = data || [];
       }
 
-      setInscriptos(currentInscriptos);
+      // Enriquecer inscriptos con su historial cruzado de inscripciones y asistencias anteriores
+      const dnis = currentInscriptos.map(i => i.vecino?.dni || i.vecino_id || i.dni).filter(Boolean);
+      const historialMap = await getVecinosHistorialInscripciones(dnis, reunion.id);
+      const enrichedInscriptos = currentInscriptos.map(item => {
+        const dni = String(item.vecino?.dni || item.vecino_id || item.dni || '').trim();
+        const hist = historialMap[dni] || { inscripcionesPrevias: 0, asistenciasPrevias: 0 };
+        return {
+          ...item,
+          inscripciones_previas: (item.inscripciones_previas || 0) + hist.inscripcionesPrevias,
+          asistencias_previas: (item.asistencias_previas || 0) + hist.asistenciasPrevias,
+          asistencias_anteriores: (item.asistencias_anteriores || 0) + hist.asistenciasPrevias
+        };
+      });
+
+      setInscriptos(enrichedInscriptos);
       const convFactor = await getFuncionarioConversionFactor(reunion.funcionario);
-      const computedStats = calculateInscriptosStats(currentInscriptos, convFactor);
+      const computedStats = calculateInscriptosStats(enrichedInscriptos, convFactor);
       setStats(computedStats);
 
       // 1. Generar Ficha WhatsApp de Planificación y Cobertura (inmediato y determinístico)
-      const waPlan = generateWhatsAppPlanificacion(reunion, currentInscriptos.length);
+      const waPlan = generateWhatsAppPlanificacion(reunion, enrichedInscriptos.length);
       setWhatsAppText(waPlan);
 
-      if (currentInscriptos.length === 0) {
+      if (enrichedInscriptos.length === 0) {
         setBriefOriginalText('Esta reunión aún no cuenta con inscriptos cargados para generar el Brief de IA.');
         setMilagrosText('No hay inscriptos registrados para analizar casos de alto impacto.');
         return;
@@ -60,7 +74,7 @@ export default function ModalBriefIA({ reunion, inscriptosList: initialInscripto
       // 2. Generar el Brief con Gemini (Brief Original + Milagros)
       const generatedFullText = await generateMeetingBrief({
         reunion,
-        inscriptos: currentInscriptos
+        inscriptos: enrichedInscriptos
       });
 
       const { parte1, parte2 } = splitBriefParts(generatedFullText);

@@ -16,6 +16,7 @@ export const ORADOR_TAGS = [
   { label: 'Mascotas',                            color: '#059669' },
   { label: 'Trámites y Servicios GCBA',           color: '#0284c7' },
   { label: 'Desarrollo Social',                   color: '#4338ca' },
+  { label: 'Consorcios',                          color: '#0891b2' },
 ];
 
 /**
@@ -139,6 +140,19 @@ export const TAG_KEYWORD_MAP = {
   "Desarrollo Social": [
     "centro de jubilados", "subsidio", "club de barrio", "comedor", "comedores", 
     "vulnerabilidad", "inclusion", "talleres", "capacitacion", "adultos mayores", "personas mayores"
+  ],
+
+  // 15. CONSORCIOS Y ADMINISTRACIONES
+  "Consorcios": [
+    "consorcio", "consorcios", "administracion", "administracion y consorcio", "administrador", 
+    "administradora", "administradores", "expensas", "rpa", "registro publico de administradores", 
+    "defensa del consumidor", "defensa del cons", "defensa al consumidor", 
+    "copropietario", "copropietarios", "encargado", "portero", "porteria", 
+    "reglamento de copropiedad", "asamblea", "asambleas", "filtracion", "filtraciones", 
+    "sotano", "sotanos", "tanque de agua", "prestamo a consorcio", "prestamos a consorcios", 
+    "prestamo para consorcio", "prestamos para consorcios", "prestamos a consorcios para",
+    "fachada", "medianera", "vicios ocultos", "sala de maquinas", "ascensor", "ascensores", 
+    "mantenimiento de edificio", "problemas de consorcio", "cochera", "cocheras"
   ]
 };
 

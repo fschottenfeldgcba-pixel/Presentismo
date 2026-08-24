@@ -182,6 +182,51 @@ export function splitBriefParts(fullText = '') {
 }
 
 /**
+ * Consulta el historial de inscripciones y asistencias previas de los vecinos en toda la base de datos de Supabase.
+ */
+export async function getVecinosHistorialInscripciones(dnis = [], currentReunionId = null) {
+  if (!dnis || dnis.length === 0) return {};
+  
+  const statsMap = {};
+  const cleanDnis = dnis.map(d => String(d).trim()).filter(Boolean);
+  cleanDnis.forEach(dni => {
+    statsMap[dni] = { inscripcionesPrevias: 0, asistenciasPrevias: 0 };
+  });
+
+  const chunkSize = 100;
+  for (let i = 0; i < cleanDnis.length; i += chunkSize) {
+    const chunk = cleanDnis.slice(i, i + chunkSize);
+    try {
+      let query = supabase
+        .from('inscripciones_asistencias')
+        .select('vecino_id, asistio, reunion_id')
+        .in('vecino_id', chunk);
+
+      if (currentReunionId) {
+        query = query.neq('reunion_id', currentReunionId);
+      }
+
+      const { data, error } = await query;
+      if (!error && data && Array.isArray(data)) {
+        data.forEach(row => {
+          const cleanDni = String(row.vecino_id).trim();
+          if (statsMap[cleanDni]) {
+            statsMap[cleanDni].inscripcionesPrevias += 1;
+            if (row.asistio) {
+              statsMap[cleanDni].asistenciasPrevias += 1;
+            }
+          }
+        });
+      }
+    } catch (err) {
+      console.warn('Error al consultar historial de inscriptos:', err);
+    }
+  }
+
+  return statsMap;
+}
+
+/**
  * Calcula estadísticas determinísticas duras de inscriptos con agrupación de barrios, recurrencia y asistencia esperada.
  */
 export function calculateInscriptosStats(inscriptos = [], conversionFactor = { factor: 0.45, pct: 45 }) {
@@ -265,13 +310,15 @@ export function calculateInscriptosStats(inscriptos = [], conversionFactor = { f
     }))
     .sort((a, b) => b.count - a.count);
 
-  // 3. Recurrencia de Inscriptos (1ª vez vs Recurrentes)
+  // 3. Recurrencia de Inscriptos (1ª vez vs Recurrentes cruzando todas las reuniones)
   let primeraVezCount = 0;
   let recurrentesCount = 0;
 
   inscriptos.forEach(item => {
-    const asistenciasPrevias = item.asistencias_anteriores || item.asistencias_previas || 0;
-    if (asistenciasPrevias > 0) {
+    const inscPrev = item.inscripciones_previas || 0;
+    const asistPrev = item.asistencias_previas || item.asistencias_anteriores || 0;
+    const isRecurrente = (inscPrev > 0 || asistPrev > 0);
+    if (isRecurrente) {
       recurrentesCount++;
     } else {
       primeraVezCount++;
@@ -297,7 +344,8 @@ export function calculateInscriptosStats(inscriptos = [], conversionFactor = { f
     const celular = (item.vecino?.celular || item.celular || item.telefono || '').trim();
     const barrio = (item.vecino?.barrio || item.barrio || 'Sin especificar').trim();
     const comoSeEntero = (item.como_se_entero || item.vecino?.como_se_entero || '').trim();
-    const asistenciasPrevias = item.asistencias_anteriores || item.asistencias_previas || 0;
+    const inscPrev = item.inscripciones_previas || 0;
+    const asistPrev = item.asistencias_previas || item.asistencias_anteriores || 0;
     const rawReclamo = item.tema_previo || item.pregunta_puerta || item.observaciones || item.vecino?.tema || '';
     const cleanReclamo = String(rawReclamo).trim();
 
@@ -326,7 +374,8 @@ export function calculateInscriptosStats(inscriptos = [], conversionFactor = { f
         celular: celular || 'S/D',
         barrio,
         comoSeEntero,
-        asistenciasPrevias,
+        inscripcionesPrevias: inscPrev,
+        asistenciasPrevias: asistPrev,
         reclamo: cleanReclamo
       });
     }
@@ -363,9 +412,25 @@ export async function generateMeetingBrief({ reunion, inscriptos }) {
   const reunionFuncionario = reunion.funcionario || '';
   const reunionFecha = reunion.fecha || '';
 
+  // 1. Obtener historial previo de inscripciones y asistencias de los vecinos
+  const dnis = inscriptos.map(i => i.vecino?.dni || i.vecino_id || i.dni).filter(Boolean);
+  const historialMap = await getVecinosHistorialInscripciones(dnis, reunion.id);
+
+  // 2. Enriquecer los inscriptos con su historial real de todas las reuniones anteriores
+  const enrichedInscriptos = inscriptos.map(item => {
+    const dni = String(item.vecino?.dni || item.vecino_id || item.dni || '').trim();
+    const hist = historialMap[dni] || { inscripcionesPrevias: 0, asistenciasPrevias: 0 };
+    return {
+      ...item,
+      inscripciones_previas: (item.inscripciones_previas || 0) + hist.inscripcionesPrevias,
+      asistencias_previas: (item.asistencias_previas || 0) + hist.asistenciasPrevias,
+      asistencias_anteriores: (item.asistencias_anteriores || 0) + hist.asistenciasPrevias
+    };
+  });
+
   // Obtener factor de conversión histórico del funcionario
   const convFactor = await getFuncionarioConversionFactor(reunionFuncionario);
-  const stats = calculateInscriptosStats(inscriptos, convFactor);
+  const stats = calculateInscriptosStats(enrichedInscriptos, convFactor);
 
   if (stats.total === 0) {
     throw new Error('La reunión no tiene inscriptos registrados para generar el Brief.');
@@ -451,7 +516,7 @@ _Recurrentes:_ *${stats.recurrentesCount} (${stats.recurrentesPct}%)*
 [UNA frase ejecutiva explicando el porqué]
 
 🧭 *Problemáticas planteadas*
-[Listado de 4 a 7 categorías temáticas clave con emojis, cantidad estimada "≈ *XX (XX%)*"]
+[Listado de 4 a 7 categorías temáticas clave con emojis, cantidad estimada "≈ *XX (XX%)*". Si se registran reclamos vinculados a consorcios, administraciones, RPA, Defensa del Consumidor, expensas, préstamos a consorcios o filtraciones edilicias, agruparlos expresamente bajo la categoría 🏢 *Consorcios y Administraciones*]
 
 🎯 *Focos principales*
 [Seleccionar los 2 o 3 temas más relevantes y desarrollarlos con *[Subtema]:* explicación breve]
@@ -468,24 +533,26 @@ ${SEPARADOR_BRIEF}
 🎯 *Casos de Alto Impacto — "Milagros Operativos"*
 (Oportunidades de respuesta personalizada y visible durante la reunión)
 
-[Seleccionar entre 3 y 5 vecinos reales con el formato:]
+[Seleccionar entre 3 y 5 vecinos reales con el formato exacto y limpio:]
 
 *1. [Nombre y Apellido]* — *([Concepto o arquetipo del caso])*
-• *Contacto:* DNI: [DNI] | Tel: [Teléfono] | [1ª vez / Recurrente con X asistencias]
+• *Contacto:* DNI: [DNI] | Tel: [Teléfono] | [1ª vez / X asistencias previas]
 • *Barrio:* [Barrio]
-• *Reclamo:* [Resumen del problema y ubicación exacta]
-• *Por qué elegirlo:* [Justificación estratégica de 1 línea]
-• *Accionabilidad:* [🟢 Alto / 🟡 Medio / 🔴 Bajo] | *Multiplicador:* [Breve]
-• *"El Milagro" – Respuesta sugerida:* "[Frase en primera persona para que el funcionario diga en vivo]"
+• *Reclamo:* [COPIAR TEXTUAL Y EXACTO LO QUE ESCRIBIÓ EL VECINO EN SU FORMULARIO, SIN RESUMIR NI EDITAR]
 
-[Repetir para casos 2, 3, 4, 5]
+*2. [Nombre y Apellido]* — *([Concepto o arquetipo del caso])*
+• *Contacto:* DNI: [DNI] | Tel: [Teléfono] | [1ª vez / X asistencias previas]
+• *Barrio:* [Barrio]
+• *Reclamo:* [COPIAR TEXTUAL Y EXACTO LO QUE ESCRIBIÓ EL VECINO EN SU FORMULARIO, SIN RESUMIR NI EDITAR]
+
+[Repetir hasta 5 casos si hay suficientes vecinos con contenido]
 
 ⚡ *Resumen de Mesa (Lectura en 30 seg)*
-*1. [Nombre] — [Problema] → [Acción sugerida]*
-*2. [Nombre] — [Problema] → [Acción sugerida]*
-*3. [Nombre] — [Problema] → [Acción sugerida]*
-*4. [Nombre] — [Problema] → [Acción sugerida]*
-*5. [Nombre] — [Problema] → [Acción sugerida]*
+*1. [Nombre] — [Síntesis breve del problema]*
+*2. [Nombre] — [Síntesis breve del problema]*
+*3. [Nombre] — [Síntesis breve del problema]*
+*4. [Nombre] — [Síntesis breve del problema]*
+*5. [Nombre] — [Síntesis breve del problema]*
 `;
 
   // Modelos Gemini optimizados por velocidad y disponibilidad
