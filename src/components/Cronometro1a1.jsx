@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Play, Square, UserPlus, Clock, Trash2, CheckCircle2, UserCheck, RotateCcw, RefreshCw, FileText, Download, Copy, Activity, MessageSquare } from 'lucide-react';
+import { Play, Square, UserPlus, Clock, Trash2, CheckCircle2, UserCheck, RotateCcw, RefreshCw, FileText, Download, Copy, Activity, MessageSquare, Users, PhoneCall } from 'lucide-react';
 import { guardarAsistencia, upsertVecino, getAsistentesPorReunion } from '../services/supabaseService';
 import { supabase } from '../lib/supabaseClient';
 import * as XLSX from 'xlsx';
@@ -695,13 +695,15 @@ export default function Cronometro1a1({ reunion, initialAsistencias, onUpdate, o
   // Dividir los convocados en:
   // 1. Cola de atención: citados/walk_in que asistieron pero no terminaron
   const listAtencion = convocadosList.filter(item => item.asistio && !timeRecords[item.vecino_id]?.horaSalida);
-  // 2. Ya Atendidos: citados/walk_in que ya tienen hora de salida registrada
+  // 2. Convocados confirmados: citados/walk_in marcados como confirmados
+  const listConfirmados = convocadosList.filter(item => item.confirmado);
+  // 3. Ya Atendidos: citados/walk_in que ya tienen hora de salida registrada
   const listAtendidos = convocadosList.filter(item => timeRecords[item.vecino_id]?.horaSalida);
-  // 3. No asistieron: citados/walk_in que no asistieron (y no tienen hora de salida)
+  // 4. No asistieron: citados/walk_in que no asistieron (y no tienen hora de salida)
   const listNoAsistieron = convocadosList.filter(item => !item.asistio && !timeRecords[item.vecino_id]?.horaSalida);
 
   // Filtrados
-  const filteredConvocados = listAtencion.filter(item => {
+  const filterBySearch = (list) => list.filter(item => {
     const term = searchQuery.toLowerCase();
     const nombreCompleto = `${item.vecino?.nombre} ${item.vecino?.apellido}`.toLowerCase();
     return (
@@ -709,38 +711,22 @@ export default function Cronometro1a1({ reunion, initialAsistencias, onUpdate, o
       nombreCompleto.includes(term) ||
       (item.horario_bloque_asignado || '').toLowerCase().includes(term)
     );
-  }).sort((a, b) => {
-    return (a.horario_bloque_asignado || '').localeCompare(b.horario_bloque_asignado || '');
-  });
+  }).sort((a, b) => (a.horario_bloque_asignado || '').localeCompare(b.horario_bloque_asignado || ''));
 
-  const filteredAtendidos = listAtendidos.filter(item => {
-    const term = searchQuery.toLowerCase();
-    const nombreCompleto = `${item.vecino?.nombre} ${item.vecino?.apellido}`.toLowerCase();
-    return (
-      item.vecino_id.includes(term) ||
-      nombreCompleto.includes(term) ||
-      (item.horario_bloque_asignado || '').toLowerCase().includes(term)
-    );
-  }).sort((a, b) => {
-    return (a.horario_bloque_asignado || '').localeCompare(b.horario_bloque_asignado || '');
-  });
-
-  const filteredNoAsistieron = listNoAsistieron.filter(item => {
-    const term = searchQuery.toLowerCase();
-    const nombreCompleto = `${item.vecino?.nombre} ${item.vecino?.apellido}`.toLowerCase();
-    return (
-      item.vecino_id.includes(term) ||
-      nombreCompleto.includes(term) ||
-      (item.horario_bloque_asignado || '').toLowerCase().includes(term)
-    );
-  }).sort((a, b) => {
-    return (a.horario_bloque_asignado || '').localeCompare(b.horario_bloque_asignado || '');
-  });
+  const filteredConvocados = filterBySearch(listAtencion);
+  const filteredTodosConvocados = filterBySearch(convocadosList);
+  const filteredConfirmados = filterBySearch(listConfirmados);
+  const filteredAtendidos = filterBySearch(listAtendidos);
+  const filteredNoAsistieron = filterBySearch(listNoAsistieron);
 
   const currentDisplayList = 
     activeTab1a1 === 'atencion' 
       ? filteredConvocados 
-      : (activeTab1a1 === 'atendidos' ? filteredAtendidos : filteredNoAsistieron);
+      : (activeTab1a1 === 'convocados'
+          ? filteredTodosConvocados
+          : (activeTab1a1 === 'confirmados'
+              ? filteredConfirmados
+              : (activeTab1a1 === 'atendidos' ? filteredAtendidos : filteredNoAsistieron)));
 
   // Formatear segundos a MM:SS
   const formatSeconds = (totalSecs) => {
@@ -1095,7 +1081,7 @@ export default function Cronometro1a1({ reunion, initialAsistencias, onUpdate, o
   const handleCopyInformeWhatsAppLocal = () => {
     try {
       let displayFecha = '';
-      let displayHora = '17 hs';
+      let displayHora = (estimatedStart || reunion.hora_inicio_real) ? `${estimatedStart || reunion.hora_inicio_real} hs` : '17 hs';
       if (reunion.fecha) {
         const parts = reunion.fecha.split('-');
         if (parts.length === 3) {
@@ -1103,7 +1089,7 @@ export default function Cronometro1a1({ reunion, initialAsistencias, onUpdate, o
         }
       }
       
-      if (reunion.nombre && reunion.nombre.includes('-')) {
+      if (!estimatedStart && !reunion.hora_inicio_real && reunion.nombre && reunion.nombre.includes('-')) {
         const nameParts = reunion.nombre.split('-');
         const lastPart = nameParts[nameParts.length - 1].trim();
         if (lastPart.toLowerCase().includes('hs') || lastPart.toLowerCase().includes('h')) {
@@ -1254,14 +1240,101 @@ ${sortedCited.length > 0
           </span>
         </div>
 
+        {/* KPI Cards de Resumen para Mano a Mano */}
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: '10px', marginBottom: '1.25rem' }} className="hide-on-print">
+          <div className="card" style={{ margin: 0, padding: '10px 14px', display: 'flex', alignItems: 'center', gap: '10px', backgroundColor: '#F8FAFC', border: '1px solid var(--color-border)' }}>
+            <div style={{ padding: '6px', borderRadius: '6px', backgroundColor: '#E2E8F0', color: '#334155' }}>
+              <Users size={18} />
+            </div>
+            <div>
+              <div style={{ fontSize: '0.7rem', color: 'var(--color-text-muted)', fontWeight: '600', textTransform: 'uppercase' }}>Insc. Base</div>
+              <div style={{ fontSize: '1.15rem', fontWeight: '700', color: 'var(--color-primary)' }}>{asistencias.length}</div>
+            </div>
+          </div>
+
+          <div 
+            className="card" 
+            onClick={() => setActiveTab1a1('convocados')}
+            style={{ margin: 0, padding: '10px 14px', display: 'flex', alignItems: 'center', gap: '10px', backgroundColor: '#EFF6FF', border: '1px solid #BFDBFE', cursor: 'pointer' }}
+            title="Ver todos los vecinos convocados / citados"
+          >
+            <div style={{ padding: '6px', borderRadius: '6px', backgroundColor: '#DBEAFE', color: '#1D4ED8' }}>
+              <Clock size={18} />
+            </div>
+            <div>
+              <div style={{ fontSize: '0.7rem', color: '#1E40AF', fontWeight: '600', textTransform: 'uppercase' }}>Convocados</div>
+              <div style={{ fontSize: '1.15rem', fontWeight: '700', color: '#1E3A8A' }}>{convocadosList.length}</div>
+            </div>
+          </div>
+
+          <div 
+            className="card" 
+            onClick={() => setActiveTab1a1('confirmados')}
+            style={{ margin: 0, padding: '10px 14px', display: 'flex', alignItems: 'center', gap: '10px', backgroundColor: '#ECFDF5', border: '1px solid #A7F3D0', cursor: 'pointer' }}
+            title="Ver vecinos que confirmaron asistencia"
+          >
+            <div style={{ padding: '6px', borderRadius: '6px', backgroundColor: '#D1FAE5', color: '#047857' }}>
+              <PhoneCall size={18} />
+            </div>
+            <div>
+              <div style={{ fontSize: '0.7rem', color: '#065F46', fontWeight: '600', textTransform: 'uppercase' }}>Confirmados</div>
+              <div style={{ fontSize: '1.15rem', fontWeight: '700', color: '#047857' }}>{listConfirmados.length}</div>
+            </div>
+          </div>
+
+          <div 
+            className="card" 
+            onClick={() => setActiveTab1a1('atencion')}
+            style={{ margin: 0, padding: '10px 14px', display: 'flex', alignItems: 'center', gap: '10px', backgroundColor: '#FEF3C7', border: '1px solid #FDE68A', cursor: 'pointer' }}
+            title="Ver vecinos presentes en espera"
+          >
+            <div style={{ padding: '6px', borderRadius: '6px', backgroundColor: '#FDE68A', color: '#B45309' }}>
+              <UserCheck size={18} />
+            </div>
+            <div>
+              <div style={{ fontSize: '0.7rem', color: '#92400E', fontWeight: '600', textTransform: 'uppercase' }}>Presentes</div>
+              <div style={{ fontSize: '1.15rem', fontWeight: '700', color: '#B45309' }}>{convocadosList.filter(c => c.asistio).length}</div>
+            </div>
+          </div>
+
+          <div 
+            className="card" 
+            onClick={() => setActiveTab1a1('atendidos')}
+            style={{ margin: 0, padding: '10px 14px', display: 'flex', alignItems: 'center', gap: '10px', backgroundColor: '#F1F5F9', border: '1px solid var(--color-border)', cursor: 'pointer' }}
+            title="Ver vecinos ya atendidos"
+          >
+            <div style={{ padding: '6px', borderRadius: '6px', backgroundColor: '#E2E8F0', color: '#475569' }}>
+              <CheckCircle2 size={18} />
+            </div>
+            <div>
+              <div style={{ fontSize: '0.7rem', color: 'var(--color-text-muted)', fontWeight: '600', textTransform: 'uppercase' }}>Atendidos</div>
+              <div style={{ fontSize: '1.15rem', fontWeight: '700', color: 'var(--color-primary)' }}>{listAtendidos.length}</div>
+            </div>
+          </div>
+        </div>
+
         {/* Solapas internas de Moderación */}
-        <div className="tabs" style={{ marginBottom: '1.5rem', borderBottom: '2px solid var(--color-border)' }}>
+        <div className="tabs" style={{ marginBottom: '1.5rem', borderBottom: '2px solid var(--color-border)', flexWrap: 'wrap' }}>
           <div 
             className={`tab ${activeTab1a1 === 'atencion' ? 'active' : ''}`}
             onClick={() => setActiveTab1a1('atencion')}
             style={{ padding: '10px 16px', fontWeight: '600' }}
           >
             📋 Cola de atención ({listAtencion.length})
+          </div>
+          <div 
+            className={`tab ${activeTab1a1 === 'convocados' ? 'active' : ''}`}
+            onClick={() => setActiveTab1a1('convocados')}
+            style={{ padding: '10px 16px', fontWeight: '600', backgroundColor: activeTab1a1 === 'convocados' ? '#EFF6FF' : 'transparent', color: activeTab1a1 === 'convocados' ? '#1D4ED8' : 'inherit' }}
+          >
+            👥 Convocados ({convocadosList.length})
+          </div>
+          <div 
+            className={`tab ${activeTab1a1 === 'confirmados' ? 'active' : ''}`}
+            onClick={() => setActiveTab1a1('confirmados')}
+            style={{ padding: '10px 16px', fontWeight: '600', backgroundColor: activeTab1a1 === 'confirmados' ? '#ECFDF5' : 'transparent', color: activeTab1a1 === 'confirmados' ? '#047857' : 'inherit' }}
+          >
+            📞 Confirmados ({listConfirmados.length})
           </div>
           <div 
             className={`tab ${activeTab1a1 === 'atendidos' ? 'active' : ''}`}
@@ -1503,8 +1576,14 @@ ${sortedCited.length > 0
                     <tr>
                       <td colSpan={11} style={{ textAlign: 'center', color: 'var(--color-text-muted)', padding: '2rem' }}>
                         {activeTab1a1 === 'atencion' 
-                          ? 'No hay vecinos en la lista de atención. Ve a la solapa "Piscina de Inscriptos" para citar vecinos o agrégalos "Por la Ventana".'
-                          : 'No hay vecinos atendidos todavía en esta reunión.'}
+                          ? 'No hay vecinos en la cola de atención (presentes en espera). Podés marcar asistencia o agregarlos "Por la Ventana".'
+                          : (activeTab1a1 === 'convocados'
+                              ? 'No hay vecinos convocados / citados en esta reunión.'
+                              : (activeTab1a1 === 'confirmados'
+                                  ? 'Aún no hay vecinos marcados como confirmados.'
+                                  : (activeTab1a1 === 'atendidos'
+                                      ? 'No hay vecinos atendidos todavía en esta reunión.'
+                                      : 'No hay vecinos registrados en esta categoría.')))}
                       </td>
                     </tr>
                   ) : (

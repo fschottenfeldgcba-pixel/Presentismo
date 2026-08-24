@@ -1,0 +1,25 @@
+name: Backup Semanal de Supabase
+
+on:
+  schedule:
+    # Corre todos los sábados a las 23:00 hs (Horario Argentina - GMT-3 / 02:00 UTC del domingo)
+    - cron: '0 2 * * 0'
+  workflow_dispatch: # Permite ejecutar el backup manualmente desde GitHub cuando quieras
+
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Instalar cliente de PostgreSQL
+        run: sudo apt-get update && sudo apt-get install -y postgresql-client
+
+      - name: Generar Dump de Supabase
+        run: |
+          pg_dump "${{ secrets.SUPABASE_DB_URL }}" > backup_presentismo_$(date +%Y%m%d_%H%M%s).sql
+
+      - name: Guardar Backup como Artefacto en GitHub
+        uses: actions/upload-artifact@v4
+        with:
+          name: backup-presentismo-${{ github.run_id }}
+          path: backup_presentismo_*.sql
+          retention-days: 90

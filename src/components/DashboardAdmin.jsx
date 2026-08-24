@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { BarChart3, Plus, Download, Calendar, MapPin, Users, Award, ChevronRight, FileSpreadsheet, Settings, Search, Edit3, Save, Activity, Mic, MessageSquare, Check, TrendingUp, AlertTriangle, Trash2, UserCog, User, UserPlus } from 'lucide-react';
+import { BarChart3, Plus, Download, Calendar, MapPin, Users, Award, ChevronRight, FileSpreadsheet, Settings, Search, Edit3, Save, Activity, Mic, MessageSquare, Check, TrendingUp, AlertTriangle, Trash2, UserCog, User, UserPlus, ChevronDown, ChevronUp, Sparkles } from 'lucide-react';
 import { getReuniones, getAsistentesPorReunion, getOradores, upsertVecino, bulkUpsertVecinos, bulkGuardarAsistencias, normalizeComuna, normalizeCanalDifusion, guardarAsistencia, registrarOrador, eliminarTodosLosInscriptos, unifyCitizenRecords } from '../services/supabaseService';
 import { supabase } from '../lib/supabaseClient';
 import * as XLSX from 'xlsx';
@@ -19,6 +19,7 @@ import { TIPOS_REUNION } from '../data/mockData';
 import EstadisticasFuncionario from './EstadisticasFuncionario';
 import ABMFuncionarios from './ABMFuncionarios';
 import CentralInformes from './CentralInformes';
+import ModalBriefIA from './ModalBriefIA';
 import { OradorTagsDisplay } from './OradorTagSelector';
 import { autoDetectTags } from '../constants/oradorTags';
 
@@ -118,6 +119,7 @@ export default function DashboardAdmin({
   const [pageSize, setPageSize] = useState('10');
   const [fetchLimit, setFetchLimit] = useState(10);
   const [hasMoreReuniones, setHasMoreReuniones] = useState(true);
+  const [showMoreSemana, setShowMoreSemana] = useState(false);
 
   // Cargar modal inicial si viene en la URL (soporte multi-pestaña)
   useEffect(() => {
@@ -255,6 +257,17 @@ export default function DashboardAdmin({
   const [informeAsistentes, setInformeAsistentes] = useState([]);
   const [loadingInforme, setLoadingInforme] = useState(false);
 
+  // Estados para Modal de Brief IA (Gemini)
+  const [showBriefModal, setShowBriefModal] = useState(false);
+  const [selectedReunionBrief, setSelectedReunionBrief] = useState(null);
+  const [briefInscriptosList, setBriefInscriptosList] = useState([]);
+
+  const handleOpenBriefIA = (reunion, inscriptos = null) => {
+    setSelectedReunionBrief(reunion);
+    setBriefInscriptosList(inscriptos || []);
+    setShowBriefModal(true);
+  };
+
   const handleOpenInformeFinal = async (reunion) => {
     setSelectedReunionInforme(reunion);
     setShowInformeModal(true);
@@ -278,7 +291,7 @@ export default function DashboardAdmin({
   const handleCopyInformeWhatsApp = (reunion, oradores, asistentes) => {
     try {
       let displayFecha = '';
-      let displayHora = '17 hs';
+      let displayHora = reunion.hora_inicio_real ? `${reunion.hora_inicio_real} hs` : '17 hs';
       if (reunion.fecha) {
         const parts = reunion.fecha.split('-');
         if (parts.length === 3) {
@@ -286,7 +299,7 @@ export default function DashboardAdmin({
         }
       }
       
-      if (reunion.nombre && reunion.nombre.includes('-')) {
+      if (!reunion.hora_inicio_real && reunion.nombre && reunion.nombre.includes('-')) {
         const nameParts = reunion.nombre.split('-');
         const lastPart = nameParts[nameParts.length - 1].trim();
         if (lastPart.toLowerCase().includes('hs') || lastPart.toLowerCase().includes('h')) {
@@ -749,7 +762,7 @@ ${obsStr}`;
   };
 
   // Renderizador genérico de sección de tabla de reuniones
-  const renderMeetingTableSection = (title, emoji, categoryMeetings, forceShow = false) => {
+  const renderMeetingTableSection = (title, emoji, categoryMeetings, forceShow = false, totalCount = null) => {
     if (categoryMeetings.length === 0) {
       if (!forceShow) return null;
       return (
@@ -792,7 +805,7 @@ ${obsStr}`;
         }}>
           <span style={{ fontSize: '1.25rem' }}>{emoji}</span> {title}
           <span className="badge" style={{ backgroundColor: '#F1F5F9', color: 'var(--color-primary)', fontSize: '0.75rem', padding: '3px 8px', borderRadius: '12px', fontWeight: '700' }}>
-            {categoryMeetings.length}
+            {totalCount !== null && totalCount > categoryMeetings.length ? `${categoryMeetings.length} de ${totalCount}` : (totalCount !== null ? totalCount : categoryMeetings.length)}
           </span>
         </h4>
         <div className="table-responsive" style={{ marginBottom: '1rem' }}>
@@ -855,6 +868,17 @@ ${obsStr}`;
                     </td>
                     <td style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
                       <div style={{ display: 'inline-flex', gap: '3px' }}>
+                        {isCercaniaOrGerencia && (
+                          <a 
+                            href={`?view=administrar_reunion&reunion_id=${r.id}`}
+                            target="_blank"
+                            className="btn btn-secondary btn-sm" 
+                            title="Editar valores de la reunión"
+                            style={{ padding: '3px 6px', display: 'flex', alignItems: 'center', gap: '3px', fontSize: '0.7rem', textDecoration: 'none' }}
+                          >
+                            <Settings size={12} style={{ color: 'var(--color-primary)' }} /> Editar Reunión
+                          </a>
+                        )}
                         <a 
                           href={`?view=dashboard&modal=inscriptos&reunion_id=${r.id}`}
                           target="_blank"
@@ -865,70 +889,25 @@ ${obsStr}`;
                           <Users size={12} style={{ color: 'var(--color-highlight)' }} /> Inscriptos
                         </a>
                         {isCercaniaOrGerencia && (
-                          <>
-                            <button
-                              type="button"
-                              onClick={() => copyWhatsAppManana(r)}
-                              className="btn btn-secondary btn-sm"
-                              title="Copiar WhatsApp Planificación y Cobertura"
-                              style={{ padding: '3px 6px', display: 'flex', alignItems: 'center', gap: '3px', fontSize: '0.7rem', backgroundColor: '#F0FDF4', color: '#15803D', border: '1px solid #BBF7D0' }}
-                            >
-                              📋 WhatsApp
-                            </button>
-                            <a 
-                              href={`?view=administrar_reunion&reunion_id=${r.id}`}
-                              target="_blank"
-                              className="btn btn-secondary btn-sm" 
-                              title="Editar valores de la reunión"
-                              style={{ padding: '3px 6px', display: 'flex', alignItems: 'center', gap: '3px', fontSize: '0.7rem', textDecoration: 'none' }}
-                            >
-                              <Settings size={12} style={{ color: 'var(--color-primary)' }} /> Editar
-                            </a>
-                            {isMicMeeting ? (
-                              <>
-                                <a 
-                                  href={`?view=moderar_reunion&reunion_id=${r.id}`}
-                                  target="_blank"
-                                  className="btn btn-secondary btn-sm" 
-                                  title="Panel de moderador y oradores"
-                                  style={{ padding: '3px 6px', display: 'flex', alignItems: 'center', gap: '3px', fontSize: '0.7rem', textDecoration: 'none' }}
-                                >
-                                  <Mic size={12} style={{ color: 'var(--color-highlight)' }} /> Moderar
-                                </a>
-                                <a 
-                                  href={`?view=dashboard&modal=informe&reunion_id=${r.id}`}
-                                  target="_blank"
-                                  className="btn btn-secondary btn-sm" 
-                                  title="Ver informe final y resumen cualitativo/cuantitativo"
-                                  style={{ padding: '3px 6px', display: 'flex', alignItems: 'center', gap: '3px', fontSize: '0.7rem', border: '1px solid var(--color-highlight)', color: 'var(--color-primary)', textDecoration: 'none' }}
-                                >
-                                  <Activity size={12} style={{ color: 'var(--color-highlight)' }} /> Informe
-                                </a>
-                              </>
-                            ) : (
-                              <>
-                                <a 
-                                  href={`?view=moderar_reunion&reunion_id=${r.id}`}
-                                  target="_blank"
-                                  className="btn btn-secondary btn-sm" 
-                                  title="Panel de moderador y cronómetro (Uno a Uno)"
-                                  style={{ padding: '3px 6px', display: 'flex', alignItems: 'center', gap: '3px', fontSize: '0.7rem', textDecoration: 'none' }}
-                                >
-                                  <Mic size={12} style={{ color: 'var(--color-highlight)' }} /> Moderar
-                                </a>
-                                <a 
-                                  href={`?view=dashboard&modal=informe&reunion_id=${r.id}`}
-                                  target="_blank"
-                                  className="btn btn-secondary btn-sm" 
-                                  title="Ver informe final y resumen cualitativo/cuantitativo (Uno a Uno)"
-                                  style={{ padding: '3px 6px', display: 'flex', alignItems: 'center', gap: '3px', fontSize: '0.7rem', border: '1px solid var(--color-highlight)', color: 'var(--color-primary)', textDecoration: 'none' }}
-                                >
-                                  <Activity size={12} style={{ color: 'var(--color-highlight)' }} /> Informe
-                                </a>
-                              </>
-                            )}
-                          </>
+                          <button
+                            type="button"
+                            onClick={() => handleOpenBriefIA(r)}
+                            className="btn btn-secondary btn-sm"
+                            title="Ver WhatsApp, Brief Original y Milagros Operativos"
+                            style={{ padding: '3px 6px', display: 'flex', alignItems: 'center', gap: '3px', fontSize: '0.7rem', backgroundColor: '#EFF6FF', color: '#1D4ED8', border: '1px solid #BFDBFE', fontWeight: '600' }}
+                          >
+                            <Sparkles size={12} style={{ color: '#3B82F6' }} /> Briefs
+                          </button>
                         )}
+                        <a 
+                          href={`?view=moderar_reunion&reunion_id=${r.id}`}
+                          target="_blank"
+                          className="btn btn-secondary btn-sm" 
+                          title="Panel de moderador y oradores"
+                          style={{ padding: '3px 6px', display: 'flex', alignItems: 'center', gap: '3px', fontSize: '0.7rem', textDecoration: 'none' }}
+                        >
+                          <Mic size={12} style={{ color: 'var(--color-highlight)' }} /> Moderar
+                        </a>
                         <a 
                           href={`?view=asistencia&reunion_id=${r.id}`}
                           target="_blank"
@@ -954,10 +933,7 @@ ${obsStr}`;
     const isHistoricalNeeded = showHistorical || forceHistorical;
     
     let activeLimit = currentLimit !== null ? currentLimit : fetchLimit;
-    if (!isHistoricalNeeded) {
-      activeLimit = 10; // Carga inicial corta para la vista rápida
-    }
-    const queryLimit = pageSize === 'todas' ? null : activeLimit;
+    const queryLimit = (showHistorical || isHistoricalNeeded) ? (pageSize === 'todas' ? null : activeLimit) : null;
 
     const { data: list, error: errReuniones } = await getReuniones({ 
       historico: isHistoricalNeeded,
@@ -1170,7 +1146,12 @@ ${obsStr}`;
     ];
 
     const rows = data.map(item => {
-      const orad = oradoresData?.find(o => o.vecino_id === item.vecino_id);
+      const itemDni = String(item.vecino_id || item.vecino?.dni || '').trim();
+      const orad = oradoresData?.find(o => 
+        String(o.vecino_id || '').trim() === itemDni || 
+        String(o.dni || '').trim() === itemDni ||
+        (item.vecino?.dni && String(o.vecino_id || '').trim() === String(item.vecino.dni).trim())
+      );
       
       const isOrador = orad ? 'SI' : 'NO';
       const estadoOrador = orad 
@@ -1653,7 +1634,129 @@ ${obsStr}`;
     }
   };
 
-  const handleExportInscriptosToExcel = async () => {
+  // Exportar TODOS los Inscriptos a Excel (XLSX) con columnas de historial (asistencias anteriores y veces orador)
+  const handleExportTodosInscriptosToExcel = async () => {
+    if (inscriptosList.length === 0 || !selectedReunionInscriptos) return;
+
+    // Obtener los oradores de esta reunión para mapear minutas/temas planteados
+    let oradoresMap = {};
+    try {
+      const { data: oradoresData } = await getOradores(selectedReunionInscriptos.id);
+      if (oradoresData && Array.isArray(oradoresData)) {
+        oradoresData.forEach(o => {
+          const tema = o.tema_efectivo || o.tema_original || '';
+          if (o.vecino_id) oradoresMap[String(o.vecino_id).trim()] = tema;
+          if (o.vecino?.dni) oradoresMap[String(o.vecino.dni).trim()] = tema;
+        });
+      }
+    } catch (err) {
+      console.error('Error al obtener oradores para exportación XLS:', err);
+    }
+
+    // dnis / ids de TODOS los inscriptos
+    const dnis = inscriptosList.map(item => item.vecino?.dni || item.vecino_id).filter(Boolean);
+    let recurrentesDniSet = new Set();
+    let asistenciasAnterioresCountMap = {};
+    let reunionesOradorCountMap = {};
+
+    if (dnis.length > 0) {
+      try {
+        const chunkSize = 100;
+        for (let i = 0; i < dnis.length; i += chunkSize) {
+          const chunkDnis = dnis.slice(i, i + chunkSize);
+
+          // 1. Asistencias históricas a otras reuniones
+          const { data: histData } = await supabase
+            .from('inscripciones_asistencias')
+            .select('vecino_id, reunion_id')
+            .eq('asistio', true)
+            .neq('reunion_id', selectedReunionInscriptos.id)
+            .in('vecino_id', chunkDnis);
+
+          if (histData && Array.isArray(histData)) {
+            histData.forEach(h => {
+              if (h.vecino_id && h.reunion_id !== selectedReunionInscriptos.id) {
+                const cleanId = String(h.vecino_id).trim();
+                recurrentesDniSet.add(cleanId);
+                asistenciasAnterioresCountMap[cleanId] = (asistenciasAnterioresCountMap[cleanId] || 0) + 1;
+              }
+            });
+          }
+
+          // 2. Historial de orador en reuniones
+          const { data: oByVecinoId } = await supabase
+            .from('oradores')
+            .select('vecino_id, dni, reunion_id')
+            .in('vecino_id', chunkDnis);
+
+          const { data: oByDni } = await supabase
+            .from('oradores')
+            .select('vecino_id, dni, reunion_id')
+            .in('dni', chunkDnis);
+
+          const combinedOradores = [...(oByVecinoId || []), ...(oByDni || [])];
+
+          const reunionesPorVecino = {};
+          combinedOradores.forEach(o => {
+            const idKey = String(o.vecino_id || o.dni || '').trim();
+            if (idKey) {
+              if (!reunionesPorVecino[idKey]) reunionesPorVecino[idKey] = new Set();
+              if (o.reunion_id) reunionesPorVecino[idKey].add(o.reunion_id);
+            }
+          });
+
+          Object.keys(reunionesPorVecino).forEach(idKey => {
+            reunionesOradorCountMap[idKey] = reunionesPorVecino[idKey].size;
+          });
+        }
+      } catch (err) {
+        console.error('Error al consultar historial de inscriptos:', err);
+      }
+    }
+
+    const isPrimeraPersona = selectedReunionInscriptos.tipo_reunion === TIPOS_REUNION.PRIMERA_PERSONA;
+
+    const dataToExport = inscriptosList.map(item => {
+      const dniVal = item.vecino?.dni || item.vecino_id || '';
+      const cleanDni = String(dniVal).trim();
+      const isRecurrente = recurrentesDniSet.has(cleanDni) || (item.vecino_id && recurrentesDniSet.has(String(item.vecino_id).trim()));
+      const vezStr = isRecurrente ? 'Recurrente' : '1ª Vez';
+      const temaOrador = oradoresMap[cleanDni] || (item.vecino_id ? oradoresMap[String(item.vecino_id).trim()] : '') || item.tema_previo || selectedReunionInscriptos.tema || '';
+
+      const cantAsistenciasAnteriores = asistenciasAnterioresCountMap[cleanDni] || (item.vecino_id ? asistenciasAnterioresCountMap[String(item.vecino_id).trim()] : 0) || 0;
+      const cantReunionesOrador = reunionesOradorCountMap[cleanDni] || (item.vecino_id ? reunionesOradorCountMap[String(item.vecino_id).trim()] : 0) || 0;
+
+      return {
+        'fecha': selectedReunionInscriptos.fecha || '',
+        'comuna': selectedReunionInscriptos.comuna || '',
+        'medio': item.como_se_entero || item.vecino?.como_se_entero || '',
+        'vez': vezStr,
+        'nombre': item.vecino?.nombre || '',
+        'apellido': item.vecino?.apellido || '',
+        'dni': dniVal,
+        'email': item.vecino?.email || '',
+        'telefono': item.vecino?.celular || '',
+        'campaña': item.invitado_por || item.campana || '',
+        'funcionario': selectedReunionInscriptos.funcionario || '',
+        'barrio': selectedReunionInscriptos.barrio_evento || selectedReunionInscriptos.barrio || item.vecino?.barrio || '',
+        'tema': temaOrador,
+        'personalidad': isPrimeraPersona ? (selectedReunionInscriptos.tema || selectedReunionInscriptos.funcionario || '') : '',
+        'asistencias_anteriores': cantAsistenciasAnteriores,
+        'reuniones_orador': cantReunionesOrador
+      };
+    });
+
+    const worksheet = XLSX.utils.json_to_sheet(dataToExport);
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, worksheet, 'Todos_los_Inscriptos');
+    
+    const cleanName = selectedReunionInscriptos.nombre.replace(/[^a-zA-Z0-9]/g, '_');
+    const fileName = `Todos_los_Inscriptos_${cleanName}.xlsx`;
+    XLSX.writeFile(workbook, fileName);
+  };
+
+  // Exportar SOLO los Asistentes a Excel (XLSX)
+  const handleExportAsistentesToExcel = async () => {
     if (inscriptosList.length === 0 || !selectedReunionInscriptos) return;
     
     // Filtrar SOLO a los vecinos asistentes
@@ -1670,15 +1773,15 @@ ${obsStr}`;
       if (oradoresData && Array.isArray(oradoresData)) {
         oradoresData.forEach(o => {
           const tema = o.tema_efectivo || o.tema_original || '';
-          if (o.vecino_id) oradoresMap[o.vecino_id] = tema;
-          if (o.vecino?.dni) oradoresMap[o.vecino.dni] = tema;
+          if (o.vecino_id) oradoresMap[String(o.vecino_id).trim()] = tema;
+          if (o.vecino?.dni) oradoresMap[String(o.vecino.dni).trim()] = tema;
         });
       }
     } catch (err) {
       console.error('Error al obtener oradores para exportación XLS:', err);
     }
 
-    // Consultar asistencias históricas en otras reuniones para los asistentes desde inscripciones_asistencias
+    // Consultar asistencias históricas en otras reuniones para los asistentes
     const dnis = asistentesList.map(item => item.vecino?.dni || item.vecino_id).filter(Boolean);
     let recurrentesDniSet = new Set();
     
@@ -1697,7 +1800,7 @@ ${obsStr}`;
           if (histData && Array.isArray(histData)) {
             histData.forEach(h => {
               if (h.vecino_id && h.reunion_id !== selectedReunionInscriptos.id) {
-                recurrentesDniSet.add(h.vecino_id);
+                recurrentesDniSet.add(String(h.vecino_id).trim());
               }
             });
           }
@@ -1712,9 +1815,10 @@ ${obsStr}`;
 
     const dataToExport = asistentesList.map(item => {
       const dniVal = item.vecino?.dni || item.vecino_id || '';
-      const isRecurrente = recurrentesDniSet.has(dniVal) || recurrentesDniSet.has(item.vecino_id);
+      const cleanDni = String(dniVal).trim();
+      const isRecurrente = recurrentesDniSet.has(cleanDni) || (item.vecino_id && recurrentesDniSet.has(String(item.vecino_id).trim()));
       const vezStr = isRecurrente ? 'Recurrente' : '1ª Vez';
-      const temaOrador = oradoresMap[dniVal] || (item.vecino_id ? oradoresMap[item.vecino_id] : '') || item.tema_previo || selectedReunionInscriptos.tema || '';
+      const temaOrador = oradoresMap[cleanDni] || (item.vecino_id ? oradoresMap[String(item.vecino_id).trim()] : '') || item.tema_previo || selectedReunionInscriptos.tema || '';
 
       return {
         'fecha': selectedReunionInscriptos.fecha || '',
@@ -3373,6 +3477,12 @@ ${obsStr}`;
               const proximaSemana = filtered.filter(r => getMeetingCategory(r.fecha) === 'proxima_semana');
               const mes = showHistorical ? filtered.filter(r => getMeetingCategory(r.fecha) === 'mes') : [];
               const historicas = showHistorical ? filtered.filter(r => getMeetingCategory(r.fecha) === 'historicas') : [];
+
+              // Aplicar corte por cantidad según el desplegable "Mostrar: N" SOLO a "Reuniones de esta semana"
+              const numPageSize = pageSize === 'todas' ? Infinity : (parseInt(pageSize, 10) || 10);
+              const semanaLimit = (showMoreSemana || pageSize === 'todas') ? semana.length : Math.min(semana.length, numPageSize);
+              const displayedSemana = semana.slice(0, semanaLimit);
+              const hasMoreSemanaInCut = semana.length > semanaLimit;
               
               // Si no se muestra histórico y no hay reuniones de hoy, mañana, esta semana ni la próxima semana, mostramos las recientes
               const recientes = (!showHistorical && hoy.length === 0 && manana.length === 0 && semana.length === 0 && proximaSemana.length === 0) ? filtered : [];
@@ -3381,7 +3491,59 @@ ${obsStr}`;
                 <>
                   {renderMeetingTableSection('Reuniones de HOY', '📅', hoy, true)}
                   {renderMeetingTableSection('Reuniones de MAÑANA', '🌅', manana, true)}
-                  {renderMeetingTableSection('Reuniones de esta semana', '🗓️', semana, true)}
+                  {renderMeetingTableSection('Reuniones de esta semana', '🗓️', displayedSemana, true, semana.length)}
+                  
+                  {hasMoreSemanaInCut && (
+                    <div style={{ display: 'flex', justifyContent: 'center', marginTop: '-1.5rem', marginBottom: '2.5rem' }}>
+                      <button
+                        type="button"
+                        onClick={() => setShowMoreSemana(true)}
+                        className="btn btn-secondary"
+                        style={{
+                          fontWeight: 'bold',
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          gap: '6px',
+                          padding: '8px 22px',
+                          fontSize: '0.85rem',
+                          borderRadius: '8px',
+                          border: '1px solid #CBD5E1',
+                          backgroundColor: '#F8FAFC',
+                          color: '#1E293B',
+                          cursor: 'pointer',
+                          boxShadow: '0 2px 4px -1px rgba(0,0,0,0.05)'
+                        }}
+                      >
+                        <ChevronDown size={16} /> Ver más ({semana.length - semanaLimit} reuniones más de esta semana)
+                      </button>
+                    </div>
+                  )}
+
+                  {showMoreSemana && semana.length > numPageSize && pageSize !== 'todas' && (
+                    <div style={{ display: 'flex', justifyContent: 'center', marginTop: '-1.5rem', marginBottom: '2.5rem' }}>
+                      <button
+                        type="button"
+                        onClick={() => setShowMoreSemana(false)}
+                        className="btn btn-secondary"
+                        style={{
+                          fontWeight: '600',
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          gap: '6px',
+                          padding: '6px 18px',
+                          fontSize: '0.8rem',
+                          borderRadius: '8px',
+                          border: '1px solid #E2E8F0',
+                          backgroundColor: '#FFFFFF',
+                          color: '#64748B',
+                          cursor: 'pointer'
+                        }}
+                      >
+                        <ChevronUp size={14} /> Ver menos
+                      </button>
+                    </div>
+                  )}
+
                   {renderMeetingTableSection('Reuniones de la PRÓXIMA SEMANA', '🚀', proximaSemana, true)}
                   {renderMeetingTableSection('Reuniones Recientes', '⏱️', recientes)}
                   {showHistorical && renderMeetingTableSection('Reuniones de este mes', '📆', mes)}
@@ -4298,12 +4460,30 @@ ${obsStr}`;
                 )}
                 <button 
                   className="btn btn-secondary btn-sm"
-                  onClick={handleExportInscriptosToExcel}
-                  title="Descargar listado de inscriptos en Excel"
-                  style={{ display: 'flex', alignItems: 'center', gap: '4px', border: '1px solid #10B981', color: '#0F766E', backgroundColor: '#F0FDF4' }}
+                  onClick={() => handleOpenBriefIA(selectedReunionInscriptos, inscriptosList)}
+                  title="Ver WhatsApp, Brief Original y Milagros Operativos"
+                  style={{ display: 'flex', alignItems: 'center', gap: '4px', border: '1px solid #93C5FD', color: '#1D4ED8', backgroundColor: '#EFF6FF', fontWeight: '700' }}
                   disabled={inscriptosList.length === 0}
                 >
-                  <FileSpreadsheet size={14} /> Descargar XLS
+                  <Sparkles size={14} style={{ color: '#3B82F6' }} /> Briefs
+                </button>
+                <button 
+                  className="btn btn-secondary btn-sm"
+                  onClick={handleExportTodosInscriptosToExcel}
+                  title="Descargar todos los inscriptos en Excel (incluye historial de asistencias anteriores y veces orador)"
+                  style={{ display: 'flex', alignItems: 'center', gap: '4px', border: '1px solid #2563EB', color: '#1E40AF', backgroundColor: '#EFF6FF', fontWeight: '600' }}
+                  disabled={inscriptosList.length === 0}
+                >
+                  <FileSpreadsheet size={14} /> Todos los Inscriptos (XLSX)
+                </button>
+                <button 
+                  className="btn btn-secondary btn-sm"
+                  onClick={handleExportAsistentesToExcel}
+                  title="Descargar únicamente los vecinos que asistieron a la reunión en Excel"
+                  style={{ display: 'flex', alignItems: 'center', gap: '4px', border: '1px solid #10B981', color: '#0F766E', backgroundColor: '#F0FDF4', fontWeight: '600' }}
+                  disabled={inscriptosList.length === 0}
+                >
+                  <FileSpreadsheet size={14} /> Solo Asistentes (XLSX)
                 </button>
                 {inscriptosList.length > 0 && (
                   <button 
@@ -4429,6 +4609,27 @@ ${obsStr}`;
                         Presentes: {inscriptosList.filter(i => i.asistio).length}
                       </span>
                     </>
+                  ) : (selectedReunionInscriptos.tipo_reunion === TIPOS_REUNION.EXPERIENCIAS_BA || selectedReunionInscriptos.tipo_reunion === TIPOS_REUNION.VOLUNTARIADOS) ? (
+                    <>
+                      <span className="badge badge-info" style={{ backgroundColor: '#F1F5F9', color: 'var(--color-primary)' }}>
+                        Inscriptos: {inscriptosList.length}
+                      </span>
+                      <span className="badge badge-warning" style={{ backgroundColor: '#FEF3C7', color: '#B45309', border: '1px solid #FDE68A' }}>
+                        Cupo: {(() => {
+                          try {
+                            const cfg = typeof selectedReunionInscriptos.config_uno_a_uno === 'string' ? JSON.parse(selectedReunionInscriptos.config_uno_a_uno) : selectedReunionInscriptos.config_uno_a_uno;
+                            if (cfg?.modalidadCupo === 'doble') return `TM: ${cfg.cupoTM || 0} | TT: ${cfg.cupoTT || 0} (Total: ${Number(cfg.cupoTM || 0) + Number(cfg.cupoTT || 0)})`;
+                            return cfg?.cupoGeneral || cfg?.cupo || 'S/D';
+                          } catch { return 'S/D'; }
+                        })()}
+                      </span>
+                      <span className="badge badge-success" style={{ backgroundColor: '#DCFCE7', color: '#15803D', border: '1px solid #86EFAC' }}>
+                        Confirmados: {inscriptosList.filter(i => i.confirmado).length}
+                      </span>
+                      <span className="badge badge-success">
+                        Presentes: {inscriptosList.filter(i => i.asistio).length}
+                      </span>
+                    </>
                   ) : (
                     <>
                       <span className="badge badge-info" style={{ backgroundColor: '#F1F5F9', color: 'var(--color-primary)' }}>
@@ -4506,6 +4707,8 @@ ${obsStr}`;
                     );
                   }
 
+                  const isExpVol = selectedReunionInscriptos.tipo_reunion === TIPOS_REUNION.EXPERIENCIAS_BA || selectedReunionInscriptos.tipo_reunion === TIPOS_REUNION.VOLUNTARIADOS;
+
                   return (
                     <div style={{ maxHeight: '400px', overflowY: 'auto', border: '1px solid var(--color-border)', borderRadius: '8px' }}>
                       <table className="table" style={{ margin: 0 }}>
@@ -4513,6 +4716,9 @@ ${obsStr}`;
                           <tr>
                             {selectedReunionInscriptos.tipo_reunion === 'Uno a Uno' && (
                               <th style={{ width: '60px', textAlign: 'center' }}>Selecc.</th>
+                            )}
+                            {isExpVol && (
+                              <th style={{ width: '90px', textAlign: 'center' }}>¿Confirmado?</th>
                             )}
                             <th>Vecino</th>
                             <th>DNI</th>
@@ -4533,6 +4739,23 @@ ${obsStr}`;
                                       checked={!!tempSelectedDnis[item.vecino_id]}
                                       onChange={() => handleToggleCitadoInscriptos(item)}
                                       style={{ width: '18px', height: '18px', cursor: 'pointer', accentColor: 'var(--color-primary)' }}
+                                    />
+                                  </td>
+                                )}
+                                {isExpVol && (
+                                  <td style={{ textAlign: 'center', verticalAlign: 'middle' }}>
+                                    <input
+                                      type="checkbox"
+                                      checked={!!item.confirmado}
+                                      onChange={async () => {
+                                        const nextConf = !item.confirmado;
+                                        setInscriptosList(prev => prev.map(i => i.id === item.id ? { ...i, confirmado: nextConf } : i));
+                                        await guardarAsistencia(selectedReunionInscriptos.id, item.vecino_id, item.asistio, {
+                                          confirmado: nextConf
+                                        });
+                                      }}
+                                      style={{ width: '18px', height: '18px', cursor: 'pointer', accentColor: '#10B981' }}
+                                      title="Marcar / desmarcar vecino confirmado"
                                     />
                                   </td>
                                 )}
@@ -5178,6 +5401,14 @@ ${obsStr}`;
           </div>
         </div>
       )}
+
+      {/* MODAL DE BRIEF IA PARA WHATSAPP (GEMINI) */}
+      <ModalBriefIA 
+        reunion={selectedReunionBrief}
+        inscriptosList={briefInscriptosList}
+        isOpen={showBriefModal}
+        onClose={() => setShowBriefModal(false)}
+      />
     </div>
   );
 }

@@ -89,6 +89,12 @@ export default function AdministrarReunion({ reunion, onBack, onSaveSuccess }) {
   const [arreglo1, setArreglo1] = useState(reunion?.arreglo_1 || '');
   const [tema, setTema] = useState(reunion?.tema || '');
 
+  // Estados para Cupo en Experiencias BA y Voluntariados
+  const [modalidadCupo, setModalidadCupo] = useState('unico'); // 'unico' | 'doble'
+  const [cupoGeneral, setCupoGeneral] = useState(50);
+  const [cupoTM, setCupoTM] = useState(25);
+  const [cupoTT, setCupoTT] = useState(25);
+
   // Estados para funcionarios y autocompletado
   const [funcionariosList, setFuncionariosList] = useState([]);
   const [selectedFuncionarios, setSelectedFuncionarios] = useState([]);
@@ -146,6 +152,19 @@ export default function AdministrarReunion({ reunion, onBack, onSaveSuccess }) {
         }
       }
       if (reunion.observaciones_preparacion) setObservacionesPreparacion(reunion.observaciones_preparacion);
+      if (reunion.config_uno_a_uno) {
+        try {
+          const cfg = typeof reunion.config_uno_a_uno === 'string' 
+            ? JSON.parse(reunion.config_uno_a_uno) 
+            : reunion.config_uno_a_uno;
+          if (cfg?.modalidadCupo) setModalidadCupo(cfg.modalidadCupo);
+          if (cfg?.cupoGeneral !== undefined) setCupoGeneral(cfg.cupoGeneral);
+          if (cfg?.cupoTM !== undefined) setCupoTM(cfg.cupoTM);
+          if (cfg?.cupoTT !== undefined) setCupoTT(cfg.cupoTT);
+        } catch (e) {
+          console.warn('Error al parsear config_uno_a_uno:', e);
+        }
+      }
     }
   }, [reunion, equipoCercaniaList]);
 
@@ -295,12 +314,18 @@ export default function AdministrarReunion({ reunion, onBack, onSaveSuccess }) {
       comuna,
       barrio_evento: barrioEvento.trim() || null,
       barrio: barrio === 'Convocatoria Comunal' ? null : barrio,
-      tema: (tipoReunion === TIPOS_REUNION.TEMATICA || tipoReunion === TIPOS_REUNION.PROCESOS_CO_CREACION || tipoReunion === TIPOS_REUNION.PROCESOS_INFORMATIVA || tipoReunion === TIPOS_REUNION.PRIMERA_PERSONA) ? tema.trim() : null,
+      tema: (tipoReunion === TIPOS_REUNION.TEMATICA || tipoReunion === TIPOS_REUNION.PROCESOS_CO_CREACION || tipoReunion === TIPOS_REUNION.PROCESOS_INFORMATIVA || tipoReunion === TIPOS_REUNION.PRIMERA_PERSONA || tipoReunion === TIPOS_REUNION.EXPERIENCIAS_BA || tipoReunion === TIPOS_REUNION.VOLUNTARIADOS) ? tema.trim() : null,
       arreglo_1: arreglo1.trim() || null,
       funcionarios_acompanantes: funcionariosAcompanantes.trim() ? [funcionariosAcompanantes.trim()] : null,
       responsable_cercania_id: selectedEquipoCercania.length > 0 ? selectedEquipoCercania[0].id : null,
       integrantes_asignados: selectedIntegrantes.length > 0 ? selectedIntegrantes.map(a => a.nombre_completo) : null,
-      observaciones_preparacion: observacionesPreparacion.trim() || null
+      observaciones_preparacion: observacionesPreparacion.trim() || null,
+      config_uno_a_uno: (tipoReunion === TIPOS_REUNION.EXPERIENCIAS_BA || tipoReunion === TIPOS_REUNION.VOLUNTARIADOS) ? {
+        modalidadCupo,
+        cupoGeneral: Number(cupoGeneral) || 0,
+        cupoTM: Number(cupoTM) || 0,
+        cupoTT: Number(cupoTT) || 0
+      } : (reunion?.config_uno_a_uno || null)
     });
     setSavingReunion(false);
 
@@ -499,6 +524,8 @@ export default function AdministrarReunion({ reunion, onBack, onSaveSuccess }) {
                     <option value={TIPOS_REUNION.PROCESOS_CO_CREACION}>{TIPOS_REUNION.PROCESOS_CO_CREACION}</option>
                     <option value={TIPOS_REUNION.PROCESOS_INFORMATIVA}>{TIPOS_REUNION.PROCESOS_INFORMATIVA}</option>
                     <option value={TIPOS_REUNION.PRIMERA_PERSONA}>{TIPOS_REUNION.PRIMERA_PERSONA}</option>
+                    <option value={TIPOS_REUNION.EXPERIENCIAS_BA}>{TIPOS_REUNION.EXPERIENCIAS_BA}</option>
+                    <option value={TIPOS_REUNION.VOLUNTARIADOS}>{TIPOS_REUNION.VOLUNTARIADOS}</option>
                   </select>
                 </div>
               </div>
@@ -551,6 +578,93 @@ export default function AdministrarReunion({ reunion, onBack, onSaveSuccess }) {
                     required
                   />
                 </div>
+              )}
+
+              {(tipoReunion === TIPOS_REUNION.EXPERIENCIAS_BA || tipoReunion === TIPOS_REUNION.VOLUNTARIADOS) && (
+                <>
+                  <div className="form-group">
+                    <label htmlFor="tema">Nombre de la Actividad / Visita / Proyecto *</label>
+                    <input
+                      type="text"
+                      id="tema"
+                      className="form-control"
+                      placeholder={tipoReunion === TIPOS_REUNION.EXPERIENCIAS_BA ? "Ej: Visita Guiada a Teatro Colón Fábrica" : "Ej: Jornada de Voluntariado Ambiental"}
+                      value={tema}
+                      onChange={(e) => setTema(e.target.value)}
+                      required
+                    />
+                  </div>
+
+                  <div style={{ backgroundColor: '#F0FDF4', border: '1px solid #BBF7D0', borderRadius: '8px', padding: '1rem', marginBottom: '1.25rem' }}>
+                    <h4 style={{ margin: '0 0 10px 0', fontSize: '0.92rem', fontWeight: '700', color: '#15803D', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                      🎟️ Configuración de Cupos ({tipoReunion})
+                    </h4>
+                    <div style={{ display: 'flex', gap: '1.5rem', marginBottom: '12px' }}>
+                      <label style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', fontSize: '0.85rem', cursor: 'pointer', fontWeight: '600', color: '#166534' }}>
+                        <input 
+                          type="radio" 
+                          name="modalidadCupoAdmin" 
+                          value="unico" 
+                          checked={modalidadCupo === 'unico'} 
+                          onChange={() => setModalidadCupo('unico')} 
+                        />
+                        Cupo Único General
+                      </label>
+                      <label style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', fontSize: '0.85rem', cursor: 'pointer', fontWeight: '600', color: '#166534' }}>
+                        <input 
+                          type="radio" 
+                          name="modalidadCupoAdmin" 
+                          value="doble" 
+                          checked={modalidadCupo === 'doble'} 
+                          onChange={() => setModalidadCupo('doble')} 
+                        />
+                        Doble Turno (TM y TT)
+                      </label>
+                    </div>
+
+                    {modalidadCupo === 'unico' ? (
+                      <div className="form-group" style={{ margin: 0 }}>
+                        <label style={{ fontSize: '0.82rem', fontWeight: '600', color: '#15803D' }}>Cupo Total de Asistentes</label>
+                        <input
+                          type="number"
+                          min="1"
+                          className="form-control"
+                          placeholder="Ej: 50"
+                          value={cupoGeneral}
+                          onChange={(e) => setCupoGeneral(e.target.value)}
+                          required
+                        />
+                      </div>
+                    ) : (
+                      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
+                        <div className="form-group" style={{ margin: 0 }}>
+                          <label style={{ fontSize: '0.82rem', fontWeight: '600', color: '#15803D' }}>Cupo Turno Mañana (TM)</label>
+                          <input
+                            type="number"
+                            min="1"
+                            className="form-control"
+                            placeholder="Ej: 25"
+                            value={cupoTM}
+                            onChange={(e) => setCupoTM(e.target.value)}
+                            required
+                          />
+                        </div>
+                        <div className="form-group" style={{ margin: 0 }}>
+                          <label style={{ fontSize: '0.82rem', fontWeight: '600', color: '#15803D' }}>Cupo Turno Tarde (TT)</label>
+                          <input
+                            type="number"
+                            min="1"
+                            className="form-control"
+                            placeholder="Ej: 25"
+                            value={cupoTT}
+                            onChange={(e) => setCupoTT(e.target.value)}
+                            required
+                          />
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </>
               )}
 
               <div className="form-group">

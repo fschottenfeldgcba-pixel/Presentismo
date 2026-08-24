@@ -122,6 +122,12 @@ export default function ABMReuniones({ onBack, onSaveSuccess }) {
     }
   };
   
+  // Estados para Cupo en Experiencias BA y Voluntariados
+  const [modalidadCupo, setModalidadCupo] = useState('unico'); // 'unico' | 'doble'
+  const [cupoGeneral, setCupoGeneral] = useState(50);
+  const [cupoTM, setCupoTM] = useState(25);
+  const [cupoTT, setCupoTT] = useState(25);
+
   // Estados para funcionarios y autocompletado
   const [funcionariosList, setFuncionariosList] = useState([]);
   const [selectedFuncionarios, setSelectedFuncionarios] = useState([]);
@@ -225,8 +231,16 @@ export default function ABMReuniones({ onBack, onSaveSuccess }) {
       ? `${displayComuna} - ${barrio}`
       : displayComuna;
 
-    // Si tiene tema/famoso y es Temática, Procesos Participativos o Primera Persona, lo anexamos al tipo
-    const displayTipoConTema = tema && (tipoReunion === TIPOS_REUNION.TEMATICA || tipoReunion === TIPOS_REUNION.PROCESOS_CO_CREACION || tipoReunion === TIPOS_REUNION.PROCESOS_INFORMATIVA || tipoReunion === TIPOS_REUNION.PRIMERA_PERSONA)
+    // Si tiene tema/famoso/actividad y es Temática, Procesos Participativos, Primera Persona, Experiencias BA o Voluntariados
+    const isSpecialTypeWithTheme = tema && (
+      tipoReunion === TIPOS_REUNION.TEMATICA || 
+      tipoReunion === TIPOS_REUNION.PROCESOS_CO_CREACION || 
+      tipoReunion === TIPOS_REUNION.PROCESOS_INFORMATIVA || 
+      tipoReunion === TIPOS_REUNION.PRIMERA_PERSONA ||
+      tipoReunion === TIPOS_REUNION.EXPERIENCIAS_BA ||
+      tipoReunion === TIPOS_REUNION.VOLUNTARIADOS
+    );
+    const displayTipoConTema = isSpecialTypeWithTheme
       ? `${displayTipo} (${tema})`
       : displayTipo;
 
@@ -490,7 +504,7 @@ export default function ABMReuniones({ onBack, onSaveSuccess }) {
       barrio: barrio === 'Convocatoria Comunal' ? null : barrio,
       funcionario: funcionario.trim() || null,
       tipo_reunion: tipoReunion,
-      tema: (tipoReunion === TIPOS_REUNION.TEMATICA || tipoReunion === TIPOS_REUNION.PROCESOS_CO_CREACION || tipoReunion === TIPOS_REUNION.PROCESOS_INFORMATIVA || tipoReunion === TIPOS_REUNION.PRIMERA_PERSONA) ? tema.trim() : null,
+      tema: (tipoReunion === TIPOS_REUNION.TEMATICA || tipoReunion === TIPOS_REUNION.PROCESOS_CO_CREACION || tipoReunion === TIPOS_REUNION.PROCESOS_INFORMATIVA || tipoReunion === TIPOS_REUNION.PRIMERA_PERSONA || tipoReunion === TIPOS_REUNION.EXPERIENCIAS_BA || tipoReunion === TIPOS_REUNION.VOLUNTARIADOS) ? tema.trim() : null,
       arreglo_1: arreglo1.trim() || null,
       hora_inicio_real: horaInicio ? horaInicio.trim() : '17:00',
       hora_fin_real: horaFin ? horaFin.trim() : '18:30',
@@ -501,7 +515,13 @@ export default function ABMReuniones({ onBack, onSaveSuccess }) {
       funcionarios_acompanantes: funcionariosAcompanantes.trim() ? [funcionariosAcompanantes.trim()] : null,
       responsable_cercania_id: selectedEquipoCercania.length > 0 ? selectedEquipoCercania[0].id : null,
       integrantes_asignados: selectedIntegrantes.length > 0 ? selectedIntegrantes.map(a => a.nombre_completo) : null,
-      observaciones_preparacion: observacionesPreparacion.trim() || null
+      observaciones_preparacion: observacionesPreparacion.trim() || null,
+      config_uno_a_uno: (tipoReunion === TIPOS_REUNION.EXPERIENCIAS_BA || tipoReunion === TIPOS_REUNION.VOLUNTARIADOS) ? {
+        modalidadCupo,
+        cupoGeneral: Number(cupoGeneral) || 0,
+        cupoTM: Number(cupoTM) || 0,
+        cupoTT: Number(cupoTT) || 0
+      } : null
     });
 
     if (createError) {
@@ -678,6 +698,93 @@ export default function ABMReuniones({ onBack, onSaveSuccess }) {
                       required
                     />
                   </div>
+                )}
+
+                {(tipoReunion === TIPOS_REUNION.EXPERIENCIAS_BA || tipoReunion === TIPOS_REUNION.VOLUNTARIADOS) && (
+                  <>
+                    <div className="form-group">
+                      <label htmlFor="tema">Nombre de la Actividad / Visita / Proyecto *</label>
+                      <input
+                        type="text"
+                        id="tema"
+                        className="form-control"
+                        placeholder={tipoReunion === TIPOS_REUNION.EXPERIENCIAS_BA ? "Ej: Visita Guiada a Teatro Colón Fábrica" : "Ej: Jornada de Voluntariado Ambiental"}
+                        value={tema}
+                        onChange={(e) => setTema(e.target.value)}
+                        required
+                      />
+                    </div>
+
+                    <div style={{ backgroundColor: '#F0FDF4', border: '1px solid #BBF7D0', borderRadius: '8px', padding: '1rem', marginBottom: '1.25rem' }}>
+                      <h4 style={{ margin: '0 0 10px 0', fontSize: '0.92rem', fontWeight: '700', color: '#15803D', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                        🎟️ Configuración de Cupos ({tipoReunion})
+                      </h4>
+                      <div style={{ display: 'flex', gap: '1.5rem', marginBottom: '12px' }}>
+                        <label style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', fontSize: '0.85rem', cursor: 'pointer', fontWeight: '600', color: '#166534' }}>
+                          <input 
+                            type="radio" 
+                            name="modalidadCupo" 
+                            value="unico" 
+                            checked={modalidadCupo === 'unico'} 
+                            onChange={() => setModalidadCupo('unico')} 
+                          />
+                          Cupo Único General
+                        </label>
+                        <label style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', fontSize: '0.85rem', cursor: 'pointer', fontWeight: '600', color: '#166534' }}>
+                          <input 
+                            type="radio" 
+                            name="modalidadCupo" 
+                            value="doble" 
+                            checked={modalidadCupo === 'doble'} 
+                            onChange={() => setModalidadCupo('doble')} 
+                          />
+                          Doble Turno (TM y TT)
+                        </label>
+                      </div>
+
+                      {modalidadCupo === 'unico' ? (
+                        <div className="form-group" style={{ margin: 0 }}>
+                          <label style={{ fontSize: '0.82rem', fontWeight: '600', color: '#15803D' }}>Cupo Total de Asistentes</label>
+                          <input
+                            type="number"
+                            min="1"
+                            className="form-control"
+                            placeholder="Ej: 50"
+                            value={cupoGeneral}
+                            onChange={(e) => setCupoGeneral(e.target.value)}
+                            required
+                          />
+                        </div>
+                      ) : (
+                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
+                          <div className="form-group" style={{ margin: 0 }}>
+                            <label style={{ fontSize: '0.82rem', fontWeight: '600', color: '#15803D' }}>Cupo Turno Mañana (TM)</label>
+                            <input
+                              type="number"
+                              min="1"
+                              className="form-control"
+                              placeholder="Ej: 25"
+                              value={cupoTM}
+                              onChange={(e) => setCupoTM(e.target.value)}
+                              required
+                            />
+                          </div>
+                          <div className="form-group" style={{ margin: 0 }}>
+                            <label style={{ fontSize: '0.82rem', fontWeight: '600', color: '#15803D' }}>Cupo Turno Tarde (TT)</label>
+                            <input
+                              type="number"
+                              min="1"
+                              className="form-control"
+                              placeholder="Ej: 25"
+                              value={cupoTT}
+                              onChange={(e) => setCupoTT(e.target.value)}
+                              required
+                            />
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  </>
                 )}
 
                 <div className="form-group">

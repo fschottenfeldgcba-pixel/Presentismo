@@ -648,18 +648,28 @@ export default function ControlAsistencia({ reunion, onBack, mode = 'asistencia'
         if (errInsc) throw errInsc;
 
         // 3. Buscar si están anotados como oradores
-        const { data: oradoresData, error: errOradores } = await supabase
+        const { data: oByVecinoId } = await supabase
           .from('oradores')
           .select('*')
           .eq('reunion_id', reunion.id)
           .in('vecino_id', dnis);
 
-        if (errOradores) throw errOradores;
+        const { data: oByDni } = await supabase
+          .from('oradores')
+          .select('*')
+          .eq('reunion_id', reunion.id)
+          .in('dni', dnis);
+
+        const oradoresData = [...(oByVecinoId || []), ...(oByDni || [])];
 
         // Combinar datos en la cascada
         const combined = vecinosData.map(v => {
-          const insc = inscData?.find(i => i.vecino_id === v.dni);
-          const orad = oradoresData?.find(o => o.vecino_id === v.dni);
+          const cleanDni = String(v.dni || '').trim();
+          const insc = inscData?.find(i => String(i.vecino_id || '').trim() === cleanDni);
+          const orad = oradoresData?.find(o => 
+            String(o.vecino_id || '').trim() === cleanDni || 
+            String(o.dni || '').trim() === cleanDni
+          );
           return {
             vecino: v,
             inscripcion: insc || null, // null representa Nivel 2
@@ -1740,6 +1750,16 @@ export default function ControlAsistencia({ reunion, onBack, mode = 'asistencia'
                                     : 'No inscripto'
                                   }
                                 </span>
+                                {inscripcion?.confirmado && (
+                                  <span className="badge badge-success" style={{ backgroundColor: '#DCFCE7', color: '#15803D', border: '1px solid #86EFAC', fontSize: '0.75rem', fontWeight: '700' }}>
+                                    📞 Confirmado
+                                  </span>
+                                )}
+                                {inscripcion?.horario_bloque_asignado && (
+                                  <span className="badge badge-info" style={{ backgroundColor: '#E0F2FE', color: '#0369A1', border: '1px solid #BAE6FD', fontSize: '0.75rem', fontWeight: '700' }}>
+                                    ⏰ {inscripcion.horario_bloque_asignado}
+                                  </span>
+                                )}
                               </div>
 
                               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '8px', marginTop: '10px', fontSize: '0.85rem' }}>

@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { ArrowLeft, Save, Mic, Users, Trash2, ArrowUp, ArrowDown, Share2, Clipboard, Check, RefreshCw, Plus, Clock, MessageSquare, Award } from 'lucide-react';
+import { ArrowLeft, Save, Mic, Users, Trash2, ArrowUp, ArrowDown, Share2, Clipboard, Check, RefreshCw, Plus, Clock, MessageSquare, Award, Activity } from 'lucide-react';
 import { updateReunion, getOradores, updateOradorDetails, updateOradorTags, getAsistentesPorReunion, registrarOrador, guardarAsistencia } from '../services/supabaseService';
 import OradorTagSelector, { OradorTagsDisplay } from './OradorTagSelector';
 import { supabase } from '../lib/supabaseClient';
@@ -126,24 +126,36 @@ export default function PanelModerador({ reunion: initialReunion, onBack }) {
         }
 
         // 2. Obtener oratorias históricas en cualquier otra reunión
-        const { data: oradoresHist, error: errOrad } = await supabase
+        const { data: oByVecinoId } = await supabase
           .from('oradores')
-          .select('vecino_id, reunion_id, reunion:reuniones(nombre)')
-          .eq('estado', 'hablo')
+          .select('vecino_id, dni, reunion_id, estado, vecino:vecinos(dni)')
           .neq('reunion_id', reunion.id)
           .in('vecino_id', chunkDnis);
 
-        if (!errOrad && oradoresHist) {
-          oradoresHist.forEach(orad => {
-            const name = orad.reunion?.nombre?.toLowerCase() || '';
-            if (name.includes('test') || name.includes('prueba')) return;
+        const { data: oByDni } = await supabase
+          .from('oradores')
+          .select('vecino_id, dni, reunion_id, estado, vecino:vecinos(dni)')
+          .neq('reunion_id', reunion.id)
+          .in('dni', chunkDnis);
 
-            if (!statsMap[orad.vecino_id]) {
-              statsMap[orad.vecino_id] = { asistencias: 0, otrasAsistencias: 0, orador: 0 };
+        const combinedOradHist = [...(oByVecinoId || []), ...(oByDni || [])];
+
+        combinedOradHist.forEach(orad => {
+          if (orad.estado === 'se_bajo') return;
+
+          const keys = [
+            orad.vecino_id ? String(orad.vecino_id).trim() : null,
+            orad.dni ? String(orad.dni).trim() : null,
+            orad.vecino?.dni ? String(orad.vecino.dni).trim() : null
+          ].filter(Boolean);
+
+          keys.forEach(k => {
+            if (!statsMap[k]) {
+              statsMap[k] = { asistencias: 0, otrasAsistencias: 0, orador: 0 };
             }
-            statsMap[orad.vecino_id].orador = (statsMap[orad.vecino_id].orador || 0) + 1;
+            statsMap[k].orador = (statsMap[k].orador || 0) + 1;
           });
-        }
+        });
       }
 
       setVecinoStatsMap(prev => ({ ...prev, ...statsMap }));
@@ -939,6 +951,31 @@ export default function PanelModerador({ reunion: initialReunion, onBack }) {
     }
   };
 
+  // Helper para obtener el cupo formateado de la reunión
+  const getCupoDisplay = () => {
+    if (!reunion?.config_uno_a_uno) return 'S/D';
+    try {
+      const cfg = typeof reunion.config_uno_a_uno === 'string' 
+        ? JSON.parse(reunion.config_uno_a_uno) 
+        : reunion.config_uno_a_uno;
+      if (cfg?.modalidadCupo === 'doble') {
+        const tm = cfg.cupoTM || 0;
+        const tt = cfg.cupoTT || 0;
+        const total = Number(tm) + Number(tt);
+        return `${total} (TM: ${tm} / TT: ${tt})`;
+      }
+      return cfg?.cupoGeneral || cfg?.cupo || 'S/D';
+    } catch {
+      return 'S/D';
+    }
+  };
+
+  const isExperienciasOrVoluntariado = 
+    reunionType === TIPOS_REUNION.EXPERIENCIAS_BA || 
+    reunionType === TIPOS_REUNION.VOLUNTARIADOS ||
+    reunion?.tipo_reunion === TIPOS_REUNION.EXPERIENCIAS_BA ||
+    reunion?.tipo_reunion === TIPOS_REUNION.VOLUNTARIADOS;
+
   // Copiar mensaje de INICIO de reunión formateado para WhatsApp
   const handleCopyWhatsAppInicioText = async () => {
     try {
@@ -988,6 +1025,37 @@ export default function PanelModerador({ reunion: initialReunion, onBack }) {
           .join('\n');
       }
 
+      if (isExperienciasOrVoluntariado) {
+        const dayOfWeekNames = ['Domingo', 'Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado'];
+        let diaSemana = '';
+        let formattedDate = reunion.fecha || '';
+        if (reunion.fecha) {
+          const [y, m, d] = reunion.fecha.split('-').map(Number);
+          const dateObj = new Date(y, m - 1, d);
+          diaSemana = dayOfWeekNames[dateObj.getDay()] || '';
+          formattedDate = `${d}/${m}/${y}`;
+        }
+        const actNombre = reunion.tema || reunion.nombre.split('-')[1]?.trim() || reunion.nombre;
+        const confirmadosCount = asistentes.filter(a => a.confirmado || a.estado_convocatoria === 'seleccionado_uno_a_uno' || a.estado_convocatoria === 'citado').length;
+
+        const txt = `📋 *INICIO DE ACTIVIDAD*
+${reunion.tipo_reunion || 'Actividad'} - *${actNombre}*
+
+📌 Día: ${diaSemana ? `${diaSemana} ` : ''}${formattedDate}
+📌 Horario de Inicio: ${horaInicioReal || '--:--'} hs
+📌 Inscriptos: ${inscriptosCount}
+📌 Cupo: ${getCupoDisplay()}
+📌 Confirmados: ${confirmadosCount} 
+📌 Asistentes acreditados: ${presentesCount}
+
+*🏛️ Gestión presente:*
+${gestionLines}`;
+
+        await navigator.clipboard.writeText(txt);
+        alert('¡Mensaje de Inicio para WhatsApp copiado con éxito al portapapeles!');
+        return;
+      }
+
       const txt = `👨‍👩‍👧‍👦 RDV | *${reunion.funcionario || reunion.nombre}* - ${reunion.comuna}
 📅 ${displayFecha || 'Fecha'} | 🕠 ${displayHora}
 ⏰ Inicio: ${horaInicioReal || '--:--'} hs
@@ -1026,6 +1094,31 @@ ${gestionLines}`;
       if (lastPart.toLowerCase().includes('hs') || lastPart.toLowerCase().includes('h')) {
         displayHora = lastPart.toLowerCase().replace('hs', ' hs').replace('h', ' hs');
       }
+    }
+
+    if (isExperienciasOrVoluntariado) {
+      const dayOfWeekNames = ['Domingo', 'Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado'];
+      let diaSemana = '';
+      let formattedDate = reunion.fecha || '';
+      if (reunion.fecha) {
+        const [y, m, d] = reunion.fecha.split('-').map(Number);
+        const dateObj = new Date(y, m - 1, d);
+        diaSemana = dayOfWeekNames[dateObj.getDay()] || '';
+        formattedDate = `${d}/${m}/${y}`;
+      }
+      const actNombre = reunion.tema || reunion.nombre.split('-')[1]?.trim() || reunion.nombre;
+      const confirmadosCount = asistentes.filter(a => a.confirmado || a.estado_convocatoria === 'seleccionado_uno_a_uno' || a.estado_convocatoria === 'citado').length;
+
+      return `REPORTE FINAL: 
+${reunion.tipo_reunion || 'Actividad'} - ${actNombre}
+
+📌 Día: ${diaSemana ? `${diaSemana} ` : ''}${formattedDate}
+📌 Horario: ${horaInicioReal || '--:--'} hs
+📌 Finalización: ${horaFinReal || '--:--'} hs
+📌 Inscriptos: ${inscriptosCount}
+📌 Cupo: ${getCupoDisplay()}
+📌 Confirmados: ${confirmadosCount} 
+📌 Asistentes totales: ${presentesCount}`;
     }
 
     const oradoresAnotados = oradores.length;
@@ -1127,11 +1220,22 @@ ${oradoresEfectivos.length > 0
 
   return (
     <div className="container" style={{ paddingBottom: '4rem', maxWidth: '900px' }}>
-      {/* Botón de volver */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.5rem' }}>
-        <button className="btn btn-secondary btn-sm" onClick={onBack} style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-          <ArrowLeft size={16} /> Volver al Tablero
-        </button>
+      {/* Botón de volver y acceso a Informe Final */}
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.5rem', flexWrap: 'wrap', gap: '10px' }}>
+        <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+          <button className="btn btn-secondary btn-sm" onClick={onBack} style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+            <ArrowLeft size={16} /> Volver al Tablero
+          </button>
+          <a 
+            href={`?view=dashboard&modal=informe&reunion_id=${reunion.id}`} 
+            target="_blank" 
+            className="btn btn-secondary btn-sm" 
+            style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', border: '1px solid var(--color-highlight)', color: 'var(--color-primary)', textDecoration: 'none', fontWeight: '600' }}
+            title="Ver informe final y resumen cuantitativo/cualitativo"
+          >
+            <Activity size={14} style={{ color: 'var(--color-highlight)' }} /> Informe Final
+          </a>
+        </div>
         <h2 style={{ fontSize: '1.25rem', color: 'var(--color-primary)', margin: 0, fontWeight: '700' }}>
           Panel de Moderación de Reunión
         </h2>
@@ -1572,6 +1676,18 @@ ${oradoresEfectivos.length > 0
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', backgroundColor: '#F8FAFC', padding: '8px 12px', borderRadius: '6px', border: '1px solid #E2E8F0', flexWrap: 'wrap', gap: '8px' }}>
               <span style={{ fontSize: '0.78rem', color: '#475569', display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
                 <span>📋 Inscriptos: <strong>{inscriptosCount}</strong></span>
+                {isExperienciasOrVoluntariado && (
+                  <>
+                    <span style={{ color: '#CBD5E1' }}>|</span>
+                    <span style={{ backgroundColor: '#FEF3C7', color: '#B45309', border: '1px solid #FDE68A', padding: '1px 7px', borderRadius: '12px', fontSize: '0.74rem', fontWeight: '600' }}>
+                      🎟️ Cupo: <strong>{getCupoDisplay()}</strong>
+                    </span>
+                    <span style={{ color: '#CBD5E1' }}>|</span>
+                    <span style={{ backgroundColor: '#E0E7FF', color: '#4338CA', border: '1px solid #C7D2FE', padding: '1px 7px', borderRadius: '12px', fontSize: '0.74rem', fontWeight: '600' }}>
+                      📞 Confirmados: <strong>{asistentes.filter(a => a.confirmado || a.estado_convocatoria === 'seleccionado_uno_a_uno' || a.estado_convocatoria === 'citado').length}</strong>
+                    </span>
+                  </>
+                )}
                 <span style={{ color: '#CBD5E1' }}>|</span>
                 <span>👥 Asistentes: <strong>{presentesCount} ({ratioAsistencia}%)</strong></span>
                 <span style={{ backgroundColor: '#DCFCE7', color: '#15803D', border: '1px solid #86EFAC', padding: '1px 7px', borderRadius: '12px', fontSize: '0.74rem', fontWeight: '600', display: 'inline-flex', alignItems: 'center', gap: '3px' }}>
@@ -1580,8 +1696,12 @@ ${oradoresEfectivos.length > 0
                 <span style={{ backgroundColor: '#DBEAFE', color: '#1D4ED8', border: '1px solid #93C5FD', padding: '1px 7px', borderRadius: '12px', fontSize: '0.74rem', fontWeight: '600', display: 'inline-flex', alignItems: 'center', gap: '3px' }}>
                   🔄 Recurrentes: <strong>{uiRecurrentesCount}</strong>
                 </span>
-                <span style={{ color: '#CBD5E1' }}>|</span>
-                <span>📝 Oradores: <strong>{oradores.length}</strong></span>
+                {!isExperienciasOrVoluntariado && (
+                  <>
+                    <span style={{ color: '#CBD5E1' }}>|</span>
+                    <span>📝 Oradores: <strong>{oradores.length}</strong></span>
+                  </>
+                )}
               </span>
               <button
                 className="btn btn-primary btn-sm"
@@ -1594,8 +1714,10 @@ ${oradoresEfectivos.length > 0
             </div>
           </div>
 
-          {/* 2. AGREGAR ORADORES DE ÚLTIMO MOMENTO */}
-          <div className="card" style={{ marginBottom: '1.5rem', padding: '16px', backgroundColor: '#F8FAFC', border: '1px dashed var(--color-border)' }}>
+          {!isExperienciasOrVoluntariado && (
+            <>
+              {/* 2. AGREGAR ORADORES DE ÚLTIMO MOMENTO */}
+              <div className="card" style={{ marginBottom: '1.5rem', padding: '16px', backgroundColor: '#F8FAFC', border: '1px dashed var(--color-border)' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px', flexWrap: 'wrap', gap: '8px' }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                 <Users size={16} style={{ color: 'var(--color-highlight)' }} />
@@ -2160,8 +2282,10 @@ ${oradoresEfectivos.length > 0
         </div>
       );
     })()}
-      </>
-    )}
+            </>
+          )}
+        </>
+      )}
       {/* STACK VERTICAL DE COMPONENTES AL 100% ANCHO (SECCIÓN INFERIOR) */}
       <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem', marginTop: '1.5rem' }}>
         {/* 5. VARIABLES CUALITATIVAS (AL CIERRE DE LA REUNIÓN) (100% WIDTH) */}
