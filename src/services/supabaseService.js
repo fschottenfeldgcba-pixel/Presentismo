@@ -157,16 +157,20 @@ export const recuperarPassword = async (email) => {
 export const DEFAULT_EQUIPO_CERCANIA = [
   { id: '29cabb27-8c37-4c3a-a967-e4930d4dbe4a', nombre_completo: 'Ana Laura Franchini' },
   { id: '8fa6cbaf-89a5-417b-ae4f-0ac9a9b6a6db', nombre_completo: 'Araceli Arleo' },
+  { id: '6d43c986-06e0-4033-8b4d-e0ac3d6e7863', nombre_completo: 'Daiana Ramirez' },
   { id: 'cd8733ed-225a-4228-91d5-ec0f264d063f', nombre_completo: 'Federico pereyra' },
   { id: 'a2fac56b-eec9-48d3-9f65-eb9e26255583', nombre_completo: 'Federico Pereyra' },
   { id: '40dfaef7-ed69-4e99-8ff5-a9298de79d4b', nombre_completo: 'Germán Severina' },
+  { id: '9f2a0df5-d952-4585-9d53-95f0a29ff9cc', nombre_completo: 'Heribeth Chacón' },
   { id: 'c14c372c-5715-44ed-9c44-2243a592a22f', nombre_completo: 'Ibelis Florencia Holzer' },
   { id: 'c45c1ff4-5538-4718-b8fa-88d8ceb88dcb', nombre_completo: 'José Ignacio Pais' },
   { id: '3201d47e-e6c7-4611-992a-c4e00df85f5a', nombre_completo: 'Julian Gonzalez' },
   { id: 'db89054a-0603-430d-a7d4-1943039a963f', nombre_completo: 'Julian Gonzalez Dematine' },
+  { id: '5c1a8208-438f-47a7-ba0b-19d3389c11a6', nombre_completo: 'María Eugenia Ferreiro' },
   { id: '9cf32e04-5676-4ee0-a4be-8deabf695c2a', nombre_completo: 'Participación BA' },
   { id: 'f9a8d71e-eff9-4d90-9549-c441d9675221', nombre_completo: 'Ramiro' },
-  { id: 'b8937be1-affe-4824-aa4d-1c9cd0d7eaca', nombre_completo: 'Tomas Lamas' }
+  { id: 'b8937be1-affe-4824-aa4d-1c9cd0d7eaca', nombre_completo: 'Tomas Lamas' },
+  { id: '1fc71158-790f-407e-9f01-7a680662f3a2', nombre_completo: 'Valeria Sala' }
 ];
 
 export const DEFAULT_AGENTES_TERRITORIO = [

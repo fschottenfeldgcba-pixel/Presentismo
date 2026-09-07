@@ -23,7 +23,11 @@ const DEFAULT_EQUIPO_CERCANIA = [
   { id: '8', nombre_completo: 'Melisa Morales', telefono: '1166666666' },
   { id: '9', nombre_completo: 'Pilar Chavero', telefono: '1177777777' },
   { id: '10', nombre_completo: 'Tadeo Ristori', telefono: '1188888888' },
-  { id: '11', nombre_completo: 'Valentín Stagnaro', telefono: '1199999999' }
+  { id: '11', nombre_completo: 'Valentín Stagnaro', telefono: '1199999999' },
+  { id: '1fc71158-790f-407e-9f01-7a680662f3a2', nombre_completo: 'Valeria Sala', telefono: '' },
+  { id: '5c1a8208-438f-47a7-ba0b-19d3389c11a6', nombre_completo: 'María Eugenia Ferreiro', telefono: '' },
+  { id: '6d43c986-06e0-4033-8b4d-e0ac3d6e7863', nombre_completo: 'Daiana Ramirez', telefono: '' },
+  { id: '9f2a0df5-d952-4585-9d53-95f0a29ff9cc', nombre_completo: 'Heribeth Chacón', telefono: '' }
 ];
 
 const formatArrayOrString = (val, fallback = 'Sin especificar') => {

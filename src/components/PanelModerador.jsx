@@ -4,8 +4,8 @@ import { updateReunion, getOradores, updateOradorDetails, updateOradorTags, getA
 import OradorTagSelector, { OradorTagsDisplay } from './OradorTagSelector';
 import { supabase } from '../lib/supabaseClient';
 import { TIPOS_REUNION } from '../data/mockData';
-import PreguntasTematicas from './PreguntasTematicas';
 import { autoDetectTags } from '../constants/oradorTags';
+import { classifyTopicHeuristic, classifyTopicWithAI, isBaistrocchiMeeting, getBadgeDisplay, PIN_CONFIGS } from '../services/topicClassificationService';
 
 const SEMAFORO_MAP = {
   verde: { label: '🟢 Verde - Sin riesgo', waLabel: '🟢 sin riesgo' },
@@ -21,6 +21,7 @@ const CLIMA_MAP = {
 
 export default function PanelModerador({ reunion: initialReunion, onBack }) {
   const [reunion, setReunion] = useState(initialReunion);
+  const isBaistrocchi = isBaistrocchiMeeting(reunion);
 
   // Datos cualitativos de la reunión
   const [clima, setClima] = useState(initialReunion.clima || 'bajo');
@@ -976,6 +977,36 @@ export default function PanelModerador({ reunion: initialReunion, onBack }) {
     reunion?.tipo_reunion === TIPOS_REUNION.EXPERIENCIAS_BA ||
     reunion?.tipo_reunion === TIPOS_REUNION.VOLUNTARIADOS;
 
+  // Priorizar cola de oradores según esquema oficial MEPHU / Espacio Público:
+  // 1. Temas MEPHU que NO son Luminaria/Pluviales/Veredas (Prioridad 1 - Pin Rojo)
+  // 2. Luminaria, Pluviales y Veredas (Prioridad 2 - Pins Amarillo, Azul, Verde)
+  // 3. Temas fuera del Ministerio (Prioridad 3 - Post-it)
+  const handlePriorizarOradoresMEPHU = async () => {
+    if (queueActive.length <= 1) return;
+
+    const reordered = [...queueActive].sort((a, b) => {
+      const classA = classifyTopicHeuristic(a.tema_original || a.tema_efectivo || '');
+      const classB = classifyTopicHeuristic(b.tema_original || b.tema_efectivo || '');
+
+      if (classA.prioridad !== classB.prioridad) {
+        return classA.prioridad - classB.prioridad;
+      }
+      return (a.orden || 0) - (b.orden || 0);
+    });
+
+    const otherOradores = oradores.filter(o => o.estado !== 'en_espera');
+    const normalizedQueue = reordered.map((item, idx) => ({ ...item, orden: idx + 1 }));
+
+    setOradores([...otherOradores, ...normalizedQueue]);
+
+    try {
+      const promises = normalizedQueue.map((item, idx) => updateOradorDetails(item.id, { orden: idx + 1 }));
+      await Promise.all(promises);
+    } catch (err) {
+      console.error('Error al guardar nuevo orden de oradores:', err);
+    }
+  };
+
   // Copiar mensaje de INICIO de reunión formateado para WhatsApp
   const handleCopyWhatsAppInicioText = async () => {
     try {
@@ -1871,10 +1902,33 @@ ${oradoresEfectivos.length > 0
       <div style={{ display: 'grid', gridTemplateColumns: '65fr 35fr', gap: '1.5rem', alignItems: 'start', marginBottom: '1.5rem' }}>
         {/* COLA DE ORADORES ACTIVOS */}
         <div className="card" style={{ margin: 0 }}>
-          <h3 style={{ fontSize: '1.15rem', color: 'var(--color-primary)', marginTop: 0, marginBottom: '1rem', display: 'flex', alignItems: 'center', gap: '8px', borderBottom: '1px solid var(--color-border)', paddingBottom: '8px', fontWeight: '700' }}>
-            <Users size={18} style={{ color: 'var(--color-highlight)' }} />
-            3. Cola Activa ({queueActive.length})
-          </h3>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem', borderBottom: '1px solid var(--color-border)', paddingBottom: '8px', flexWrap: 'wrap', gap: '8px' }}>
+            <h3 style={{ fontSize: '1.15rem', color: 'var(--color-primary)', margin: 0, display: 'flex', alignItems: 'center', gap: '8px', fontWeight: '700' }}>
+              <Users size={18} style={{ color: 'var(--color-highlight)' }} />
+              3. Cola Activa ({queueActive.length})
+            </h3>
+            {isBaistrocchi && queueActive.length > 1 && (
+              <button
+                className="btn btn-secondary btn-sm"
+                onClick={handlePriorizarOradoresMEPHU}
+                style={{
+                  fontSize: '0.75rem',
+                  fontWeight: '600',
+                  padding: '4px 10px',
+                  backgroundColor: '#FEF2F2',
+                  color: '#DC2626',
+                  border: '1px solid #FECACA',
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: '4px',
+                  borderRadius: '6px'
+                }}
+                title="Reordenar la cola dando prioridad a temas MEPHU (Rojo > Amarillo/Azul/Verde > Post-it)"
+              >
+                <span>⚡ Priorizar por Espacio Público</span>
+              </button>
+            )}
+          </div>
 
           {loadingOradores ? (
             <div style={{ textAlign: 'center', padding: '1.5rem' }}>
@@ -1883,110 +1937,139 @@ ${oradoresEfectivos.length > 0
             </div>
           ) : queueActive.length > 0 ? (
             <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', maxHeight: '400px', overflowY: 'auto', paddingRight: '4px' }}>
-              {queueActive.map((item, index) => (
-                <div key={item.id} style={{ border: '1px solid var(--color-border)', borderRadius: '8px', padding: '12px', backgroundColor: '#FFFFFF', display: 'flex', gap: '12px', alignItems: 'center', boxShadow: '0 1px 3px rgba(0,0,0,0.05)' }}>
-                  
-                  {/* Botones de ordenamiento optimista */}
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                    <button
-                      className="btn btn-secondary btn-sm"
-                      disabled={index === 0}
-                      onClick={() => handleMoveSpeaker(index, 'up', queueActive)}
-                      style={{ padding: '4px', height: 'auto', minWidth: 'auto', color: index === 0 ? '#CBD5E1' : '#64748B' }}
-                      title="Subir prioridad"
-                    >
-                      <ArrowUp size={14} />
-                    </button>
-                    <button
-                      className="btn btn-secondary btn-sm"
-                      disabled={index === queueActive.length - 1}
-                      onClick={() => handleMoveSpeaker(index, 'down', queueActive)}
-                      style={{ padding: '4px', height: 'auto', minWidth: 'auto', color: index === queueActive.length - 1 ? '#CBD5E1' : '#64748B' }}
-                      title="Bajar prioridad"
-                    >
-                      <ArrowDown size={14} />
-                    </button>
-                  </div>
-
-                  {/* Datos del vecino */}
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '4px' }}>
-                      <strong style={{ fontSize: '0.95rem', color: 'var(--color-primary)', display: 'inline-flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}>
-                        #{index + 1} - {item.vecino?.nombre} {item.vecino?.apellido}
-                        {(() => {
-                          const stats = vecinoStatsMap[item.vecino_id];
-                          if (stats && (stats.asistencias > 0 || stats.orador > 0)) {
-                            return (
-                              <span 
-                                style={{ fontSize: '0.7rem', backgroundColor: '#FEF3C7', color: '#B45309', border: '1px solid #FCD34D', padding: '1px 6px', borderRadius: '10px', fontWeight: 'bold' }} 
-                                title={`Historial de participación: ${stats.asistencias} asistencias y ${stats.orador} exposiciones`}
-                              >
-                                {stats.asistencias} asist. / {stats.orador} orad.
-                              </span>
-                            );
-                          }
-                          return null;
-                        })()}
-                      </strong>
-                      <span style={{ fontSize: '0.8rem', color: 'var(--color-text-muted)', fontWeight: '500' }}>
-                        {item.vecino?.celular || 'Sin celular'}
-                      </span>
-                    </div>
+              {queueActive.map((item, index) => {
+                const topicClass = classifyTopicHeuristic(item.tema_original || item.tema_efectivo || '');
+                return (
+                  <div key={item.id} style={{ border: '1px solid var(--color-border)', borderRadius: '8px', padding: '12px', backgroundColor: '#FFFFFF', display: 'flex', gap: '12px', alignItems: 'center', boxShadow: '0 1px 3px rgba(0,0,0,0.05)' }}>
                     
-                    {editingOradorId === item.id ? (
-                      <div style={{ display: 'flex', gap: '6px', marginTop: '6px' }}>
-                        <input
-                          type="text"
-                          className="form-control form-control-sm"
-                          value={editingTemaText}
-                          onChange={(e) => setEditingTemaText(e.target.value)}
-                          style={{ fontSize: '0.8rem', padding: '4px 8px' }}
-                        />
-                        <button className="btn btn-primary btn-sm" onClick={() => handleSaveTemaEdicion(item.id)} style={{ padding: '4px 8px' }}>Guardar</button>
-                        <button className="btn btn-secondary btn-sm" onClick={() => setEditingOradorId(null)} style={{ padding: '4px 8px' }}>Cancelar</button>
-                      </div>
-                    ) : (
-                      <div 
-                        style={{ fontSize: '0.85rem', color: '#475569', cursor: 'pointer', fontStyle: 'italic' }} 
-                        onClick={() => {
-                          setEditingOradorId(item.id);
-                          setEditingTemaText(item.tema_original || '');
-                        }}
-                        title="Click para editar tema"
+                    {/* Botones de ordenamiento optimista */}
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                      <button
+                        className="btn btn-secondary btn-sm"
+                        disabled={index === 0}
+                        onClick={() => handleMoveSpeaker(index, 'up', queueActive)}
+                        style={{ padding: '4px', height: 'auto', minWidth: 'auto', color: index === 0 ? '#CBD5E1' : '#64748B' }}
+                        title="Subir prioridad"
                       >
-                        "{item.tema_original || 'Tema no especificado'}"
-                      </div>
-                    )}
-                  </div>
+                        <ArrowUp size={14} />
+                      </button>
+                      <button
+                        className="btn btn-secondary btn-sm"
+                        disabled={index === queueActive.length - 1}
+                        onClick={() => handleMoveSpeaker(index, 'down', queueActive)}
+                        style={{ padding: '4px', height: 'auto', minWidth: 'auto', color: index === queueActive.length - 1 ? '#CBD5E1' : '#64748B' }}
+                        title="Bajar prioridad"
+                      >
+                        <ArrowDown size={14} />
+                      </button>
+                    </div>
 
-                  {/* Acciones */}
-                  <div style={{ display: 'flex', gap: '6px' }}>
-                    <button
-                      className="btn btn-secondary btn-sm"
-                      onClick={() => handleLlamarAlMic(item)}
-                      style={{ padding: '6px 12px', fontSize: '0.8rem', fontWeight: '600', backgroundColor: '#F0FDFA', color: '#0D9488', border: '1px solid #99F6E4', display: 'flex', alignItems: 'center', gap: '4px' }}
-                    >
-                      <Mic size={12} /> Mic
-                    </button>
-                    <button
-                      className="btn btn-secondary btn-sm"
-                      onClick={() => handleMarcarNoHablo(item.id)}
-                      style={{ padding: '6px 12px', fontSize: '0.8rem', fontWeight: '600', backgroundColor: '#FEF3C7', color: '#D97706', border: '1px solid #FCD34D', display: 'flex', alignItems: 'center', gap: '4px' }}
-                      title="Marcar como que no llegó a hablar"
-                    >
-                      No habló
-                    </button>
-                    <button
-                      className="btn btn-secondary btn-sm"
-                      onClick={() => handleEliminarOrador(item.id, `${item.vecino?.nombre} ${item.vecino?.apellido}`)}
-                      style={{ padding: '6px', color: '#EF4444', border: '1px solid #FCA5A5' }}
-                      title="Eliminar orador permanentemente"
-                    >
-                      <Trash2 size={14} />
-                    </button>
+                    {/* Datos del vecino */}
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '4px' }}>
+                        <strong style={{ fontSize: '0.95rem', color: 'var(--color-primary)', display: 'inline-flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}>
+                          #{index + 1} - {item.vecino?.nombre} {item.vecino?.apellido}
+                          {(() => {
+                            const stats = vecinoStatsMap[item.vecino_id];
+                            if (stats && (stats.asistencias > 0 || stats.orador > 0)) {
+                              return (
+                                <span 
+                                  style={{ fontSize: '0.7rem', backgroundColor: '#FEF3C7', color: '#B45309', border: '1px solid #FCD34D', padding: '1px 6px', borderRadius: '10px', fontWeight: 'bold' }} 
+                                  title={`Historial de participación: ${stats.asistencias} asistencias y ${stats.orador} exposiciones`}
+                                >
+                                  {stats.asistencias} asist. / {stats.orador} orad.
+                                </span>
+                              );
+                            }
+                            return null;
+                          })()}
+                        </strong>
+                        <span style={{ fontSize: '0.8rem', color: 'var(--color-text-muted)', fontWeight: '500' }}>
+                          {item.vecino?.celular || 'Sin celular'}
+                        </span>
+                      </div>
+                      
+                      {editingOradorId === item.id ? (
+                        <div style={{ display: 'flex', gap: '6px', marginTop: '6px' }}>
+                          <input
+                            type="text"
+                            className="form-control form-control-sm"
+                            value={editingTemaText}
+                            onChange={(e) => setEditingTemaText(e.target.value)}
+                            style={{ fontSize: '0.8rem', padding: '4px 8px' }}
+                          />
+                          <button className="btn btn-primary btn-sm" onClick={() => handleSaveTemaEdicion(item.id)} style={{ padding: '4px 8px' }}>Guardar</button>
+                          <button className="btn btn-secondary btn-sm" onClick={() => setEditingOradorId(null)} style={{ padding: '4px 8px' }}>Cancelar</button>
+                        </div>
+                      ) : (
+                        <div style={{ marginTop: '2px' }}>
+                          <div 
+                            style={{ fontSize: '0.85rem', color: '#475569', cursor: 'pointer', fontStyle: 'italic', marginBottom: (item.tema_original || item.tema_efectivo) ? '4px' : '0' }} 
+                            onClick={() => {
+                              setEditingOradorId(item.id);
+                              setEditingTemaText(item.tema_original || '');
+                            }}
+                            title="Click para editar tema"
+                          >
+                            "{item.tema_original || 'Tema no especificado'}"
+                          </div>
+                          {(item.tema_original || item.tema_efectivo) && (
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}>
+                              {((topicClass.badges && topicClass.badges.length > 0) ? topicClass.badges : [topicClass]).map((badge, bIdx) => {
+                                const badgeView = getBadgeDisplay(badge, isBaistrocchi);
+                                return (
+                                  <span key={bIdx} style={{
+                                    display: 'inline-flex',
+                                    alignItems: 'center',
+                                    gap: '4px',
+                                    padding: '2px 8px',
+                                    borderRadius: '12px',
+                                    fontSize: '0.72rem',
+                                    fontWeight: '600',
+                                    backgroundColor: badgeView.bgColor,
+                                    color: badgeView.textColor,
+                                    border: `1px solid ${badgeView.borderColor}`
+                                  }}>
+                                    <span>{badgeView.icon}</span>
+                                    <span>{badgeView.nombre}</span>
+                                  </span>
+                                );
+                              })}
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Acciones */}
+                    <div style={{ display: 'flex', gap: '6px' }}>
+                      <button
+                        className="btn btn-secondary btn-sm"
+                        onClick={() => handleLlamarAlMic(item)}
+                        style={{ padding: '6px 12px', fontSize: '0.8rem', fontWeight: '600', backgroundColor: '#F0FDFA', color: '#0D9488', border: '1px solid #99F6E4', display: 'flex', alignItems: 'center', gap: '4px' }}
+                      >
+                        <Mic size={12} /> Mic
+                      </button>
+                      <button
+                        className="btn btn-secondary btn-sm"
+                        onClick={() => handleMarcarNoHablo(item.id)}
+                        style={{ padding: '6px 12px', fontSize: '0.8rem', fontWeight: '600', backgroundColor: '#FEF3C7', color: '#D97706', border: '1px solid #FCD34D', display: 'flex', alignItems: 'center', gap: '4px' }}
+                        title="Marcar como que no llegó a hablar"
+                      >
+                        No habló
+                      </button>
+                      <button
+                        className="btn btn-secondary btn-sm"
+                        onClick={() => handleEliminarOrador(item.id, `${item.vecino?.nombre} ${item.vecino?.apellido}`)}
+                        style={{ padding: '6px', color: '#EF4444', border: '1px solid #FCA5A5' }}
+                        title="Eliminar orador permanentemente"
+                      >
+                        <Trash2 size={14} />
+                      </button>
+                    </div>
                   </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           ) : (
             <div style={{ textAlign: 'center', padding: '2rem', color: 'var(--color-text-muted)', fontSize: '0.9rem' }}>
@@ -2045,8 +2128,40 @@ ${oradoresEfectivos.length > 0
               </div>
 
               <div style={{ backgroundColor: '#F8FAFC', borderRadius: '8px', padding: '12px', border: '1px solid var(--color-border)', marginBottom: '14px', fontSize: '0.85rem' }}>
-                <div style={{ color: 'var(--color-text-muted)', fontSize: '0.75rem', fontWeight: '700', marginBottom: '4px', textTransform: 'uppercase' }}>
-                  📌 Tema / Minuta registrada (por equipo de Territorio):
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px', flexWrap: 'wrap', gap: '6px' }}>
+                  <div style={{ color: 'var(--color-text-muted)', fontSize: '0.75rem', fontWeight: '700', textTransform: 'uppercase' }}>
+                    📌 Tema / Minuta registrada (por equipo de Territorio):
+                  </div>
+                  {(() => {
+                    const activeTopicClass = classifyTopicHeuristic(activeSpeaker.tema_efectivo || activeSpeaker.tema_original || '');
+                    if (activeSpeaker.tema_efectivo || activeSpeaker.tema_original) {
+                      return (
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '4px', flexWrap: 'wrap' }}>
+                          {((activeTopicClass.badges && activeTopicClass.badges.length > 0) ? activeTopicClass.badges : [activeTopicClass]).map((badge, bIdx) => {
+                            const badgeView = getBadgeDisplay(badge, isBaistrocchi);
+                            return (
+                              <span key={bIdx} style={{
+                                display: 'inline-flex',
+                                alignItems: 'center',
+                                gap: '4px',
+                                padding: '2px 8px',
+                                borderRadius: '12px',
+                                fontSize: '0.72rem',
+                                fontWeight: '600',
+                                backgroundColor: badgeView.bgColor,
+                                color: badgeView.textColor,
+                                border: `1px solid ${badgeView.borderColor}`
+                              }}>
+                                <span>{badgeView.icon}</span>
+                                <span>{badgeView.nombre}</span>
+                              </span>
+                            );
+                          })}
+                        </div>
+                      );
+                    }
+                    return null;
+                  })()}
                 </div>
                 <div style={{ fontWeight: '600', color: 'var(--color-primary)', fontStyle: 'italic', marginBottom: '8px', backgroundColor: '#FFFFFF', padding: '10px', borderRadius: '6px', border: '1px solid #E2E8F0', minHeight: '40px', lineHeight: '1.4' }}>
                   "{activeSpeaker.tema_efectivo || activeSpeaker.tema_original || 'Sin tema especificado aún por Territorio.'}"

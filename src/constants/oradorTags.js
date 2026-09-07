@@ -156,6 +156,8 @@ export const TAG_KEYWORD_MAP = {
   ]
 };
 
+import { classifyTopicHeuristic } from '../services/topicClassificationService';
+
 /**
  * Normaliza un string: minúsculas y sin acentos/diacríticos.
  */
@@ -167,23 +169,23 @@ function normalizeText(str) {
 }
 
 /**
- * Detecta automáticamente los tags a partir del texto de la minuta.
- * Asigna un tag si hay 2 o más coincidencias de palabras clave en el texto.
+ * Detecta automáticamente los tags a partir del texto de la minuta
+ * utilizando el motor de clasificación inteligente.
  *
  * @param {string} text – tema_efectivo del orador
  * @returns {string[]} – array de labels de tags detectados
  */
 export function autoDetectTags(text) {
   if (!text || text.trim() === '') return [];
-  const normalized = normalizeText(text);
-
-  return ORADOR_TAGS
-    .map(tag => tag.label)
-    .filter(label => {
-      const keywords = TAG_KEYWORD_MAP[label] || [];
-      const matchCount = keywords.filter(kw => normalized.includes(normalizeText(kw))).length;
-      return matchCount >= 2;
-    });
+  try {
+    const result = classifyTopicHeuristic(text);
+    if (result.allTags && result.allTags.length > 0) {
+      return result.allTags;
+    }
+  } catch (err) {
+    console.warn('Error en autoDetectTags:', err);
+  }
+  return [];
 }
 
 /**
@@ -191,3 +193,4 @@ export function autoDetectTags(text) {
  */
 export const getTagByLabel = (label) =>
   ORADOR_TAGS.find((t) => t.label === label);
+

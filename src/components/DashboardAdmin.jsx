@@ -3302,7 +3302,7 @@ ${obsStr}`;
           className={`tab ${activeDashboardTab === 'estadisticas_funcionario' ? 'active' : ''}`}
           onClick={() => setActiveDashboardTab('estadisticas_funcionario')}
         >
-          <TrendingUp size={16} /> Estadísticas por Funcionario
+          <FileSpreadsheet size={16} /> Descarga Bloque de Asistencias
         </div>
         <div 
           className={`tab ${activeDashboardTab === 'funcionarios' ? 'active' : ''}`}

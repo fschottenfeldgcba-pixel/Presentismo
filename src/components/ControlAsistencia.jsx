@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { supabase } from '../lib/supabaseClient';
 import { ArrowLeft, Search, Plus, Check, Play, Square, Pause, Shield, Calendar, Users, ClipboardList, Mic, AlertTriangle, Clock, FileSpreadsheet, Trash2, Edit2, Save, X, Download, UserPlus, GitMerge } from 'lucide-react';
 import { TIPOS_REUNION } from '../data/mockData';
 import { 
@@ -19,8 +20,7 @@ import {
 import OradorTagSelector, { OradorTagsDisplay } from './OradorTagSelector';
 import PreguntasTematicas from './PreguntasTematicas';
 import Cronometro1a1 from './Cronometro1a1';
-import { autoDetectTags } from '../constants/oradorTags';
-import { supabase } from '../lib/supabaseClient';
+import { classifyTopicHeuristic, classifyTopicWithAI, isBaistrocchiMeeting, getBadgeDisplay, PIN_CONFIGS } from '../services/topicClassificationService';
 import * as XLSX from 'xlsx';
 
 const COMUNAS = [
@@ -96,6 +96,7 @@ const BARRIOS = [
 ];
 
 export default function ControlAsistencia({ reunion, onBack, mode = 'asistencia' }) {
+  const isBaistrocchi = isBaistrocchiMeeting(reunion);
   const [activeTab, setActiveTab] = useState('asistencia'); // 'asistencia' | 'modulo_especial'
   const [asistencias, setAsistencias] = useState([]); // Usado principalmente en Uno a Uno
   const [searchQuery, setSearchQuery] = useState('');
@@ -113,6 +114,8 @@ export default function ControlAsistencia({ reunion, onBack, mode = 'asistencia'
   const [oradoresCount, setOradoresCount] = useState(0);
   const [presentesCount, setPresentesCount] = useState(0);
   const [editingTopics, setEditingTopics] = useState({}); // { vecinoDni: string }
+  const [aiClassifications, setAiClassifications] = useState({}); // { vecinoDni: object }
+  const classifyTimeoutRef = useRef({});
 
   // Cronómetro del Funcionario (Auditoría General de Cercanía)
   const [reunionStatus, setReunionStatus] = useState('idle'); // 'idle' | 'running' | 'paused' | 'ended'
@@ -177,6 +180,9 @@ export default function ControlAsistencia({ reunion, onBack, mode = 'asistencia'
   const [modalMinutaState, setModalMinutaState] = useState({});
   // ID del orador cuyo selector de tags está expandido para corrección manual
   const [editingTagsFor, setEditingTagsFor] = useState(null);
+  // Estado para dictado por voz en vivo (Web Speech API)
+  const [recordingSpeakerId, setRecordingSpeakerId] = useState(null);
+  const recognitionRef = useRef(null);
 
   // Estados para agregar oradores desde la vista móvil de Territorio
   const [showAddSpeakerTerritorio, setShowAddSpeakerTerritorio] = useState(false);
@@ -421,8 +427,11 @@ export default function ControlAsistencia({ reunion, onBack, mode = 'asistencia'
         .eq('id', oradorId);
       if (error) throw error;
 
-      // 2. Auto-detectar tags a partir del nuevo texto (2+ coincidencias por tag)
-      const newTags = autoDetectTags(newMinutaText);
+      // 2. Auto-detectar tags a partir del nuevo texto (IA Gemini / Heurística inteligente)
+      const classification = aiClassifications[oradorId] || classifyTopicHeuristic(newMinutaText);
+      const newTags = classification.allTags && classification.allTags.length > 0
+        ? classification.allTags
+        : (classification.detectedTags || []);
 
       // 3. Actualizar estado local (texto + tags)
       setOradoresModalList(prev => prev.map(o =>
@@ -430,7 +439,9 @@ export default function ControlAsistencia({ reunion, onBack, mode = 'asistencia'
       ));
 
       // 4. Persistir tags en Supabase
-      await updateOradorTags(oradorId, newTags);
+      if (newTags.length > 0) {
+        await updateOradorTags(oradorId, newTags);
+      }
     } catch (err) {
       console.error('Error al guardar minuta:', err);
       alert('No se pudo guardar la minuta.');
@@ -468,6 +479,111 @@ export default function ControlAsistencia({ reunion, onBack, mode = 'asistencia'
     } catch (err) {
       console.error('Error al eliminar orador:', err);
       alert('No se pudo eliminar el orador.');
+    }
+  };
+
+  // Limpieza de SpeechRecognition al desmontar el componente
+  useEffect(() => {
+    return () => {
+      if (recognitionRef.current) {
+        try {
+          recognitionRef.current.onend = null;
+          recognitionRef.current.onerror = null;
+          recognitionRef.current.stop();
+        } catch (e) {}
+        recognitionRef.current = null;
+      }
+    };
+  }, []);
+
+  // Manejador de Dictado por Voz Nativo (Web Speech API)
+  const handleToggleVoiceDictation = (oradorId, originalTema) => {
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SpeechRecognition) {
+      alert('Tu navegador no soporta dictado por voz nativo. Te recomendamos usar Google Chrome en Android o Safari en iOS/iPhone.');
+      return;
+    }
+
+    if (recordingSpeakerId === oradorId) {
+      // Detener dictado activo
+      if (recognitionRef.current) {
+        recognitionRef.current.onend = null;
+        recognitionRef.current.onerror = null;
+        try {
+          recognitionRef.current.stop();
+        } catch (e) {}
+        recognitionRef.current = null;
+      }
+      setRecordingSpeakerId(null);
+
+      // Auto-guardar la minuta al terminar de dictar
+      const currentText = modalMinutaState[oradorId] !== undefined
+        ? modalMinutaState[oradorId]
+        : (oradoresModalList.find(x => x.id === oradorId)?.tema_efectivo || '');
+      handleSaveOradorMinutaInModal(oradorId, currentText);
+      return;
+    }
+
+    // Si había otra grabación activa en otro orador, detenerla primero
+    if (recognitionRef.current) {
+      recognitionRef.current.onend = null;
+      recognitionRef.current.onerror = null;
+      try {
+        recognitionRef.current.stop();
+      } catch (e) {}
+      recognitionRef.current = null;
+    }
+
+    try {
+      const recognition = new SpeechRecognition();
+      recognition.lang = 'es-AR';
+      recognition.continuous = true;
+      recognition.interimResults = true;
+
+      // Obtener el texto que ya estuviera en el cuadro de texto para anexar lo que se dicte
+      const baseInitialText = modalMinutaState[oradorId] !== undefined
+        ? modalMinutaState[oradorId]
+        : (oradoresModalList.find(x => x.id === oradorId)?.tema_efectivo || '');
+
+      let sessionBase = baseInitialText.trim();
+      if (sessionBase.length > 0) sessionBase += ' ';
+
+      recognition.onresult = (event) => {
+        let interimTranscript = '';
+        let finalTranscript = '';
+
+        for (let i = 0; i < event.results.length; i++) {
+          const transcript = event.results[i][0].transcript;
+          if (event.results[i].isFinal) {
+            finalTranscript += transcript + ' ';
+          } else {
+            interimTranscript += transcript;
+          }
+        }
+
+        const combinedText = sessionBase + finalTranscript + interimTranscript;
+        setModalMinutaState(prev => ({ ...prev, [oradorId]: combinedText }));
+        handleClassifyTopicLive(oradorId, combinedText || originalTema);
+      };
+
+      recognition.onerror = (event) => {
+        console.warn('Speech recognition error:', event.error);
+        if (event.error === 'not-allowed') {
+          alert('Permiso de micrófono denegado. Por favor habilita el micrófono en los ajustes de tu navegador.');
+        }
+        setRecordingSpeakerId(null);
+      };
+
+      recognition.onend = () => {
+        setRecordingSpeakerId(prev => prev === oradorId ? null : prev);
+      };
+
+      recognitionRef.current = recognition;
+      recognition.start();
+      setRecordingSpeakerId(oradorId);
+    } catch (err) {
+      console.error('Error starting speech recognition:', err);
+      setRecordingSpeakerId(null);
     }
   };
 
@@ -620,47 +736,62 @@ export default function ControlAsistencia({ reunion, onBack, mode = 'asistencia'
   }, [activeOradorId]);
 
   // Ejecución de búsqueda reutilizable
-  const performSearch = async (q) => {
+  const performSearch = async (rawQ) => {
+    if (!rawQ || !String(rawQ).trim()) return;
+    const q = String(rawQ).trim().replace(/[,()]/g, '');
     setSearching(true);
     setSearched(true);
     setShowRegisterForm(false);
     setSearchResults([]);
 
     try {
-      // 1. Buscar en Padrón Central por DNI, Apellido (ilike) o Celular (ilike)
-      const { data: vecinosData, error: errVecinos } = await supabase
-        .from('vecinos')
-        .select('*')
-        .or(`dni.eq.${q},apellido.ilike.%${q}%,celular.ilike.%${q}%`);
+      // 1. Buscar en Padrón Central por DNI, Nombre (ilike), Apellido (ilike) o Celular (ilike)
+      const isNumeric = /^\d+$/.test(q);
+      let query = supabase.from('vecinos').select('*');
+
+      if (isNumeric) {
+        query = query.or(`dni.ilike.%${q}%,celular.ilike.%${q}%`);
+      } else {
+        query = query.or(`nombre.ilike.%${q}%,apellido.ilike.%${q}%,dni.ilike.%${q}%,celular.ilike.%${q}%`);
+      }
+
+      const { data: vecinosData, error: errVecinos } = await query.limit(25);
 
       if (errVecinos) throw errVecinos;
 
       if (vecinosData && vecinosData.length > 0) {
-        const dnis = vecinosData.map(v => v.dni);
+        const dnis = vecinosData.map(v => v.dni).filter(Boolean);
 
         // 2. Buscar si están asociados a esta reunión
-        const { data: inscData, error: errInsc } = await supabase
-          .from('inscripciones_asistencias')
-          .select('*')
-          .eq('reunion_id', reunion.id)
-          .in('vecino_id', dnis);
+        let inscData = [];
+        if (dnis.length > 0) {
+          const { data: inscRes, error: errInsc } = await supabase
+            .from('inscripciones_asistencias')
+            .select('*')
+            .eq('reunion_id', reunion.id)
+            .in('vecino_id', dnis);
 
-        if (errInsc) throw errInsc;
+          if (errInsc) throw errInsc;
+          inscData = inscRes || [];
+        }
 
         // 3. Buscar si están anotados como oradores
-        const { data: oByVecinoId } = await supabase
-          .from('oradores')
-          .select('*')
-          .eq('reunion_id', reunion.id)
-          .in('vecino_id', dnis);
+        let oradoresData = [];
+        if (dnis.length > 0) {
+          const { data: oByVecinoId } = await supabase
+            .from('oradores')
+            .select('*')
+            .eq('reunion_id', reunion.id)
+            .in('vecino_id', dnis);
 
-        const { data: oByDni } = await supabase
-          .from('oradores')
-          .select('*')
-          .eq('reunion_id', reunion.id)
-          .in('dni', dnis);
+          const { data: oByDni } = await supabase
+            .from('oradores')
+            .select('*')
+            .eq('reunion_id', reunion.id)
+            .in('dni', dnis);
 
-        const oradoresData = [...(oByVecinoId || []), ...(oByDni || [])];
+          oradoresData = [...(oByVecinoId || []), ...(oByDni || [])];
+        }
 
         // Combinar datos en la cascada
         const combined = vecinosData.map(v => {
@@ -681,17 +812,23 @@ export default function ControlAsistencia({ reunion, onBack, mode = 'asistencia'
       } else {
         // Nivel 3: Vecino nuevo absoluto
         setSearchResults([]);
-        if (/^\d+$/.test(q)) {
+        if (isNumeric) {
           setRegDni(q);
           setRegApellido('');
+          setRegNombre('');
         } else {
           setRegDni('');
           setRegApellido(q);
+          setRegNombre('');
         }
       }
     } catch (err) {
-      console.error(err);
-      alert('Error de red al realizar la búsqueda.');
+      console.error('Error en performSearch:', err);
+      if (typeof navigator !== 'undefined' && !navigator.onLine) {
+        alert('Sin conexión a Internet. Por favor verifica tus datos móviles o WiFi.');
+      } else {
+        alert(`Aviso del Sistema: ${err?.message || 'Problema de conexión temporal con la base de datos. Reintentá en unos segundos.'}`);
+      }
     } finally {
       setSearching(false);
     }
@@ -991,6 +1128,23 @@ export default function ControlAsistencia({ reunion, onBack, mode = 'asistencia'
     }
   };
 
+  const handleClassifyTopicLive = (key, text) => {
+    if (!text || text.trim() === '') return;
+    if (classifyTimeoutRef.current[key]) {
+      clearTimeout(classifyTimeoutRef.current[key]);
+    }
+    classifyTimeoutRef.current[key] = setTimeout(async () => {
+      try {
+        const aiResult = await classifyTopicWithAI(text);
+        if (aiResult) {
+          setAiClassifications(prev => ({ ...prev, [key]: aiResult }));
+        }
+      } catch (e) {
+        console.warn('Error classifying live topic:', e);
+      }
+    }, 500);
+  };
+
   const handleSaveTemaOrador = async (oradorId, DNI) => {
     const nuevoTema = editingTopics[DNI];
     if (nuevoTema === undefined) return;
@@ -998,6 +1152,13 @@ export default function ControlAsistencia({ reunion, onBack, mode = 'asistencia'
     try {
       const { error } = await updateOradorTema(oradorId, nuevoTema);
       if (error) throw error;
+
+      // Auto-guardar tags detectados (por IA o heurística)
+      const classification = aiClassifications[DNI] || classifyTopicHeuristic(nuevoTema);
+      if (classification?.allTags && classification.allTags.length > 0) {
+        await updateOradorTags(oradorId, classification.allTags);
+      }
+
       await triggerSearchRefresh();
     } catch (err) {
       console.error(err);
@@ -1219,7 +1380,8 @@ export default function ControlAsistencia({ reunion, onBack, mode = 'asistencia'
               const nombreFull = `${o.vecino?.nombre || ''} ${o.vecino?.apellido || ''}`.trim() || 'Desconocido';
               const dniVal = o.vecino?.dni || o.vecino_id || '-';
               const telVal = o.vecino?.celular || 'No registrado';
-              const currentTema = modalMinutaState[o.id] !== undefined ? modalMinutaState[o.id] : (o.tema_efectivo || o.tema_original || '');
+              const originalTema = o.tema_original || o.vecino?.tema_previo || '';
+              const liveMinuta = modalMinutaState[o.id] !== undefined ? modalMinutaState[o.id] : (o.tema_efectivo || '');
 
               const isHablo = o.estado === 'hablo';
               const isSeBajo = o.estado === 'se_bajo';
@@ -1247,6 +1409,11 @@ export default function ControlAsistencia({ reunion, onBack, mode = 'asistencia'
                         <span>🆔 DNI: <strong>{dniVal}</strong></span>
                         <span>📱 Tel: <strong>{telVal}</strong></span>
                       </div>
+                      {originalTema && (
+                        <div style={{ fontSize: '0.85rem', color: '#475569', fontStyle: 'italic', marginTop: '6px', lineHeight: '1.4' }}>
+                          "{originalTema}"
+                        </div>
+                      )}
                     </div>
 
                     <div>
@@ -1256,50 +1423,127 @@ export default function ControlAsistencia({ reunion, onBack, mode = 'asistencia'
                     </div>
                   </div>
 
-                  {/* Textarea – auto-guarda y auto-tagea al perder el foco */}
+                  {/* Textarea – auto-guarda y auto-tagea con IA al perder el foco y en vivo */}
                   <div style={{ marginBottom: '8px' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
+                      <span style={{ fontSize: '0.75rem', fontWeight: '700', color: '#64748B', textTransform: 'uppercase', letterSpacing: '0.3px' }}>
+                        📝 Transcripción en vivo
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => handleToggleVoiceDictation(o.id, originalTema)}
+                        style={{
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          gap: '6px',
+                          padding: '4px 10px',
+                          borderRadius: '20px',
+                          fontSize: '0.78rem',
+                          fontWeight: '700',
+                          border: recordingSpeakerId === o.id ? '1px solid #EF4444' : '1px solid #CBD5E1',
+                          backgroundColor: recordingSpeakerId === o.id ? '#FEE2E2' : '#F8FAFC',
+                          color: recordingSpeakerId === o.id ? '#B91C1C' : '#334155',
+                          cursor: 'pointer',
+                          transition: 'all 0.2s ease',
+                          boxShadow: recordingSpeakerId === o.id ? '0 0 0 3px rgba(239, 68, 68, 0.25)' : 'none'
+                        }}
+                        title={recordingSpeakerId === o.id ? 'Pausar dictado' : 'Iniciar dictado por voz'}
+                      >
+                        {recordingSpeakerId === o.id ? (
+                          <>
+                            <span style={{ display: 'inline-block', width: '8px', height: '8px', borderRadius: '50%', backgroundColor: '#EF4444' }} />
+                            <Mic size={14} style={{ color: '#EF4444' }} />
+                            <span>Escuchando... (Pausar)</span>
+                          </>
+                        ) : (
+                          <>
+                            <Mic size={14} style={{ color: 'var(--color-primary)' }} />
+                            <span>🎙️ Dictar por voz</span>
+                          </>
+                        )}
+                      </button>
+                    </div>
+
                     <textarea
                       className="form-control"
                       rows={3}
-                      placeholder="Escribí acá los temas hablados por este vecino..."
-                      value={currentTema}
-                      onChange={(e) => setModalMinutaState(prev => ({ ...prev, [o.id]: e.target.value }))}
+                      placeholder={recordingSpeakerId === o.id ? "🎙️ Hablá ahora, se está transcribiendo en vivo..." : "Escribí acá los temas hablados por este vecino..."}
+                      value={liveMinuta}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        setModalMinutaState(prev => ({ ...prev, [o.id]: val }));
+                        handleClassifyTopicLive(o.id, val || originalTema);
+                      }}
                       onBlur={() => {
                         // Auto-guarda y auto-tagea al salir del campo
                         if (modalMinutaState[o.id] !== undefined) {
                           handleSaveOradorMinutaInModal(o.id, modalMinutaState[o.id]);
                         }
                       }}
-                      style={{ fontSize: '0.9rem', lineHeight: '1.4', borderRadius: '8px', padding: '10px', width: '100%' }}
+                      style={{
+                        fontSize: '0.9rem',
+                        lineHeight: '1.4',
+                        borderRadius: '8px',
+                        padding: '10px',
+                        width: '100%',
+                        borderColor: recordingSpeakerId === o.id ? '#EF4444' : undefined,
+                        boxShadow: recordingSpeakerId === o.id ? '0 0 0 2px rgba(239, 68, 68, 0.15)' : undefined
+                      }}
                     />
                   </div>
 
-                  {/* Tags: pills de solo lectura (con auto-detect fallback) + expandible para correcciones */}
+                  {/* Tags: PINs y Post-its detectados por IA / Heurística + expandible para correcciones manuales */}
                   {(() => {
-                    const effectiveTags = (o.tags && o.tags.length > 0) 
-                      ? o.tags 
-                      : autoDetectTags(currentTema || o.tema_efectivo || o.tema_original || '');
+                    const classification = aiClassifications[o.id] || classifyTopicHeuristic(liveMinuta || originalTema || '');
+                    const badges = (classification.badges && classification.badges.length > 0)
+                      ? classification.badges
+                      : [classification];
+
+                    const effectiveTags = (o.tags && o.tags.length > 0)
+                      ? o.tags
+                      : (classification.allTags || []);
+
                     return (
                       <div style={{ marginBottom: '10px' }}>
                         <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap', marginBottom: editingTagsFor === o.id ? '6px' : 0 }}>
                           <span style={{ fontSize: '0.65rem', color: '#94A3B8', fontWeight: '700', textTransform: 'uppercase', letterSpacing: '0.3px', flexShrink: 0 }}>
                             🤖 Tags
                           </span>
-                          {effectiveTags.length > 0
-                            ? <OradorTagsDisplay tags={effectiveTags} compact />
-                            : <span style={{ fontSize: '0.7rem', color: '#CBD5E1', fontStyle: 'italic' }}>sin asignar</span>
-                          }
+                          {badges.map((badge, bIdx) => {
+                            const badgeView = getBadgeDisplay(badge, isBaistrocchi);
+                            return (
+                              <span
+                                key={bIdx}
+                                style={{
+                                  backgroundColor: badgeView.bgColor,
+                                  color: badgeView.textColor,
+                                  border: `1px solid ${badgeView.borderColor}`,
+                                  padding: '2px 8px',
+                                  borderRadius: '12px',
+                                  fontSize: '0.75rem',
+                                  fontWeight: '700',
+                                  display: 'inline-flex',
+                                  alignItems: 'center',
+                                  gap: '4px',
+                                  boxShadow: '0 1px 2px rgba(0,0,0,0.04)'
+                                }}
+                                title={`Tema: ${badgeView.nombre} | Prioridad: ${badge.prioridad}`}
+                              >
+                                {badgeView.icon} {badgeView.nombre}
+                              </span>
+                            );
+                          })}
                           <button
                             type="button"
                             onClick={() => setEditingTagsFor(prev => prev === o.id ? null : o.id)}
-                            title="Corregir tags"
+                            title="Corregir tags manualmente"
                             style={{ background: 'none', border: '1px solid #CBD5E1', borderRadius: '6px', padding: '1px 7px', fontSize: '0.63rem', color: '#94A3B8', cursor: 'pointer', lineHeight: '1.5', flexShrink: 0 }}
                           >
                             {editingTagsFor === o.id ? 'cerrar' : '✏️'}
                           </button>
                         </div>
                         {editingTagsFor === o.id && (
-                          <div style={{ padding: '8px', backgroundColor: '#F8FAFC', borderRadius: '8px', border: '1px solid #E2E8F0' }}>
+                          <div style={{ padding: '8px', backgroundColor: '#F8FAFC', borderRadius: '8px', border: '1px solid #E2E8F0', marginTop: '6px' }}>
                             <OradorTagSelector
                               selectedTags={effectiveTags}
                               onToggle={(tag) => handleToggleTagTerritorio(o.id, tag)}
@@ -1316,7 +1560,7 @@ export default function ControlAsistencia({ reunion, onBack, mode = 'asistencia'
                     <button
                       type="button"
                       className="btn btn-primary btn-sm"
-                      onClick={() => handleSaveOradorMinutaInModal(o.id, currentTema)}
+                      onClick={() => handleSaveOradorMinutaInModal(o.id, liveMinuta)}
                       style={{ display: 'flex', alignItems: 'center', gap: '6px', fontWeight: '600', padding: '8px 14px', fontSize: '0.85rem', borderRadius: '8px' }}
                     >
                       <Save size={15} /> Guardar Tema
@@ -1898,36 +2142,78 @@ export default function ControlAsistencia({ reunion, onBack, mode = 'asistencia'
                                 Desea ser Orador en el Micrófono
                               </label>
 
-                              {/* Formulario de tema */}
-                              {orador && (
-                                <div style={{ marginTop: '10px', display: 'flex', gap: '10px', alignItems: 'flex-end' }}>
-                                  <div className="form-group" style={{ flexGrow: 1, margin: 0 }}>
-                                    <label style={{ fontSize: '0.75rem', color: 'var(--color-text-muted)', marginBottom: '4px', display: 'block' }}>
-                                      ¿De qué le gustaría hablar?
-                                    </label>
-                                    <textarea
-                                      rows="2"
-                                      className="form-control"
-                                      placeholder="Ingresá la consulta o problemática para el orador..."
-                                      value={editingTopics[vecino.dni] !== undefined ? editingTopics[vecino.dni] : (orador.tema_original || '')}
-                                      onChange={(e) => {
-                                        setEditingTopics({
-                                          ...editingTopics,
-                                          [vecino.dni]: e.target.value
-                                        });
-                                      }}
-                                      style={{ fontSize: '0.85rem' }}
-                                    />
+                              {/* Formulario de tema con clasificación de PIN y tags en tiempo real */}
+                              {orador && (() => {
+                                const currentTema = editingTopics[vecino.dni] !== undefined ? editingTopics[vecino.dni] : (orador.tema_original || '');
+                                const classification = aiClassifications[vecino.dni] || classifyTopicHeuristic(currentTema);
+
+                                return (
+                                  <div style={{ marginTop: '10px' }}>
+                                    <div className="form-group" style={{ margin: 0 }}>
+                                      <label style={{ fontSize: '0.75rem', color: 'var(--color-text-muted)', marginBottom: '4px', display: 'block' }}>
+                                        ¿De qué le gustaría hablar?
+                                      </label>
+                                      <textarea
+                                        rows="2"
+                                        className="form-control"
+                                        placeholder="Ingresá la consulta o problemática para el orador..."
+                                        value={currentTema}
+                                        onChange={(e) => {
+                                          const val = e.target.value;
+                                          setEditingTopics({
+                                            ...editingTopics,
+                                            [vecino.dni]: val
+                                          });
+                                          handleClassifyTopicLive(vecino.dni, val);
+                                        }}
+                                        style={{ fontSize: '0.85rem' }}
+                                      />
+                                    </div>
+
+                                    {/* Etiqueta / PIN destacado y botón Guardar Tema */}
+                                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '8px', flexWrap: 'wrap', gap: '8px' }}>
+                                      <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}>
+                                        <span style={{ fontSize: '0.65rem', color: '#94A3B8', fontWeight: '700', textTransform: 'uppercase', letterSpacing: '0.3px' }}>
+                                          🤖 TAGS
+                                        </span>
+                                        {/* Badges de todos los PINs o Temas detectados */}
+                                        {((classification.badges && classification.badges.length > 0) ? classification.badges : [classification]).map((badge, bIdx) => {
+                                          const badgeView = getBadgeDisplay(badge, isBaistrocchi);
+                                          return (
+                                            <span
+                                              key={bIdx}
+                                              style={{
+                                                backgroundColor: badgeView.bgColor,
+                                                color: badgeView.textColor,
+                                                border: `1px solid ${badgeView.borderColor}`,
+                                                padding: '3px 9px',
+                                                borderRadius: '12px',
+                                                fontSize: '0.78rem',
+                                                fontWeight: '700',
+                                                display: 'inline-flex',
+                                                alignItems: 'center',
+                                                gap: '4px',
+                                                boxShadow: '0 1px 2px rgba(0,0,0,0.05)'
+                                              }}
+                                              title={`Tema: ${badgeView.nombre} | Prioridad: ${badge.prioridad}`}
+                                            >
+                                              {badgeView.icon} {badgeView.nombre}
+                                            </span>
+                                          );
+                                        })}
+                                      </div>
+
+                                      <button 
+                                        className="btn btn-primary btn-sm"
+                                        onClick={() => handleSaveTemaOrador(orador.id, vecino.dni)}
+                                        style={{ padding: '6px 14px', height: 'fit-content', whiteSpace: 'nowrap', display: 'inline-flex', alignItems: 'center', gap: '5px', fontSize: '0.8rem', fontWeight: '600' }}
+                                      >
+                                        <Save size={13} /> Guardar Tema
+                                      </button>
+                                    </div>
                                   </div>
-                                  <button 
-                                    className="btn btn-primary btn-sm"
-                                    onClick={() => handleSaveTemaOrador(orador.id, vecino.dni)}
-                                    style={{ padding: '8px 12px', height: 'fit-content', whiteSpace: 'nowrap' }}
-                                  >
-                                    Guardar Tema
-                                  </button>
-                                </div>
-                              )}
+                                );
+                              })()}
                             </div>
                           )}
                         </div>
@@ -2071,22 +2357,59 @@ export default function ControlAsistencia({ reunion, onBack, mode = 'asistencia'
                             Desea ser Orador en el Micrófono
                           </label>
 
-                          {regIsOrador && (
-                            <div className="form-group" style={{ marginTop: '10px' }}>
-                              <label htmlFor="reg-tema" style={{ fontSize: '0.75rem', color: 'var(--color-text-muted)', marginBottom: '4px', display: 'block' }}>
-                                ¿De qué le gustaría hablar?
-                              </label>
-                              <textarea
-                                id="reg-tema"
-                                rows="2"
-                                className="form-control"
-                                placeholder="Ingresá la problemática o consulta que el orador desea manifestar..."
-                                value={regTema}
-                                onChange={(e) => setRegTema(e.target.value)}
-                                style={{ fontSize: '0.85rem' }}
-                              />
-                            </div>
-                          )}
+                          {regIsOrador && (() => {
+                            const regClassification = aiClassifications['reg_walkin'] || classifyTopicHeuristic(regTema);
+                            return (
+                              <div className="form-group" style={{ marginTop: '10px' }}>
+                                <label htmlFor="reg-tema" style={{ fontSize: '0.75rem', color: 'var(--color-text-muted)', marginBottom: '4px', display: 'block' }}>
+                                  ¿De qué le gustaría hablar?
+                                </label>
+                                <textarea
+                                  id="reg-tema"
+                                  rows="2"
+                                  className="form-control"
+                                  placeholder="Ingresá la problemática o consulta que el orador desea manifestar..."
+                                  value={regTema}
+                                  onChange={(e) => {
+                                    const val = e.target.value;
+                                    setRegTema(val);
+                                    handleClassifyTopicLive('reg_walkin', val);
+                                  }}
+                                  style={{ fontSize: '0.85rem' }}
+                                />
+                                {regTema.trim() !== '' && (
+                                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginTop: '8px', flexWrap: 'wrap' }}>
+                                    <span style={{ fontSize: '0.65rem', color: '#94A3B8', fontWeight: '700', textTransform: 'uppercase', letterSpacing: '0.3px' }}>
+                                      🤖 TAGS
+                                    </span>
+                                    {((regClassification.badges && regClassification.badges.length > 0) ? regClassification.badges : [regClassification]).map((badge, bIdx) => {
+                                      const badgeView = getBadgeDisplay(badge, isBaistrocchi);
+                                      return (
+                                        <span
+                                          key={bIdx}
+                                          style={{
+                                            backgroundColor: badgeView.bgColor,
+                                            color: badgeView.textColor,
+                                            border: `1px solid ${badgeView.borderColor}`,
+                                            padding: '2px 8px',
+                                            borderRadius: '12px',
+                                            fontSize: '0.78rem',
+                                            fontWeight: '700',
+                                            display: 'inline-flex',
+                                            alignItems: 'center',
+                                            gap: '4px'
+                                          }}
+                                          title={`Tema: ${badgeView.nombre} | Prioridad: ${badge.prioridad}`}
+                                        >
+                                          {badgeView.icon} {badgeView.nombre}
+                                        </span>
+                                      );
+                                    })}
+                                  </div>
+                                )}
+                              </div>
+                            );
+                          })()}
                         </div>
                       )}
 
