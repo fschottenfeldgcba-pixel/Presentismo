@@ -5,6 +5,8 @@ import ABMReuniones from './components/ABMReuniones';
 import ControlAsistencia from './components/ControlAsistencia';
 import AdministrarReunion from './components/AdministrarReunion';
 import PanelModerador from './components/PanelModerador';
+import PapeletaDigital from './components/PapeletaDigital';
+import PanelSolicitudesPapeleta from './components/PanelSolicitudesPapeleta';
 import { LogOut, ShieldCheck } from 'lucide-react';
 import { supabase } from './lib/supabaseClient';
 
@@ -92,6 +94,11 @@ export default function App() {
     return saved ? JSON.parse(saved) : null;
   });
   const [currentView, setCurrentView] = useState(() => {
+    const params = new URLSearchParams(window.location.search);
+    const qView = params.get('view');
+    if (qView === 'papeleta' || qView === 'formulario_solicitudes' || qView === 'solicitudes') {
+      return 'papeleta';
+    }
     const saved = sessionStorage.getItem('presentismo_view');
     const savedUser = localStorage.getItem('presentismo_user');
     return saved || (savedUser ? 'dashboard' : 'login');
@@ -111,13 +118,18 @@ export default function App() {
   const [initialModalReunionId, setInitialModalReunionId] = useState(null);
   const [initialShowHistorical, setInitialShowHistorical] = useState(false);
 
-  // Parsear parámetros de la URL para soporte multi-pestaña
+  // Parsear parámetros de la URL para soporte multi-pestaña y vistas públicas
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const qView = params.get('view');
     const qReunionId = params.get('reunion_id');
     const qModal = params.get('modal');
     const qHistorical = params.get('show_historical');
+
+    if (qView === 'papeleta' || qView === 'formulario_solicitudes' || qView === 'solicitudes') {
+      setCurrentView('papeleta');
+      return;
+    }
 
     if (user) {
       if (qHistorical === 'true') {
@@ -257,6 +269,10 @@ export default function App() {
 
       {/* CUERPO PRINCIPAL / ENRUTADOR DE VISTAS */}
       <main style={{ flexGrow: 1, display: 'flex', flexDirection: 'column' }}>
+        {currentView === 'papeleta' && (
+          <PapeletaDigital />
+        )}
+
         {currentView === 'login' && (
           <Login onLoginSuccess={handleLoginSuccess} />
         )}
@@ -302,6 +318,13 @@ export default function App() {
               setSelectedReunion(null);
               setCurrentView('dashboard');
             }}
+          />
+        )}
+
+        {currentView === 'panel_papeletas' && user && selectedReunion && (
+          <PanelSolicitudesPapeleta 
+            reunion={selectedReunion}
+            onBack={() => setCurrentView('asistencia')}
           />
         )}
 

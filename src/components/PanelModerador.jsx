@@ -4,8 +4,7 @@ import { updateReunion, getOradores, updateOradorDetails, updateOradorTags, getA
 import OradorTagSelector, { OradorTagsDisplay } from './OradorTagSelector';
 import { supabase } from '../lib/supabaseClient';
 import { TIPOS_REUNION } from '../data/mockData';
-import { autoDetectTags } from '../constants/oradorTags';
-import { classifyTopicHeuristic, classifyTopicWithAI, isBaistrocchiMeeting, getBadgeDisplay, PIN_CONFIGS } from '../services/topicClassificationService';
+import { classifyTopicHeuristic, classifyTopicWithAI, isBaistrocchiMeeting, getBadgeDisplay, PIN_CONFIGS, getBadgesFromTags, BAISTROCCHI_PIN_OPTIONS } from '../services/topicClassificationService';
 
 const SEMAFORO_MAP = {
   verde: { label: '🟢 Verde - Sin riesgo', waLabel: '🟢 sin riesgo' },
@@ -1938,7 +1937,9 @@ ${oradoresEfectivos.length > 0
           ) : queueActive.length > 0 ? (
             <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', maxHeight: '400px', overflowY: 'auto', paddingRight: '4px' }}>
               {queueActive.map((item, index) => {
-                const topicClass = classifyTopicHeuristic(item.tema_original || item.tema_efectivo || '');
+                const topicClass = (item.tags && item.tags.length > 0)
+                  ? { badges: getBadgesFromTags(item.tags, isBaistrocchi), allTags: item.tags }
+                  : classifyTopicHeuristic(item.tema_original || item.tema_efectivo || '');
                 return (
                   <div key={item.id} style={{ border: '1px solid var(--color-border)', borderRadius: '8px', padding: '12px', backgroundColor: '#FFFFFF', display: 'flex', gap: '12px', alignItems: 'center', boxShadow: '0 1px 3px rgba(0,0,0,0.05)' }}>
                     
@@ -2133,7 +2134,9 @@ ${oradoresEfectivos.length > 0
                     📌 Tema / Minuta registrada (por equipo de Territorio):
                   </div>
                   {(() => {
-                    const activeTopicClass = classifyTopicHeuristic(activeSpeaker.tema_efectivo || activeSpeaker.tema_original || '');
+                    const activeTopicClass = (activeSpeaker.tags && activeSpeaker.tags.length > 0)
+                      ? { badges: getBadgesFromTags(activeSpeaker.tags, isBaistrocchi), allTags: activeSpeaker.tags }
+                      : classifyTopicHeuristic(activeSpeaker.tema_efectivo || activeSpeaker.tema_original || '');
                     if (activeSpeaker.tema_efectivo || activeSpeaker.tema_original) {
                       return (
                         <div style={{ display: 'flex', alignItems: 'center', gap: '4px', flexWrap: 'wrap' }}>

@@ -337,6 +337,62 @@ export function getBadgeDisplay(badge, isBaistrocchi = false) {
   };
 }
 
+// Opciones interactivas de Pines para reuniones de Ignacio Baistrocchi
+export const BAISTROCCHI_PIN_OPTIONS = [
+  { key: 'amarillo', tag: 'Luminaria',       label: 'Luminaria',       colorName: 'Amarillo', icon: '🟡', bg: '#FEF08A', border: '#EAB308', text: '#854D0E' },
+  { key: 'azul',     tag: 'Pluviales',       label: 'Pluviales',       colorName: 'Azul',     icon: '🔵', bg: '#DBEAFE', border: '#93C5FD', text: '#1E40AF' },
+  { key: 'verde',    tag: 'Veredas',         label: 'Veredas',          colorName: 'Verde',    icon: '🟢', bg: '#DCFCE7', border: '#86EFAC', text: '#15803D' },
+  { key: 'rojo',     tag: 'Espacio Público', label: 'Espacio Público', colorName: 'Rojo',     icon: '🔴', bg: '#FEE2E2', border: '#FCA5A5', text: '#991B1B' },
+  { key: 'post_it',  tag: 'Fuera de Mapa',   label: 'Post-it',         colorName: 'Post-it',  icon: '📝', bg: '#FEF9C3', border: '#FDE047', text: '#713F12' },
+];
+
+/**
+ * Convierte un listado de tags (strings) en objetos badge formateados para display
+ */
+export function getBadgesFromTags(tags = [], isBaistrocchi = false) {
+  if (!tags || tags.length === 0) return [];
+  return tags.map(tag => {
+    const norm = (tag || '').toLowerCase().trim();
+    if (norm.includes('luminaria') || norm.includes('amarillo') || norm === 'pin amarillo') {
+      return createBadge(PIN_CONFIGS.AMARILLO, 'Luminaria', 'Pin Amarillo (Luminaria)');
+    }
+    if (norm.includes('pluvial') || norm.includes('azul') || norm === 'pin azul') {
+      return createBadge(PIN_CONFIGS.AZUL, 'Pluviales', 'Pin Azul (Pluviales)');
+    }
+    if (norm.includes('vereda') || norm.includes('verde') || norm === 'pin verde') {
+      return createBadge(PIN_CONFIGS.VERDE, 'Veredas', 'Pin Verde (Veredas)');
+    }
+    if (norm.includes('bacheo') || norm.includes('calzada')) {
+      return createBadge(PIN_CONFIGS.ROJO, 'Bacheo y Calzadas', 'Pin Rojo (Bacheo y Calzadas)');
+    }
+    if (norm.includes('apertura') || norm.includes('obra')) {
+      return createBadge(PIN_CONFIGS.ROJO, 'Aperturas y Obras', 'Pin Rojo (Aperturas y Obras)');
+    }
+    if (norm.includes('paisaje') || norm.includes('parque') || norm.includes('plaza')) {
+      return createBadge(PIN_CONFIGS.ROJO, 'Paisaje y Parques', 'Pin Rojo (Paisaje y Parques)');
+    }
+    if (norm.includes('feria') || norm.includes('mercado')) {
+      return createBadge(PIN_CONFIGS.ROJO, 'Ferias y Mercados', 'Pin Rojo (Ferias y Mercados)');
+    }
+    if (norm.includes('espacio') || norm.includes('rojo') || norm === 'pin rojo') {
+      return createBadge(PIN_CONFIGS.ROJO, 'Espacio Público', 'Pin Rojo (Espacio Público)');
+    }
+    if (norm.includes('arbolado') || norm.includes('poda')) {
+      return createBadge(PIN_CONFIGS.POST_IT, 'Arbolado y Poda (Comunas)', 'Post-it (Arbolado y Poda - Comunas)', 'Arbolado y Poda');
+    }
+    if (norm.includes('higiene') || norm.includes('basura')) {
+      return createBadge(PIN_CONFIGS.POST_IT, 'Higiene Urbana (JGM)', 'Post-it (Higiene Urbana - JGM)', 'Higiene Urbana');
+    }
+    if (norm.includes('ordenamiento') || norm.includes('mantero')) {
+      return createBadge(PIN_CONFIGS.POST_IT, 'Ordenamiento Urbano (JGM)', 'Post-it (Ordenamiento Urbano - JGM)', 'Ordenamiento Urbano');
+    }
+    if (norm.includes('seguridad') || norm.includes('polic')) {
+      return createBadge(PIN_CONFIGS.POST_IT, 'Seguridad', 'Post-it (Seguridad)');
+    }
+    return createBadge(PIN_CONFIGS.POST_IT, tag, `Post-it (${tag})`, tag);
+  });
+}
+
 /**
  * Crea un badge con metadata para ambos modos (PIN y Tema)
  */

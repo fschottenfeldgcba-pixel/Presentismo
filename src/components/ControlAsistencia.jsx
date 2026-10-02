@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { supabase } from '../lib/supabaseClient';
-import { ArrowLeft, Search, Plus, Check, Play, Square, Pause, Shield, Calendar, Users, ClipboardList, Mic, AlertTriangle, Clock, FileSpreadsheet, Trash2, Edit2, Save, X, Download, UserPlus, GitMerge } from 'lucide-react';
+import { ArrowLeft, Search, Plus, Check, Play, Square, Pause, Shield, Calendar, Users, ClipboardList, Mic, AlertTriangle, Clock, FileSpreadsheet, Trash2, Edit2, Save, X, Download, UserPlus, GitMerge, FileText } from 'lucide-react';
 import { TIPOS_REUNION } from '../data/mockData';
 import { 
   getAsistentesPorReunion, 
@@ -20,7 +20,8 @@ import {
 import OradorTagSelector, { OradorTagsDisplay } from './OradorTagSelector';
 import PreguntasTematicas from './PreguntasTematicas';
 import Cronometro1a1 from './Cronometro1a1';
-import { classifyTopicHeuristic, classifyTopicWithAI, isBaistrocchiMeeting, getBadgeDisplay, PIN_CONFIGS } from '../services/topicClassificationService';
+import PanelSolicitudesPapeleta from './PanelSolicitudesPapeleta';
+import { classifyTopicHeuristic, classifyTopicWithAI, isBaistrocchiMeeting, getBadgeDisplay, PIN_CONFIGS, BAISTROCCHI_PIN_OPTIONS, getBadgesFromTags } from '../services/topicClassificationService';
 import * as XLSX from 'xlsx';
 
 const COMUNAS = [
@@ -180,6 +181,8 @@ export default function ControlAsistencia({ reunion, onBack, mode = 'asistencia'
   const [modalMinutaState, setModalMinutaState] = useState({});
   // ID del orador cuyo selector de tags está expandido para corrección manual
   const [editingTagsFor, setEditingTagsFor] = useState(null);
+  // Tags/Pines asignados manualmente por el agente en Acreditación o Minuta
+  const [manualSpeakerTags, setManualSpeakerTags] = useState({});
   // Estado para dictado por voz en vivo (Web Speech API)
   const [recordingSpeakerId, setRecordingSpeakerId] = useState(null);
   const recognitionRef = useRef(null);
@@ -467,6 +470,29 @@ export default function ControlAsistencia({ reunion, onBack, mode = 'asistencia'
       console.error('Error al guardar tags:', error);
       // Revertir en caso de error
       setOradoresModalList(prev => prev.map(o => o.id === oradorId ? { ...o, tags: baseTags } : o));
+    }
+  };
+
+  // Asignar o cambiar PIN manualmente en reuniones de Baistrocchi (o general)
+  const handleSelectPin = async (oradorId, vecinoDni, pinOption) => {
+    const key = oradorId || vecinoDni;
+    const newTags = [pinOption.tag];
+
+    // Actualizar estado local inmediatamente para feedback visual instantáneo
+    setManualSpeakerTags(prev => ({
+      ...prev,
+      [key]: newTags,
+      ...(oradorId ? { [oradorId]: newTags } : {}),
+      ...(vecinoDni ? { [vecinoDni]: newTags } : {})
+    }));
+
+    if (oradorId) {
+      try {
+        await updateOradorTags(oradorId, newTags);
+        setOradoresModalList(prev => prev.map(o => o.id === oradorId ? { ...o, tags: newTags } : o));
+      } catch (e) {
+        console.error('Error al actualizar pin del orador:', e);
+      }
     }
   };
 
@@ -1153,10 +1179,17 @@ export default function ControlAsistencia({ reunion, onBack, mode = 'asistencia'
       const { error } = await updateOradorTema(oradorId, nuevoTema);
       if (error) throw error;
 
-      // Auto-guardar tags detectados (por IA o heurística)
+      // Auto-guardar tags asignados manualmente o detectados por IA / heurística
+      const manual = manualSpeakerTags[oradorId] || manualSpeakerTags[DNI];
       const classification = aiClassifications[DNI] || classifyTopicHeuristic(nuevoTema);
-      if (classification?.allTags && classification.allTags.length > 0) {
-        await updateOradorTags(oradorId, classification.allTags);
+      const tagsToSave = (manual && manual.length > 0)
+        ? manual
+        : (classification?.allTags && classification.allTags.length > 0)
+          ? classification.allTags
+          : [];
+
+      if (tagsToSave.length > 0) {
+        await updateOradorTags(oradorId, tagsToSave);
       }
 
       await triggerSearchRefresh();
@@ -1198,6 +1231,16 @@ export default function ControlAsistencia({ reunion, onBack, mode = 'asistencia'
     const secs = totalSecs % 60;
     return `${hrs > 0 ? hrs + ':' : ''}${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
   };
+
+  // Renderizar Panel de Gestión de Papeletas Digitales si está activo
+  if (currentView === 'papeletas') {
+    return (
+      <PanelSolicitudesPapeleta 
+        reunion={reunion}
+        onBack={() => setCurrentView('asistencia')}
+      />
+    );
+  }
 
   // Renderizar contenido de Toma de Temas / Minuta a pantalla completa si está activo
   if (currentView === 'minutas') {
@@ -1495,19 +1538,19 @@ export default function ControlAsistencia({ reunion, onBack, mode = 'asistencia'
                   {/* Tags: PINs y Post-its detectados por IA / Heurística + expandible para correcciones manuales */}
                   {(() => {
                     const classification = aiClassifications[o.id] || classifyTopicHeuristic(liveMinuta || originalTema || '');
-                    const badges = (classification.badges && classification.badges.length > 0)
-                      ? classification.badges
-                      : [classification];
-
                     const effectiveTags = (o.tags && o.tags.length > 0)
                       ? o.tags
                       : (classification.allTags || []);
+
+                    const badges = (o.tags && o.tags.length > 0)
+                      ? getBadgesFromTags(o.tags, isBaistrocchi)
+                      : ((classification.badges && classification.badges.length > 0) ? classification.badges : [classification]);
 
                     return (
                       <div style={{ marginBottom: '10px' }}>
                         <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap', marginBottom: editingTagsFor === o.id ? '6px' : 0 }}>
                           <span style={{ fontSize: '0.65rem', color: '#94A3B8', fontWeight: '700', textTransform: 'uppercase', letterSpacing: '0.3px', flexShrink: 0 }}>
-                            🤖 Tags
+                            {isBaistrocchi ? '📍 PIN' : '🤖 Tags'}
                           </span>
                           {badges.map((badge, bIdx) => {
                             const badgeView = getBadgeDisplay(badge, isBaistrocchi);
@@ -1536,19 +1579,59 @@ export default function ControlAsistencia({ reunion, onBack, mode = 'asistencia'
                           <button
                             type="button"
                             onClick={() => setEditingTagsFor(prev => prev === o.id ? null : o.id)}
-                            title="Corregir tags manualmente"
-                            style={{ background: 'none', border: '1px solid #CBD5E1', borderRadius: '6px', padding: '1px 7px', fontSize: '0.63rem', color: '#94A3B8', cursor: 'pointer', lineHeight: '1.5', flexShrink: 0 }}
+                            title="Cambiar PIN o corregir tags manualmente"
+                            style={{ background: 'none', border: '1px solid #CBD5E1', borderRadius: '6px', padding: '1px 7px', fontSize: '0.63rem', color: '#64748B', cursor: 'pointer', lineHeight: '1.5', flexShrink: 0, fontWeight: '600' }}
                           >
-                            {editingTagsFor === o.id ? 'cerrar' : '✏️'}
+                            {editingTagsFor === o.id ? 'cerrar' : isBaistrocchi ? '🎨 Cambiar Pin' : '✏️'}
                           </button>
                         </div>
                         {editingTagsFor === o.id && (
                           <div style={{ padding: '8px', backgroundColor: '#F8FAFC', borderRadius: '8px', border: '1px solid #E2E8F0', marginTop: '6px' }}>
-                            <OradorTagSelector
-                              selectedTags={effectiveTags}
-                              onToggle={(tag) => handleToggleTagTerritorio(o.id, tag)}
-                              compact
-                            />
+                            {isBaistrocchi ? (
+                              <div>
+                                <div style={{ fontSize: '0.7rem', color: '#64748B', fontWeight: '700', marginBottom: '6px', textTransform: 'uppercase' }}>
+                                  Seleccionar Color de Pin:
+                                </div>
+                                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
+                                  {BAISTROCCHI_PIN_OPTIONS.map((pin) => {
+                                    const isSelected = effectiveTags.includes(pin.tag) || (effectiveTags.length === 0 && classification.categoria === pin.key);
+                                    return (
+                                      <button
+                                        key={pin.key}
+                                        type="button"
+                                        onClick={() => handleSelectPin(o.id, null, pin)}
+                                        style={{
+                                          display: 'inline-flex',
+                                          alignItems: 'center',
+                                          gap: '4px',
+                                          padding: '4px 9px',
+                                          borderRadius: '20px',
+                                          fontSize: '0.75rem',
+                                          fontWeight: isSelected ? '800' : '600',
+                                          border: isSelected ? `2px solid ${pin.border}` : '1px solid #CBD5E1',
+                                          backgroundColor: isSelected ? pin.bg : '#FFFFFF',
+                                          color: isSelected ? pin.text : '#64748B',
+                                          cursor: 'pointer',
+                                          boxShadow: isSelected ? '0 1px 3px rgba(0,0,0,0.1)' : 'none',
+                                          transform: isSelected ? 'scale(1.02)' : 'scale(1)',
+                                          transition: 'all 0.15s ease'
+                                        }}
+                                      >
+                                        <span>{pin.icon}</span>
+                                        <span>{pin.label}</span>
+                                        {isSelected && <span style={{ fontSize: '0.7rem', marginLeft: '2px', fontWeight: 'bold' }}>✓</span>}
+                                      </button>
+                                    );
+                                  })}
+                                </div>
+                              </div>
+                            ) : (
+                              <OradorTagSelector
+                                selectedTags={effectiveTags}
+                                onToggle={(tag) => handleToggleTagTerritorio(o.id, tag)}
+                                compact
+                              />
+                            )}
                           </div>
                         )}
                       </div>
@@ -1761,22 +1844,44 @@ export default function ControlAsistencia({ reunion, onBack, mode = 'asistencia'
           <ArrowLeft size={16} /> Volver al Tablero
         </button>
 
-        <button 
-          type="button"
-          className="btn btn-highlight btn-sm" 
-          onClick={() => setCurrentView('minutas')}
-          style={{ 
-            display: 'flex', 
-            alignItems: 'center', 
-            gap: '6px', 
-            fontWeight: 'bold', 
-            padding: '6px 12px',
-            backgroundColor: 'var(--color-highlight)',
-            color: 'var(--color-primary)'
-          }}
-        >
-          <Mic size={14} /> Toma de Temas / Oradores
-        </button>
+        <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+          <button 
+            type="button"
+            className="btn btn-highlight btn-sm" 
+            onClick={() => setCurrentView('minutas')}
+            style={{ 
+              display: 'flex', 
+              alignItems: 'center', 
+              gap: '6px', 
+              fontWeight: 'bold', 
+              padding: '6px 12px',
+              backgroundColor: 'var(--color-highlight)',
+              color: 'var(--color-primary)'
+            }}
+          >
+            <Mic size={14} /> Toma de Temas / Oradores
+          </button>
+
+          <button 
+            type="button"
+            className="btn btn-sm" 
+            onClick={() => setCurrentView('papeletas')}
+            style={{ 
+              display: 'flex', 
+              alignItems: 'center', 
+              gap: '6px', 
+              fontWeight: 'bold', 
+              padding: '6px 12px',
+              backgroundColor: '#0284C7',
+              color: '#FFFFFF',
+              border: 'none',
+              borderRadius: '6px',
+              cursor: 'pointer'
+            }}
+          >
+            <FileText size={14} /> 📋 Papeletas Digitales
+          </button>
+        </div>
 
         {/* Cronómetro Logístico en Vivo */}
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
@@ -2114,6 +2219,35 @@ export default function ControlAsistencia({ reunion, onBack, mode = 'asistencia'
                                   Acreditar y Dar Presente
                                 </button>
                               )}
+
+                              {isPresent && vecino.celular && (
+                                <a
+                                  href={`https://wa.me/${vecino.celular.replace(/\D/g, '')}?text=${encodeURIComponent(
+                                    `Hola ${vecino.nombre}! Te compartimos el enlace para ingresar tus reclamos o solicitudes en la reunión de hoy de BA Participación Ciudadana:\n${window.location.origin}${window.location.pathname}?view=papeleta&reunion_id=${reunion.id}&dni=${vecino.dni}`
+                                  )}`}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="btn btn-sm"
+                                  style={{
+                                    backgroundColor: '#25D366',
+                                    color: '#FFFFFF',
+                                    fontWeight: '600',
+                                    fontSize: '0.78rem',
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    justifyContent: 'center',
+                                    gap: '4px',
+                                    textDecoration: 'none',
+                                    padding: '7px 10px',
+                                    borderRadius: '6px',
+                                    border: 'none',
+                                    boxShadow: '0 1px 2px rgba(0,0,0,0.1)'
+                                  }}
+                                  title="Enviar enlace personalizado de la Papeleta Digital por WhatsApp"
+                                >
+                                  📱 Enviar Papeleta WA
+                                </a>
+                              )}
                               
                               {/* Botón de Editar Datos en Caliente (Requisito 1) */}
                               <button
@@ -2147,6 +2281,19 @@ export default function ControlAsistencia({ reunion, onBack, mode = 'asistencia'
                                 const currentTema = editingTopics[vecino.dni] !== undefined ? editingTopics[vecino.dni] : (orador.tema_original || '');
                                 const classification = aiClassifications[vecino.dni] || classifyTopicHeuristic(currentTema);
 
+                                const manualTags = manualSpeakerTags[orador.id] || manualSpeakerTags[vecino.dni];
+                                const effectiveTags = (manualTags && manualTags.length > 0)
+                                  ? manualTags
+                                  : (orador.tags && orador.tags.length > 0)
+                                    ? orador.tags
+                                    : (classification.allTags || []);
+
+                                const badges = (manualTags && manualTags.length > 0)
+                                  ? getBadgesFromTags(manualTags, isBaistrocchi)
+                                  : (orador.tags && orador.tags.length > 0)
+                                    ? getBadgesFromTags(orador.tags, isBaistrocchi)
+                                    : ((classification.badges && classification.badges.length > 0) ? classification.badges : [classification]);
+
                                 return (
                                   <div style={{ marginTop: '10px' }}>
                                     <div className="form-group" style={{ margin: 0 }}>
@@ -2170,14 +2317,13 @@ export default function ControlAsistencia({ reunion, onBack, mode = 'asistencia'
                                       />
                                     </div>
 
-                                    {/* Etiqueta / PIN destacado y botón Guardar Tema */}
+                                    {/* Etiqueta / PIN asignado actualmente y botón Guardar Tema */}
                                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '8px', flexWrap: 'wrap', gap: '8px' }}>
                                       <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}>
                                         <span style={{ fontSize: '0.65rem', color: '#94A3B8', fontWeight: '700', textTransform: 'uppercase', letterSpacing: '0.3px' }}>
-                                          🤖 TAGS
+                                          {isBaistrocchi ? '📍 PIN Asignado:' : '🏷️ Tags:'}
                                         </span>
-                                        {/* Badges de todos los PINs o Temas detectados */}
-                                        {((classification.badges && classification.badges.length > 0) ? classification.badges : [classification]).map((badge, bIdx) => {
+                                        {badges.map((badge, bIdx) => {
                                           const badgeView = getBadgeDisplay(badge, isBaistrocchi);
                                           return (
                                             <span
@@ -2211,6 +2357,52 @@ export default function ControlAsistencia({ reunion, onBack, mode = 'asistencia'
                                         <Save size={13} /> Guardar Tema
                                       </button>
                                     </div>
+
+                                    {/* Selector de Pines para Ignacio Baistrocchi (Permite cambiar el color con 1 toque) */}
+                                    {isBaistrocchi && (
+                                      <div style={{ marginTop: '10px', padding: '8px 10px', backgroundColor: '#F8FAFC', borderRadius: '8px', border: '1px solid #E2E8F0' }}>
+                                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
+                                          <span style={{ fontSize: '0.72rem', color: '#475569', fontWeight: '700', textTransform: 'uppercase', letterSpacing: '0.3px' }}>
+                                            🎨 Cambiar Color del Pin:
+                                          </span>
+                                          <span style={{ fontSize: '0.68rem', color: '#64748B', fontStyle: 'italic' }}>
+                                            (Tocá para cambiar la asignación)
+                                          </span>
+                                        </div>
+                                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
+                                          {BAISTROCCHI_PIN_OPTIONS.map((pin) => {
+                                            const isSelected = effectiveTags.includes(pin.tag) || (effectiveTags.length === 0 && classification.categoria === pin.key);
+                                            return (
+                                              <button
+                                                key={pin.key}
+                                                type="button"
+                                                onClick={() => handleSelectPin(orador.id, vecino.dni, pin)}
+                                                style={{
+                                                  display: 'inline-flex',
+                                                  alignItems: 'center',
+                                                  gap: '4px',
+                                                  padding: '4px 10px',
+                                                  borderRadius: '20px',
+                                                  fontSize: '0.75rem',
+                                                  fontWeight: isSelected ? '800' : '600',
+                                                  border: isSelected ? `2px solid ${pin.border}` : '1px solid #CBD5E1',
+                                                  backgroundColor: isSelected ? pin.bg : '#FFFFFF',
+                                                  color: isSelected ? pin.text : '#64748B',
+                                                  cursor: 'pointer',
+                                                  boxShadow: isSelected ? '0 2px 4px rgba(0,0,0,0.08)' : 'none',
+                                                  transform: isSelected ? 'scale(1.02)' : 'scale(1)',
+                                                  transition: 'all 0.15s ease'
+                                                }}
+                                              >
+                                                <span>{pin.icon}</span>
+                                                <span>{pin.label}</span>
+                                                {isSelected && <span style={{ fontSize: '0.7rem', marginLeft: '2px', fontWeight: 'bold' }}>✓</span>}
+                                              </button>
+                                            );
+                                          })}
+                                        </div>
+                                      </div>
+                                    )}
                                   </div>
                                 );
                               })()}
