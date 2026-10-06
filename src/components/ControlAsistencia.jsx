@@ -18,6 +18,7 @@ import {
   cachedQuery
 } from '../services/supabaseService';
 import OradorTagSelector, { OradorTagsDisplay } from './OradorTagSelector';
+import { autoDetectTags } from '../constants/oradorTags';
 import PreguntasTematicas from './PreguntasTematicas';
 import Cronometro1a1 from './Cronometro1a1';
 import PanelSolicitudesPapeleta from './PanelSolicitudesPapeleta';

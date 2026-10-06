@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { ArrowLeft, Save, Mic, Users, Trash2, ArrowUp, ArrowDown, Share2, Clipboard, Check, RefreshCw, Plus, Clock, MessageSquare, Award, Activity } from 'lucide-react';
 import { updateReunion, getOradores, updateOradorDetails, updateOradorTags, getAsistentesPorReunion, registrarOrador, guardarAsistencia } from '../services/supabaseService';
 import OradorTagSelector, { OradorTagsDisplay } from './OradorTagSelector';
+import { autoDetectTags } from '../constants/oradorTags';
 import { supabase } from '../lib/supabaseClient';
 import { TIPOS_REUNION } from '../data/mockData';
 import { classifyTopicHeuristic, classifyTopicWithAI, isBaistrocchiMeeting, getBadgeDisplay, PIN_CONFIGS, getBadgesFromTags, BAISTROCCHI_PIN_OPTIONS } from '../services/topicClassificationService';
