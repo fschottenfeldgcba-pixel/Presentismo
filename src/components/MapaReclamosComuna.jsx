@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import L from 'leaflet';
 import { getCentroComuna, normalizarDireccionUsig, buscarLugaresEpok } from '../services/georrefService';
+import { getComunaFeature } from '../data/comunasGeojson';
 import { TEMATICAS_PAPELETA, getSolicitudesPorReunion } from '../services/solicitudesService';
 import { MapPin, Filter, Layers, Info, X, Lightbulb, ChevronRight, User, Compass, Maximize2 } from 'lucide-react';
 
@@ -13,6 +14,7 @@ export default function MapaReclamosComuna({ reunion, solicitudes: propSolicitud
   const mapContainerRef = useRef(null);
   const mapInstanceRef = useRef(null);
   const markersLayerRef = useRef(null);
+  const maskLayerRef = useRef(null);
 
   const [solicitudes, setSolicitudes] = useState(propSolicitudes);
   const [solicitudesConGeo, setSolicitudesConGeo] = useState([]);
@@ -20,6 +22,7 @@ export default function MapaReclamosComuna({ reunion, solicitudes: propSolicitud
   const [filtroTematica, setFiltroTematica] = useState('todos');
   const [selectedReclamo, setSelectedReclamo] = useState(null);
   const [mostrarPostIts, setMostrarPostIts] = useState(true);
+  const [mostrarMascaraComuna, setMostrarMascaraComuna] = useState(true);
 
   const boundsRef = useRef([]);
 
@@ -189,8 +192,65 @@ export default function MapaReclamosComuna({ reunion, solicitudes: propSolicitud
     return () => {
       map.remove();
       mapInstanceRef.current = null;
+      maskLayerRef.current = null;
     };
   }, [reunion?.comuna]);
+
+  // Dibujar máscara oscura/gris sobre todo lo que NO pertenezca a la Comuna de la reunión
+  useEffect(() => {
+    if (!mapInstanceRef.current) return;
+
+    if (maskLayerRef.current) {
+      mapInstanceRef.current.removeLayer(maskLayerRef.current);
+      maskLayerRef.current = null;
+    }
+
+    if (!mostrarMascaraComuna) return;
+
+    const comunaFeature = getComunaFeature(reunion?.comuna || 'Comuna 7');
+    if (!comunaFeature || !comunaFeature.coordinates) return;
+
+    // Bounding box exterior gigante para cubrir el resto del mapa
+    const outerWorldRing = [
+      [-85, -180],
+      [-85, 180],
+      [85, 180],
+      [85, -180]
+    ];
+
+    // Hueco(s) correspondientes al polígono de la Comuna atendida (en [lat, lng])
+    const holeRings = comunaFeature.coordinates.map(poly => {
+      const ring = poly[0];
+      return ring.map(pt => [pt[1], pt[0]]);
+    });
+
+    // 1. Polígono invertido: Tiñe de gris todo lo que queda fuera de la Comuna
+    const maskPolygon = L.polygon([outerWorldRing, ...holeRings], {
+      color: '#334155',
+      weight: 0,
+      fillColor: '#0F172A',
+      fillOpacity: 0.44,
+      interactive: false
+    });
+
+    // 2. Línea perimetral destacada de la Comuna activa
+    const borderPolygons = comunaFeature.coordinates.map(poly => {
+      const coords = poly[0].map(pt => [pt[1], pt[0]]);
+      return L.polygon(coords, {
+        color: '#0284C7',
+        weight: 3.5,
+        opacity: 0.95,
+        dashArray: '6, 6',
+        fillColor: '#38BDF8',
+        fillOpacity: 0.04,
+        interactive: false
+      });
+    });
+
+    const maskGroup = L.layerGroup([maskPolygon, ...borderPolygons]);
+    maskGroup.addTo(mapInstanceRef.current);
+    maskLayerRef.current = maskGroup;
+  }, [reunion?.comuna, mostrarMascaraComuna]);
 
   // Actualizar marcadores exactos en el mapa
   useEffect(() => {
@@ -380,6 +440,29 @@ export default function MapaReclamosComuna({ reunion, solicitudes: propSolicitud
               Ver todos ({reclamosFiltrados.length})
             </button>
           )}
+
+          {/* Alternar máscara / enfoque geográfico de Comuna */}
+          <button
+            type="button"
+            onClick={() => setMostrarMascaraComuna(prev => !prev)}
+            style={{
+              padding: '6px 12px',
+              borderRadius: '6px',
+              fontSize: '0.8rem',
+              fontWeight: '700',
+              backgroundColor: mostrarMascaraComuna ? '#0284C7' : 'rgba(255,255,255,0.1)',
+              color: '#FFFFFF',
+              border: 'none',
+              cursor: 'pointer',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '5px'
+            }}
+            title="Diferenciar geográficamente atenuando en gris el resto de la Ciudad"
+          >
+            <Layers size={14} />
+            {mostrarMascaraComuna ? `Enfoque ${reunion?.comuna || 'Comuna'}` : 'Ver Todo sin Gris'}
+          </button>
 
           {/* Alternar panel de post-its */}
           <button
