@@ -1,8 +1,10 @@
 import React, { useState, useEffect } from 'react';
-import { ArrowLeft, Save, Mic, Users, Trash2, ArrowUp, ArrowDown, Share2, Clipboard, Check, RefreshCw, Plus, Clock, MessageSquare, Award, Activity } from 'lucide-react';
+import { ArrowLeft, Save, Mic, Users, Trash2, ArrowUp, ArrowDown, Share2, Clipboard, Check, RefreshCw, Plus, Clock, MessageSquare, Award, Activity, MapPin } from 'lucide-react';
 import { updateReunion, getOradores, updateOradorDetails, updateOradorTags, getAsistentesPorReunion, registrarOrador, guardarAsistencia } from '../services/supabaseService';
+import { getSolicitudesPorReunion } from '../services/solicitudesService';
 import OradorTagSelector, { OradorTagsDisplay } from './OradorTagSelector';
 import PreguntasTematicas from './PreguntasTematicas';
+import MapaReclamosComuna from './MapaReclamosComuna';
 import { autoDetectTags } from '../constants/oradorTags';
 import { supabase } from '../lib/supabaseClient';
 import { TIPOS_REUNION } from '../data/mockData';
@@ -73,6 +75,18 @@ export default function PanelModerador({ reunion: initialReunion, onBack }) {
   // Edición de minutas de oradores finalizados
   const [editingFinishedId, setEditingFinishedId] = useState(null);
   const [editingFinishedText, setEditingFinishedText] = useState('');
+
+  // Vista de Mapa Territorial de Reclamos por Comuna
+  const [showMapaReclamos, setShowMapaReclamos] = useState(false);
+  const [solicitudesReunion, setSolicitudesReunion] = useState([]);
+
+  useEffect(() => {
+    if (reunion?.id) {
+      getSolicitudesPorReunion(reunion.id).then(res => {
+        if (res && res.data) setSolicitudesReunion(res.data);
+      }).catch(err => console.warn('Error cargando solicitudes para mapa:', err));
+    }
+  }, [reunion?.id]);
   const [editingFinishedDuration, setEditingFinishedDuration] = useState('');
   // ID del orador cuyo selector de tags está expandido para corrección manual
   const [editingTagsFor, setEditingTagsFor] = useState(null);
@@ -1267,11 +1281,44 @@ ${oradoresEfectivos.length > 0
           >
             <Activity size={14} style={{ color: 'var(--color-highlight)' }} /> Informe Final
           </a>
+
+          <button
+            type="button"
+            className="btn btn-sm"
+            onClick={() => setShowMapaReclamos(prev => !prev)}
+            style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: '6px',
+              backgroundColor: showMapaReclamos ? '#042A38' : '#0284C7',
+              color: '#FFFFFF',
+              border: 'none',
+              borderRadius: '6px',
+              padding: '6px 12px',
+              fontWeight: '700',
+              cursor: 'pointer',
+              boxShadow: '0 1px 3px rgba(0,0,0,0.1)'
+            }}
+            title="Ver mapa territorial de reclamos por comuna con pines coloreados"
+          >
+            <MapPin size={15} /> {showMapaReclamos ? 'Ocultar Mapa' : `🗺️ Mapa Comuna (${solicitudesReunion.length})`}
+          </button>
         </div>
         <h2 style={{ fontSize: '1.25rem', color: 'var(--color-primary)', margin: 0, fontWeight: '700' }}>
           Panel de Moderación de Reunión
         </h2>
       </div>
+
+      {/* MAPA TERRITORIAL DE RECLAMOS POR COMUNA */}
+      {showMapaReclamos && (
+        <div style={{ marginBottom: '1.5rem', animation: 'fadeIn 0.2s ease' }}>
+          <MapaReclamosComuna 
+            reunion={reunion}
+            solicitudes={solicitudesReunion}
+            onClose={() => setShowMapaReclamos(false)}
+          />
+        </div>
+      )}
 
       {/* Tarjeta de Información General */}
       <div className="card" style={{ marginBottom: '1.5rem', background: 'linear-gradient(135deg, #0F172A, #1E293B)', color: '#ffffff', border: 'none', padding: '1.5rem', boxShadow: '0 4px 6px -1px rgba(0,0,0,0.1), 0 2px 4px -1px rgba(0,0,0,0.06)' }}>

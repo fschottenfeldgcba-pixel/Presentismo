@@ -16,6 +16,7 @@ export default function PanelSolicitudesPapeleta({ reunion, onBack }) {
   const [solicitudes, setSolicitudes] = useState([]);
   const [loading, setLoading] = useState(true);
   const [filtroTexto, setFiltroTexto] = useState('');
+  const [filtroTipoRegistro, setFiltroTipoRegistro] = useState('todos'); // 'todos' | 'solicitud' | 'preocupacion'
   const [filtroTematica, setFiltroTematica] = useState('todos');
   const [filtroEstado, setFiltroEstado] = useState('todos');
   const [copiedId, setCopiedId] = useState(null);
@@ -123,23 +124,27 @@ ${item.descripcion}
       return;
     }
 
-    const exportRows = solicitudes.map((s, idx) => ({
-      '#': idx + 1,
-      'Fecha': s.fecha || reunion?.fecha || '',
-      'Nombre y Apellido': s.nombre_apellido || 'Vecino',
-      'DNI': s.dni || '',
-      'Teléfono / Celular': s.telefono || '',
-      'Barrio': s.barrio || '',
-      'Email': s.email || '',
-      'Temática': s.tematica || '',
-      'Dirección Exacta': s.direccion || '',
-      'Descripción del Reclamo': s.descripcion || '',
-      'Estado Gestión': (ESTADOS_SOLICITUD.find(e => e.id === s.estado)?.label) || s.estado || 'Pendiente',
-      'Nro Ticket SUACI': s.ticket_suaci || '',
-      'Notas Operador': s.notas_operador || '',
-      'Reunión': reunion?.nombre || '',
-      'Hora Ingreso': s.created_at ? new Date(s.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : ''
-    }));
+    const exportRows = solicitudes.map((s, idx) => {
+      const tipo = s.tipo_registro === 'preocupacion' || !s.direccion?.trim() ? 'Preocupación / Sugerencia' : 'Solicitud Puntual';
+      return {
+        '#': idx + 1,
+        'Tipo': tipo,
+        'Fecha': s.fecha || '',
+        'Vecino': s.nombre_apellido || '',
+        'DNI': s.dni || '',
+        'Teléfono': s.telefono || '',
+        'Barrio': s.barrio || '',
+        'Email': s.email || '',
+        'Temática': s.tematica || '',
+        'Dirección / Ubicación': s.direccion || '',
+        'Descripción del Reclamo': s.descripcion || '',
+        'Estado': (ESTADOS_SOLICITUD.find(e => e.id === s.estado)?.label || s.estado || 'Pendiente'),
+        'Ticket SUACI': s.ticket_suaci || '',
+        'Notas Operador': s.notas_operador || '',
+        'Reunión': reunion?.nombre || '',
+        'Hora Ingreso': s.created_at ? new Date(s.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : ''
+      };
+    });
 
     const worksheet = XLSX.utils.json_to_sheet(exportRows);
     const workbook = XLSX.utils.book_new();
@@ -152,6 +157,8 @@ ${item.descripcion}
 
   // Métricas
   const totalCount = solicitudes.length;
+  const solicitudesPuntualesCount = solicitudes.filter(s => s.tipo_registro === 'solicitud' || (s.direccion && s.direccion.trim())).length;
+  const preocupacionesCount = solicitudes.filter(s => s.tipo_registro === 'preocupacion' || (!s.direccion || !s.direccion.trim())).length;
   const pendientesCount = solicitudes.filter(s => !s.estado || s.estado === 'pendiente').length;
   const enGestionCount = solicitudes.filter(s => s.estado === 'en_gestion').length;
   const cargadosSuaciCount = solicitudes.filter(s => s.estado === 'cargado_suaci').length;
@@ -159,6 +166,11 @@ ${item.descripcion}
 
   // Filtrado
   const filteredSolicitudes = solicitudes.filter(s => {
+    // Filtro por Tipo de Registro (Solicitud vs Preocupación)
+    const esSolicitud = s.tipo_registro === 'solicitud' || Boolean(s.direccion?.trim());
+    if (filtroTipoRegistro === 'solicitud' && !esSolicitud) return false;
+    if (filtroTipoRegistro === 'preocupacion' && esSolicitud) return false;
+
     // Filtro por texto
     if (filtroTexto.trim()) {
       const q = filtroTexto.toLowerCase();
@@ -264,30 +276,59 @@ ${item.descripcion}
       </div>
 
       {/* MÉTRICAS EN VIVO */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: '10px', marginBottom: '16px' }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: '10px', marginBottom: '16px' }}>
         <div style={{ backgroundColor: '#FFFFFF', border: '1px solid #CBD5E1', borderRadius: '10px', padding: '12px', textAlign: 'center' }}>
-          <span style={{ fontSize: '0.75rem', color: '#64748B', fontWeight: '700', textTransform: 'uppercase' }}>Total Recibidas</span>
-          <div style={{ fontSize: '1.6rem', fontWeight: '800', color: '#042A38', marginTop: '2px' }}>{totalCount}</div>
+          <span style={{ fontSize: '0.72rem', color: '#64748B', fontWeight: '700', textTransform: 'uppercase' }}>Total Recibidas</span>
+          <div style={{ fontSize: '1.5rem', fontWeight: '800', color: '#042A38', marginTop: '2px' }}>{totalCount}</div>
+        </div>
+
+        <div 
+          onClick={() => setFiltroTipoRegistro(prev => prev === 'solicitud' ? 'todos' : 'solicitud')}
+          style={{ 
+            backgroundColor: filtroTipoRegistro === 'solicitud' ? '#DCFCE7' : '#F0FDF4', 
+            border: filtroTipoRegistro === 'solicitud' ? '2px solid #10B981' : '1px solid #BBF7D0', 
+            borderRadius: '10px', 
+            padding: '12px', 
+            textAlign: 'center',
+            cursor: 'pointer',
+            transition: 'all 0.15s ease'
+          }}
+          title="Filtrar por Solicitudes Puntuales con dirección"
+        >
+          <span style={{ fontSize: '0.72rem', color: '#166534', fontWeight: '700', textTransform: 'uppercase' }}>📍 Solicitudes</span>
+          <div style={{ fontSize: '1.5rem', fontWeight: '800', color: '#166534', marginTop: '2px' }}>{solicitudesPuntualesCount}</div>
+        </div>
+
+        <div 
+          onClick={() => setFiltroTipoRegistro(prev => prev === 'preocupacion' ? 'todos' : 'preocupacion')}
+          style={{ 
+            backgroundColor: filtroTipoRegistro === 'preocupacion' ? '#FEF3C7' : '#FFFBEB', 
+            border: filtroTipoRegistro === 'preocupacion' ? '2px solid #F59E0B' : '1px solid #FDE68A', 
+            borderRadius: '10px', 
+            padding: '12px', 
+            textAlign: 'center',
+            cursor: 'pointer',
+            transition: 'all 0.15s ease'
+          }}
+          title="Filtrar por Preocupaciones Generales sin ubicación puntual"
+        >
+          <span style={{ fontSize: '0.72rem', color: '#92400E', fontWeight: '700', textTransform: 'uppercase' }}>💡 Preocupaciones</span>
+          <div style={{ fontSize: '1.5rem', fontWeight: '800', color: '#92400E', marginTop: '2px' }}>{preocupacionesCount}</div>
         </div>
 
         <div style={{ backgroundColor: '#FEF9C3', border: '1px solid #FDE047', borderRadius: '10px', padding: '12px', textAlign: 'center' }}>
-          <span style={{ fontSize: '0.75rem', color: '#854D0E', fontWeight: '700', textTransform: 'uppercase' }}>⏳ Pendientes</span>
-          <div style={{ fontSize: '1.6rem', fontWeight: '800', color: '#854D0E', marginTop: '2px' }}>{pendientesCount}</div>
+          <span style={{ fontSize: '0.72rem', color: '#854D0E', fontWeight: '700', textTransform: 'uppercase' }}>⏳ Pendientes</span>
+          <div style={{ fontSize: '1.5rem', fontWeight: '800', color: '#854D0E', marginTop: '2px' }}>{pendientesCount}</div>
         </div>
 
         <div style={{ backgroundColor: '#DBEAFE', border: '1px solid #93C5FD', borderRadius: '10px', padding: '12px', textAlign: 'center' }}>
-          <span style={{ fontSize: '0.75rem', color: '#1E40AF', fontWeight: '700', textTransform: 'uppercase' }}>🔄 En Gestión</span>
-          <div style={{ fontSize: '1.6rem', fontWeight: '800', color: '#1E40AF', marginTop: '2px' }}>{enGestionCount}</div>
+          <span style={{ fontSize: '0.72rem', color: '#1E40AF', fontWeight: '700', textTransform: 'uppercase' }}>🔄 En Gestión</span>
+          <div style={{ fontSize: '1.5rem', fontWeight: '800', color: '#1E40AF', marginTop: '2px' }}>{enGestionCount}</div>
         </div>
 
         <div style={{ backgroundColor: '#EDE9FE', border: '1px solid #C4B5FD', borderRadius: '10px', padding: '12px', textAlign: 'center' }}>
-          <span style={{ fontSize: '0.75rem', color: '#6D28D9', fontWeight: '700', textTransform: 'uppercase' }}>🏷️ Con SUACI</span>
-          <div style={{ fontSize: '1.6rem', fontWeight: '800', color: '#6D28D9', marginTop: '2px' }}>{cargadosSuaciCount}</div>
-        </div>
-
-        <div style={{ backgroundColor: '#DCFCE7', border: '1px solid #86EFAC', borderRadius: '10px', padding: '12px', textAlign: 'center' }}>
-          <span style={{ fontSize: '0.75rem', color: '#15803D', fontWeight: '700', textTransform: 'uppercase' }}>✅ Resueltas</span>
-          <div style={{ fontSize: '1.6rem', fontWeight: '800', color: '#15803D', marginTop: '2px' }}>{resueltosCount}</div>
+          <span style={{ fontSize: '0.72rem', color: '#6D28D9', fontWeight: '700', textTransform: 'uppercase' }}>🏷️ Con SUACI</span>
+          <div style={{ fontSize: '1.5rem', fontWeight: '800', color: '#6D28D9', marginTop: '2px' }}>{cargadosSuaciCount}</div>
         </div>
       </div>
 
@@ -306,6 +347,16 @@ ${item.descripcion}
         </div>
 
         <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+          <select
+            className="form-control form-control-sm"
+            value={filtroTipoRegistro}
+            onChange={(e) => setFiltroTipoRegistro(e.target.value)}
+            style={{ fontSize: '0.85rem', width: 'auto', fontWeight: '600' }}
+          >
+            <option value="todos">Tipo: Todos</option>
+            <option value="solicitud">📍 Solo Solicitudes Puntuales</option>
+            <option value="preocupacion">💡 Solo Preocupaciones Generales</option>
+          </select>
           <select
             className="form-control form-control-sm"
             value={filtroTematica}
@@ -391,6 +442,39 @@ ${item.descripcion}
                       >
                         {tematicaObj.icon} {item.tematica}
                       </span>
+
+                      {/* Pill de Tipo: Solicitud vs Preocupación */}
+                      {(item.tipo_registro === 'solicitud' || Boolean(item.direccion?.trim())) ? (
+                        <span style={{
+                          backgroundColor: '#DCFCE7',
+                          color: '#15803D',
+                          border: '1px solid #86EFAC',
+                          padding: '2px 8px',
+                          borderRadius: '12px',
+                          fontSize: '0.72rem',
+                          fontWeight: '700',
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          gap: '3px'
+                        }}>
+                          📍 Solicitud Puntual
+                        </span>
+                      ) : (
+                        <span style={{
+                          backgroundColor: '#FEF3C7',
+                          color: '#B45309',
+                          border: '1px solid #FDE68A',
+                          padding: '2px 8px',
+                          borderRadius: '12px',
+                          fontSize: '0.72rem',
+                          fontWeight: '700',
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          gap: '3px'
+                        }}>
+                          💡 Preocupación General
+                        </span>
+                      )}
                     </div>
 
                     <div style={{ fontSize: '0.8rem', color: '#64748B', marginTop: '3px', display: 'flex', gap: '12px', flexWrap: 'wrap' }}>

@@ -5,7 +5,8 @@ import {
   getVecinoParaPapeleta, 
   guardarSolicitudesPapeleta 
 } from '../services/solicitudesService';
-import { CheckCircle2, Plus, Trash2, Send, MapPin, FileText, User, Phone, Mail, Calendar, Sparkles, Building2, AlertCircle } from 'lucide-react';
+import InputDireccionCaba from './InputDireccionCaba';
+import { CheckCircle2, Plus, Trash2, Send, MapPin, FileText, User, Phone, Mail, Calendar, Sparkles, Building2, AlertCircle, AlertTriangle, Info } from 'lucide-react';
 
 export default function PapeletaDigital({ reunionId, initialDni, onVolver }) {
   const [reunion, setReunion] = useState(null);
@@ -458,22 +459,86 @@ export default function PapeletaDigital({ reunionId, initialDni, onVolver }) {
                     )}
                   </div>
 
-                  {/* 2. Dirección exacta */}
-                  <div style={{ marginBottom: '12px' }}>
-                    <label style={{ fontSize: '0.78rem', fontWeight: '700', color: '#334155', display: 'block', marginBottom: '4px' }}>
-                      * Dirección exacta de solicitud / consulta:
-                    </label>
-                    <div style={{ position: 'relative' }}>
-                      <input
-                        type="text"
-                        placeholder="Ej: Av. San Juan 2500 o Esquina Defensa y Caseros"
-                        className="form-control"
-                        value={sol.direccion}
-                        onChange={(e) => handleSolicitudChange(sol.id, 'direccion', e.target.value)}
-                        style={{ fontSize: '0.88rem', paddingLeft: '32px' }}
-                      />
-                      <MapPin size={15} style={{ position: 'absolute', left: '10px', top: '50%', transform: 'translateY(-50%)', color: '#94A3B8' }} />
+                  {/* 2. Dirección / Ubicación con Callejero Oficial de la Ciudad */}
+                  <div style={{ marginBottom: '14px' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '4px' }}>
+                      <label style={{ fontSize: '0.78rem', fontWeight: '700', color: '#334155', margin: 0 }}>
+                        Dirección o lugar de referencia:
+                      </label>
+                      
+                      {/* Badge dinámico de clasificación en vivo */}
+                      {sol.direccion?.trim() ? (
+                        <span style={{
+                          fontSize: '0.72rem',
+                          fontWeight: '700',
+                          color: '#047857',
+                          backgroundColor: '#D1FAE5',
+                          padding: '2px 8px',
+                          borderRadius: '12px',
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          gap: '4px'
+                        }}>
+                          <CheckCircle2 size={12} /> Solicitud Puntual (Con Seguimiento)
+                        </span>
+                      ) : (
+                        <span style={{
+                          fontSize: '0.72rem',
+                          fontWeight: '700',
+                          color: '#B45309',
+                          backgroundColor: '#FEF3C7',
+                          padding: '2px 8px',
+                          borderRadius: '12px',
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          gap: '4px'
+                        }}>
+                          <Info size={12} /> Preocupación General
+                        </span>
+                      )}
                     </div>
+
+                    <InputDireccionCaba
+                      value={sol.direccion}
+                      onChange={(val) => {
+                        handleSolicitudChange(sol.id, 'direccion', val);
+                        if (!val) {
+                          handleSolicitudChange(sol.id, 'lat', null);
+                          handleSolicitudChange(sol.id, 'lng', null);
+                        }
+                      }}
+                      onSelectNormalizada={(norm) => {
+                        handleSolicitudChange(sol.id, 'direccion', norm.direccion);
+                        handleSolicitudChange(sol.id, 'lat', norm.lat);
+                        handleSolicitudChange(sol.id, 'lng', norm.lng);
+                      }}
+                      placeholder="Ej: Av. San Juan 2500, Callao y Corrientes, Parque Rivadavia, Hospital Fernández..."
+                    />
+
+                    {/* Aviso explicativo pedagógico */}
+                    {!sol.direccion?.trim() ? (
+                      <div style={{
+                        marginTop: '6px',
+                        fontSize: '0.74rem',
+                        color: '#92400E',
+                        backgroundColor: '#FFFBEB',
+                        padding: '6px 10px',
+                        borderRadius: '6px',
+                        border: '1px solid #FDE68A',
+                        lineHeight: '1.3'
+                      }}>
+                        💡 <strong>Observación:</strong> Si no especificás una esquina, altura o lugar particular, tu reclamo se registrará como <strong>Preocupación general</strong> para elevar al equipo de gestión como sugerencia de mejora de la Ciudad.
+                      </div>
+                    ) : (
+                      <div style={{
+                        marginTop: '4px',
+                        fontSize: '0.72rem',
+                        color: '#059669',
+                        lineHeight: '1.3'
+                      }}>
+                        ✓ Al contar con una ubicación asociada, se registrará como <strong>Solicitud puntual</strong> para gestión operativa y carga en el sistema de la Ciudad.
+                      </div>
+                    )}
                   </div>
 
                   {/* 3. Breve descripción */}

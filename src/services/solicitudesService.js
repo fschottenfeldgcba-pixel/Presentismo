@@ -107,22 +107,30 @@ export async function guardarSolicitudesPapeleta({
 
   const rowsToInsert = solicitudes
     .filter(s => s.tematica && (s.descripcion?.trim() || s.direccion?.trim()))
-    .map(s => ({
-      reunion_id: reunion_id || null,
-      vecino_id: cleanDni || null,
-      nombre_apellido: nombre_apellido?.trim() || '',
-      dni: cleanDni,
-      telefono: telefono?.trim() || '',
-      barrio: barrio?.trim() || '',
-      email: email?.trim() || '',
-      fecha: fechaStr,
-      tematica: s.tematica === 'Otros' && s.tematica_otro?.trim() ? `Otros: ${s.tematica_otro.trim()}` : s.tematica,
-      direccion: s.direccion?.trim() || '',
-      descripcion: s.descripcion?.trim() || '',
-      estado: 'pendiente',
-      ticket_suaci: '',
-      notas_operador: ''
-    }));
+    .map(s => {
+      const tieneUbicacion = Boolean(s.direccion?.trim());
+      const tipoRegistro = s.tipo_registro || (tieneUbicacion ? 'solicitud' : 'preocupacion');
+
+      return {
+        reunion_id: reunion_id || null,
+        vecino_id: cleanDni || null,
+        nombre_apellido: nombre_apellido?.trim() || '',
+        dni: cleanDni,
+        telefono: telefono?.trim() || '',
+        barrio: barrio?.trim() || '',
+        email: email?.trim() || '',
+        fecha: fechaStr,
+        tematica: s.tematica === 'Otros' && s.tematica_otro?.trim() ? `Otros: ${s.tematica_otro.trim()}` : s.tematica,
+        direccion: s.direccion?.trim() || '',
+        descripcion: s.descripcion?.trim() || '',
+        tipo_registro: tipoRegistro, // 'solicitud' | 'preocupacion'
+        lat: s.lat || null,
+        lng: s.lng || null,
+        estado: 'pendiente',
+        ticket_suaci: '',
+        notas_operador: ''
+      };
+    });
 
   if (rowsToInsert.length === 0) {
     return { success: false, error: 'Por favor completá al menos la temática y descripción de una solicitud.' };
