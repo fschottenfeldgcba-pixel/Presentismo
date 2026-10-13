@@ -113,6 +113,58 @@ export async function buscarDireccionesUsig(texto, maxOpciones = 5) {
 }
 
 /**
+ * Helper para realizar peticiones JSONP a servicios de GCBA que no habilitan CORS (como EPOK).
+ */
+function fetchJsonp(url) {
+  return new Promise((resolve, reject) => {
+    if (typeof window === 'undefined' || typeof document === 'undefined') {
+      fetch(url)
+        .then(r => r.json())
+        .then(resolve)
+        .catch(reject);
+      return;
+    }
+
+    const callbackName = 'epok_cb_' + Math.random().toString(36).substring(2, 9) + '_' + Date.now();
+    const delimiter = url.includes('?') ? '&' : '?';
+    const script = document.createElement('script');
+    script.src = `${url}${delimiter}callback=${callbackName}`;
+    script.async = true;
+
+    let timeoutId = null;
+
+    const cleanup = () => {
+      if (timeoutId) clearTimeout(timeoutId);
+      try {
+        delete window[callbackName];
+      } catch (e) {
+        window[callbackName] = undefined;
+      }
+      if (script.parentNode) {
+        script.parentNode.removeChild(script);
+      }
+    };
+
+    timeoutId = setTimeout(() => {
+      cleanup();
+      reject(new Error('Petición JSONP a EPOK superó el tiempo de espera'));
+    }, 7000);
+
+    window[callbackName] = (data) => {
+      cleanup();
+      resolve(data);
+    };
+
+    script.onerror = () => {
+      cleanup();
+      reject(new Error('Error de red al invocar JSONP EPOK'));
+    };
+
+    document.head.appendChild(script);
+  });
+}
+
+/**
  * Busca lugares notables y puntos de interés (Hospitales, Plazas, Escuelas, Clubes, Teatros) en EPOK GCBA
  * y geocodifica su dirección exacta para obtener lat, lng y comuna.
  */
@@ -123,10 +175,15 @@ export async function buscarLugaresEpok(texto, maxOpciones = 5) {
       texto: texto.trim()
     });
 
-    const res = await fetch(`${EPOK_BUSCAR_URL}?${params.toString()}`);
-    if (!res.ok) return [];
+    let data = null;
+    try {
+      data = await fetchJsonp(`${EPOK_BUSCAR_URL}?${params.toString()}`);
+    } catch (e) {
+      // Fallback a fetch directo si se ejecuta fuera de navegador
+      const res = await fetch(`${EPOK_BUSCAR_URL}?${params.toString()}`);
+      if (res.ok) data = await res.json();
+    }
 
-    const data = await res.json();
     if (!data || !data.instancias || !Array.isArray(data.instancias)) return [];
 
     const items = data.instancias.slice(0, maxOpciones);
@@ -135,17 +192,26 @@ export async function buscarLugaresEpok(texto, maxOpciones = 5) {
     const detallesPromises = items.map(async (inst) => {
       let direccion = '';
       try {
-        const objRes = await fetch(`${EPOK_OBJECT_URL}?id=${encodeURIComponent(inst.id)}`);
-        if (objRes.ok) {
-          const objData = await objRes.json();
-          if (objData && objData.contenido) {
+        let objData = null;
+        try {
+          objData = await fetchJsonp(`${EPOK_OBJECT_URL}?id=${encodeURIComponent(inst.id)}`);
+        } catch (e) {
+          const objRes = await fetch(`${EPOK_OBJECT_URL}?id=${encodeURIComponent(inst.id)}`);
+          if (objRes.ok) objData = await objRes.json();
+        }
+
+        if (objData) {
+          if (objData.direccionNormalizada && typeof objData.direccionNormalizada === 'string') {
+            direccion = objData.direccionNormalizada.trim();
+          } else if (objData.contenido && Array.isArray(objData.contenido)) {
             const dirItem = objData.contenido.find(c => 
               c.nombreId === 'direccion' || 
               c.nombre === 'Dirección' ||
               c.nombreId === 'direccion_cueanexo' ||
-              c.nombre === 'Dirección del Cueanexo'
+              c.nombre === 'Dirección del Cueanexo' ||
+              c.nombreId === 'ubicacion'
             );
-            if (dirItem) direccion = dirItem.valor;
+            if (dirItem && dirItem.valor) direccion = dirItem.valor.trim();
           }
         }
       } catch (e) {}
@@ -160,6 +226,9 @@ export async function buscarLugaresEpok(texto, maxOpciones = 5) {
         if (geo && geo.lat && geo.lng) {
           lat = geo.lat;
           lng = geo.lng;
+          try {
+            comuna = await obtenerComunaPorCoordenadas(lat, lng);
+          } catch (e) {}
         }
       }
 
@@ -168,7 +237,7 @@ export async function buscarLugaresEpok(texto, maxOpciones = 5) {
         tipo: 'lugar',
         label: inst.nombre,
         clase: inst.clase || 'Punto de Interés',
-        direccionNormalizada: direccion || inst.nombre,
+        direccionNormalizada: direccion || '',
         lat,
         lng,
         comuna,

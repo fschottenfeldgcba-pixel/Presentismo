@@ -1,8 +1,8 @@
 import React, { useEffect, useRef, useState } from 'react';
 import L from 'leaflet';
-import { getCentroComuna, normalizarDireccionUsig } from '../services/georrefService';
+import { getCentroComuna, normalizarDireccionUsig, buscarLugaresEpok } from '../services/georrefService';
 import { TEMATICAS_PAPELETA, getSolicitudesPorReunion } from '../services/solicitudesService';
-import { MapPin, Filter, Layers, Info, X, Lightbulb, ChevronRight, User } from 'lucide-react';
+import { MapPin, Filter, Layers, Info, X, Lightbulb, ChevronRight, User, Compass, Maximize2 } from 'lucide-react';
 
 /**
  * Mapa interactivo con Leaflet centrado en la Comuna de la reunión.
@@ -21,6 +21,8 @@ export default function MapaReclamosComuna({ reunion, solicitudes: propSolicitud
   const [selectedReclamo, setSelectedReclamo] = useState(null);
   const [mostrarPostIts, setMostrarPostIts] = useState(true);
 
+  const boundsRef = useRef([]);
+
   // Si no se pasaron solicitudes por props o vienen vacías, cargarlas por ID de reunión
   useEffect(() => {
     if (propSolicitudes && propSolicitudes.length > 0) {
@@ -32,7 +34,7 @@ export default function MapaReclamosComuna({ reunion, solicitudes: propSolicitud
     }
   }, [reunion?.id, propSolicitudes]);
 
-  // Geocodificar en cliente las solicitudes que solo tienen texto de dirección pero les falta lat/lng
+  // Geocodificar en cliente las solicitudes que solo tienen texto de dirección o nombre de establecimiento
   useEffect(() => {
     let isCancelled = false;
 
@@ -44,23 +46,76 @@ export default function MapaReclamosComuna({ reunion, solicitudes: propSolicitud
           if (s.lat && s.lng) {
             return { ...s, lat: parseFloat(s.lat), lng: parseFloat(s.lng) };
           }
-          // Si tiene dirección escrita pero no coordenadas, intentar geocodificar con USIG
-          if (s.direccion && s.direccion.trim()) {
-            try {
-              // Si la dirección tiene paréntesis con la dirección real (ej: "Escuela ... (ASAMBLEA AV. 1221)")
-              let dirABuscar = s.direccion;
-              const matchParentesis = s.direccion.match(/\(([^)]+)\)/);
-              if (matchParentesis && matchParentesis[1]) {
-                dirABuscar = matchParentesis[1];
-              }
 
-              const geo = await normalizarDireccionUsig(dirABuscar);
-              if (geo && geo.lat && geo.lng) {
-                return { ...s, lat: geo.lat, lng: geo.lng };
-              }
-            } catch (e) {}
+          // Si es una preocupación puramente genérica de toda la ciudad sin punto
+          const dirTexto = (s.direccion || '').trim();
+          if (!dirTexto) return s;
+
+          const dirLower = dirTexto.toLowerCase();
+          if (dirLower === 'en toda la ciudad' || dirLower === 'toda la ciudad' || dirLower === 'general' || dirLower === 'ciudad') {
+            return { ...s, tipo_registro: 'preocupacion' };
           }
-          return s;
+
+          // Intentar geocodificar dirección puntual o establecimiento (escuela, plaza, parque, club, comercio)
+          try {
+            // 1. Si la dirección tiene paréntesis con una calle y altura (ej: "... (AVDA. ASAMBLEA 1221)")
+            const matchParentesis = dirTexto.match(/\(([^)]+)\)/);
+            if (matchParentesis && matchParentesis[1] && matchParentesis[1].length > 3) {
+              const geoParen = await normalizarDireccionUsig(matchParentesis[1]);
+              if (geoParen && geoParen.lat && geoParen.lng) {
+                return { ...s, lat: geoParen.lat, lng: geoParen.lng };
+              }
+            }
+
+            // 2. Intentar USIG directamente con el texto completo
+            const geoDirecto = await normalizarDireccionUsig(dirTexto);
+            if (geoDirecto && geoDirecto.lat && geoDirecto.lng) {
+              return { ...s, lat: geoDirecto.lat, lng: geoDirecto.lng };
+            }
+
+            // 3. Si USIG no lo reconoce, buscar como Punto de Interés / Establecimiento en EPOK
+            // Extraer palabras clave (ej: entre comillas "Niñas de Ayohuma", antes de "|" o antes de "(")
+            let qLugar = dirTexto;
+            const matchQuotes = dirTexto.match(/"([^"]+)"/);
+            if (matchQuotes && matchQuotes[1] && matchQuotes[1].length > 2) {
+              qLugar = matchQuotes[1];
+            } else if (dirTexto.includes('|')) {
+              qLugar = dirTexto.split('|')[0].trim();
+            } else if (dirTexto.includes('(')) {
+              qLugar = dirTexto.split('(')[0].trim();
+            }
+
+            if (qLugar && qLugar.length >= 3) {
+              const epokItems = await buscarLugaresEpok(qLugar, 3);
+              const foundEpok = epokItems.find(item => item.lat && item.lng);
+              if (foundEpok) {
+                return { 
+                  ...s, 
+                  lat: foundEpok.lat, 
+                  lng: foundEpok.lng,
+                  direccionOficial: foundEpok.direccionNormalizada 
+                };
+              }
+            }
+          } catch (e) {
+            console.warn('Error resolviendo coordenadas de solicitud:', e);
+          }
+
+          // 4. Si es una Solicitud identificada pero no se pudo geocodificar con precisión métrica,
+          // posicionarla en el centro de la Comuna con una dispersión leve (jitter) para que figure
+          // SIEMPRE como Pin en el Mapa y NUNCA se degrade a Preocupación / Post-it
+          const centroComuna = getCentroComuna(reunion?.comuna || 'Comuna 1');
+          const seedStr = String(s.id || s.direccion || '');
+          const hash = seedStr.split('').reduce((acc, c) => acc + c.charCodeAt(0), 0);
+          const jitterLat = ((hash % 100) - 50) * 0.00015;
+          const jitterLng = (((hash * 7) % 100) - 50) * 0.00015;
+
+          return { 
+            ...s, 
+            lat: centroComuna[0] + jitterLat, 
+            lng: centroComuna[1] + jitterLng,
+            esAproximadoComuna: true 
+          };
         })
       );
 
@@ -75,20 +130,25 @@ export default function MapaReclamosComuna({ reunion, solicitudes: propSolicitud
     return () => {
       isCancelled = true;
     };
-  }, [solicitudes]);
+  }, [solicitudes, reunion?.comuna]);
 
-  // Separar: 1. Solicitudes Puntuales con geolocalización (Pines en Mapa)
-  //          2. Preocupaciones Generales / Sin ubicación (Post-its al costado)
-  const reclamosConUbicacion = solicitudesConGeo.filter(s => {
-    const esPreocupacion = s.tipo_registro === 'preocupacion' || !s.direccion?.trim();
-    if (esPreocupacion) return false;
-    return Boolean(s.lat && s.lng);
-  });
+  // Criterio unificado:
+  // - Preocupación: Reclamos SIN dirección puntual (o explícitamente escala "en toda la ciudad").
+  // - Solicitud Puntual: Todo reclamo con establecimiento, plaza, comercio o dirección identificada.
+  const esPreocupacionReal = (s) => {
+    if (!s.direccion || !s.direccion.trim()) return true;
+    const d = s.direccion.trim().toLowerCase();
+    if (d === 'en toda la ciudad' || d === 'toda la ciudad' || d === 'general' || d === 'ciudad') {
+      return true;
+    }
+    if (s.tipo_registro === 'preocupacion' && !s.lat && !s.lng) {
+      return true;
+    }
+    return false;
+  };
 
-  const preocupacionesGenerales = solicitudesConGeo.filter(s => {
-    const esPreocupacion = s.tipo_registro === 'preocupacion' || !s.direccion?.trim();
-    return esPreocupacion || (!s.lat || !s.lng);
-  });
+  const reclamosConUbicacion = solicitudesConGeo.filter(s => !esPreocupacionReal(s));
+  const preocupacionesGenerales = solicitudesConGeo.filter(s => esPreocupacionReal(s));
 
   const reclamosFiltrados = reclamosConUbicacion.filter(s => {
     if (filtroTematica === 'todos') return true;
@@ -215,13 +275,25 @@ export default function MapaReclamosComuna({ reunion, solicitudes: propSolicitud
       markersGroup.addLayer(marker);
     });
 
-    // Ajustar vista a los puntos
-    if (bounds.length > 1 && mapInstanceRef.current) {
-      mapInstanceRef.current.fitBounds(bounds, { padding: [50, 50], maxZoom: 16 });
-    } else if (bounds.length === 1 && mapInstanceRef.current) {
-      mapInstanceRef.current.setView(bounds[0], 15);
-    }
+    boundsRef.current = bounds;
+    // NOTA: Por requerimiento del usuario, el mapa NO debe saltar ni re-centrarse automáticamente
+    // al filtrar por temáticas. Permanece fijo en la Comuna donde sucede la reunión.
   }, [reclamosFiltrados]);
+
+  const handleCentrarComuna = () => {
+    if (!mapInstanceRef.current) return;
+    const centro = getCentroComuna(reunion?.comuna || 'Comuna 1');
+    mapInstanceRef.current.flyTo(centro, 14, { duration: 0.8 });
+  };
+
+  const handleVerTodosPines = () => {
+    if (!mapInstanceRef.current || !boundsRef.current || boundsRef.current.length === 0) return;
+    if (boundsRef.current.length === 1) {
+      mapInstanceRef.current.setView(boundsRef.current[0], 15);
+    } else {
+      mapInstanceRef.current.fitBounds(boundsRef.current, { padding: [50, 50], maxZoom: 16 });
+    }
+  };
 
   return (
     <div style={{
@@ -261,6 +333,54 @@ export default function MapaReclamosComuna({ reunion, solicitudes: propSolicitud
 
         {/* CONTROLES */}
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+          {/* Botón para volver a centrar la Comuna de la reunión */}
+          <button
+            type="button"
+            onClick={handleCentrarComuna}
+            style={{
+              padding: '6px 12px',
+              borderRadius: '6px',
+              fontSize: '0.8rem',
+              fontWeight: '700',
+              backgroundColor: '#0EA5E9',
+              color: '#FFFFFF',
+              border: 'none',
+              cursor: 'pointer',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '5px'
+            }}
+            title={`Centrar mapa en ${reunion?.comuna || 'la Comuna'}`}
+          >
+            <Compass size={14} />
+            Centrar {reunion?.comuna || 'Comuna'}
+          </button>
+
+          {/* Botón opcional para ver todos los pines si están dispersos */}
+          {reclamosFiltrados.length > 0 && (
+            <button
+              type="button"
+              onClick={handleVerTodosPines}
+              style={{
+                padding: '6px 12px',
+                borderRadius: '6px',
+                fontSize: '0.8rem',
+                fontWeight: '600',
+                backgroundColor: 'rgba(255,255,255,0.12)',
+                color: '#FFFFFF',
+                border: '1px solid rgba(255,255,255,0.25)',
+                cursor: 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '5px'
+              }}
+              title="Ajustar zoom para abarcar todos los pines de este filtro"
+            >
+              <Maximize2 size={14} />
+              Ver todos ({reclamosFiltrados.length})
+            </button>
+          )}
+
           {/* Alternar panel de post-its */}
           <button
             type="button"

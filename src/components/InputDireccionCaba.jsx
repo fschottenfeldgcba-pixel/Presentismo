@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { buscarUbicacionCaba } from '../services/georrefService';
+import { buscarUbicacionCaba, obtenerComunaPorCoordenadas } from '../services/georrefService';
 import { MapPin, Check, Loader2, Building, Navigation } from 'lucide-react';
 
 export default function InputDireccionCaba({
@@ -60,9 +60,14 @@ export default function InputDireccionCaba({
   };
 
   const handleSelectOption = async (item) => {
-    const labelElegido = item.tipo === 'lugar' 
-      ? `${item.label} (${item.direccionNormalizada})` 
-      : item.direccionNormalizada;
+    let labelElegido = item.direccionNormalizada || item.label;
+    if (item.tipo === 'lugar') {
+      if (item.direccionNormalizada && item.direccionNormalizada !== item.label) {
+        labelElegido = `${item.label} (${item.direccionNormalizada})`;
+      } else {
+        labelElegido = item.label;
+      }
+    }
 
     setQuery(labelElegido);
     setSeleccionada(item);
@@ -72,7 +77,6 @@ export default function InputDireccionCaba({
     let comuna = item.comuna || null;
     if (!comuna && item.lat && item.lng) {
       try {
-        const { obtenerComunaPorCoordenadas } = await import('../services/georrefService');
         comuna = await obtenerComunaPorCoordenadas(item.lat, item.lng);
       } catch (e) {}
     }
