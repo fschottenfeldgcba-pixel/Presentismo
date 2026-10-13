@@ -280,21 +280,6 @@ export default function PapeletaDigital({ reunionId, initialDni, onVolver }) {
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: '12px' }}>
               <div>
                 <label style={{ fontSize: '0.78rem', fontWeight: '700', color: '#334155', display: 'block', marginBottom: '4px' }}>
-                  * Nombre y apellido:
-                </label>
-                <input
-                  type="text"
-                  required
-                  placeholder="Ej: Juan Pérez"
-                  className="form-control"
-                  value={nombreApellido}
-                  onChange={(e) => setNombreApellido(e.target.value)}
-                  style={{ fontSize: '0.88rem', padding: '8px 12px', borderRadius: '6px' }}
-                />
-              </div>
-
-              <div>
-                <label style={{ fontSize: '0.78rem', fontWeight: '700', color: '#334155', display: 'block', marginBottom: '4px' }}>
                   * DNI:
                 </label>
                 <input
@@ -305,6 +290,21 @@ export default function PapeletaDigital({ reunionId, initialDni, onVolver }) {
                   value={dni}
                   onChange={(e) => setDni(e.target.value)}
                   onBlur={handleDniBlur}
+                  style={{ fontSize: '0.88rem', padding: '8px 12px', borderRadius: '6px' }}
+                />
+              </div>
+
+              <div>
+                <label style={{ fontSize: '0.78rem', fontWeight: '700', color: '#334155', display: 'block', marginBottom: '4px' }}>
+                  * Nombre y apellido:
+                </label>
+                <input
+                  type="text"
+                  required
+                  placeholder="Ej: Juan Pérez"
+                  className="form-control"
+                  value={nombreApellido}
+                  onChange={(e) => setNombreApellido(e.target.value)}
                   style={{ fontSize: '0.88rem', padding: '8px 12px', borderRadius: '6px' }}
                 />
               </div>
@@ -505,12 +505,14 @@ export default function PapeletaDigital({ reunionId, initialDni, onVolver }) {
                         if (!val) {
                           handleSolicitudChange(sol.id, 'lat', null);
                           handleSolicitudChange(sol.id, 'lng', null);
+                          handleSolicitudChange(sol.id, 'comuna_direccion', null);
                         }
                       }}
                       onSelectNormalizada={(norm) => {
                         handleSolicitudChange(sol.id, 'direccion', norm.direccion);
                         handleSolicitudChange(sol.id, 'lat', norm.lat);
                         handleSolicitudChange(sol.id, 'lng', norm.lng);
+                        handleSolicitudChange(sol.id, 'comuna_direccion', norm.comuna);
                       }}
                       placeholder="Ej: Av. San Juan 2500, Callao y Corrientes, Parque Rivadavia, Hospital Fernández..."
                     />
@@ -530,14 +532,45 @@ export default function PapeletaDigital({ reunionId, initialDni, onVolver }) {
                         💡 <strong>Observación:</strong> Si no especificás una esquina, altura o lugar particular, tu reclamo se registrará como <strong>Preocupación general</strong> para elevar al equipo de gestión como sugerencia de mejora de la Ciudad.
                       </div>
                     ) : (
-                      <div style={{
-                        marginTop: '4px',
-                        fontSize: '0.72rem',
-                        color: '#059669',
-                        lineHeight: '1.3'
-                      }}>
-                        ✓ Al contar con una ubicación asociada, se registrará como <strong>Solicitud puntual</strong> para gestión operativa y carga en el sistema de la Ciudad.
-                      </div>
+                      <>
+                        <div style={{
+                          marginTop: '4px',
+                          fontSize: '0.72rem',
+                          color: '#059669',
+                          lineHeight: '1.3'
+                        }}>
+                          ✓ Al contar con una ubicación asociada, se registrará como <strong>Solicitud puntual</strong> para gestión operativa y carga en el sistema de la Ciudad.
+                        </div>
+
+                        {/* Captura 2: Notificación si la ubicación pertenece a otra Comuna */}
+                        {(() => {
+                          const comunaReunion = reunion?.comuna || '';
+                          const comunaDir = sol.comuna_direccion || '';
+                          if (comunaReunion && comunaDir && !comunaReunion.toLowerCase().includes(comunaDir.toLowerCase()) && !comunaDir.toLowerCase().includes(comunaReunion.toLowerCase())) {
+                            return (
+                              <div style={{
+                                marginTop: '6px',
+                                fontSize: '0.74rem',
+                                color: '#1E40AF',
+                                backgroundColor: '#EFF6FF',
+                                padding: '6px 10px',
+                                borderRadius: '6px',
+                                border: '1px solid #BFDBFE',
+                                lineHeight: '1.3',
+                                display: 'flex',
+                                alignItems: 'center',
+                                gap: '6px'
+                              }}>
+                                <Info size={14} style={{ flexShrink: 0, color: '#2563EB' }} />
+                                <span>
+                                  <strong>Nota:</strong> Esta ubicación se encuentra en <strong>{comunaDir}</strong> (la reunión de hoy corresponde a <strong>{comunaReunion}</strong>). Tu solicitud será igualmente canalizada al área responsable correspondiente.
+                                </span>
+                              </div>
+                            );
+                          }
+                          return null;
+                        })()}
+                      </>
                     )}
                   </div>
 

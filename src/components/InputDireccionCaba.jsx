@@ -59,7 +59,7 @@ export default function InputDireccionCaba({
     }, 350);
   };
 
-  const handleSelectOption = (item) => {
+  const handleSelectOption = async (item) => {
     const labelElegido = item.tipo === 'lugar' 
       ? `${item.label} (${item.direccionNormalizada})` 
       : item.direccionNormalizada;
@@ -69,11 +69,20 @@ export default function InputDireccionCaba({
     setMostrarDropdown(false);
     onChange(labelElegido);
 
+    let comuna = item.comuna || null;
+    if (!comuna && item.lat && item.lng) {
+      try {
+        const { obtenerComunaPorCoordenadas } = await import('../services/georrefService');
+        comuna = await obtenerComunaPorCoordenadas(item.lat, item.lng);
+      } catch (e) {}
+    }
+
     if (onSelectNormalizada) {
       onSelectNormalizada({
         direccion: labelElegido,
         lat: item.lat,
         lng: item.lng,
+        comuna: comuna,
         tipo: item.tipo,
         fuente: item.fuente
       });

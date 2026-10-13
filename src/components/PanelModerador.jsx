@@ -1282,27 +1282,29 @@ ${oradoresEfectivos.length > 0
             <Activity size={14} style={{ color: 'var(--color-highlight)' }} /> Informe Final
           </a>
 
-          <button
-            type="button"
+          <a
+            href={`?view=mapa_comuna&reunion_id=${reunion.id}`}
+            target="_blank"
+            rel="noopener noreferrer"
             className="btn btn-sm"
-            onClick={() => setShowMapaReclamos(prev => !prev)}
             style={{
               display: 'inline-flex',
               alignItems: 'center',
               gap: '6px',
-              backgroundColor: showMapaReclamos ? '#042A38' : '#0284C7',
+              backgroundColor: '#0284C7',
               color: '#FFFFFF',
               border: 'none',
               borderRadius: '6px',
               padding: '6px 12px',
               fontWeight: '700',
+              textDecoration: 'none',
               cursor: 'pointer',
               boxShadow: '0 1px 3px rgba(0,0,0,0.1)'
             }}
-            title="Ver mapa territorial de reclamos por comuna con pines coloreados"
+            title="Abrir mapa territorial de reclamos en una nueva pestaña"
           >
-            <MapPin size={15} /> {showMapaReclamos ? 'Ocultar Mapa' : `🗺️ Mapa Comuna (${solicitudesReunion.length})`}
-          </button>
+            <MapPin size={15} /> 🗺️ Abrir Mapa ({solicitudesReunion.length})
+          </a>
         </div>
         <h2 style={{ fontSize: '1.25rem', color: 'var(--color-primary)', margin: 0, fontWeight: '700' }}>
           Panel de Moderación de Reunión

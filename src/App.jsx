@@ -7,6 +7,8 @@ import AdministrarReunion from './components/AdministrarReunion';
 import PanelModerador from './components/PanelModerador';
 import PapeletaDigital from './components/PapeletaDigital';
 import PanelSolicitudesPapeleta from './components/PanelSolicitudesPapeleta';
+import MapaReclamosComuna from './components/MapaReclamosComuna';
+import { getSolicitudesPorReunion } from './services/solicitudesService';
 import { LogOut, ShieldCheck } from 'lucide-react';
 import { supabase } from './lib/supabaseClient';
 
@@ -362,6 +364,16 @@ export default function App() {
               }}
             />
           )
+        )}
+
+        {currentView === 'mapa_comuna' && user && selectedReunion && (
+          <div style={{ flex: 1, padding: '16px', display: 'flex', flexDirection: 'column' }}>
+            <MapaReclamosComuna
+              reunion={selectedReunion}
+              solicitudes={[]}
+              onClose={() => window.close()}
+            />
+          </div>
         )}
       </main>
 
