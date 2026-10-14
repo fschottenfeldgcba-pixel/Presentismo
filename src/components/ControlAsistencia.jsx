@@ -22,7 +22,7 @@ import { autoDetectTags } from '../constants/oradorTags';
 import PreguntasTematicas from './PreguntasTematicas';
 import Cronometro1a1 from './Cronometro1a1';
 import PanelSolicitudesPapeleta from './PanelSolicitudesPapeleta';
-import { getUrlWhatsAppPapeleta } from '../services/solicitudesService';
+import { getUrlWhatsAppPapeleta, getSolicitudesPorReunion } from '../services/solicitudesService';
 import { classifyTopicHeuristic, classifyTopicWithAI, isBaistrocchiMeeting, getBadgeDisplay, PIN_CONFIGS, BAISTROCCHI_PIN_OPTIONS, getBadgesFromTags } from '../services/topicClassificationService';
 import * as XLSX from 'xlsx';
 
@@ -181,6 +181,8 @@ export default function ControlAsistencia({ reunion, onBack, mode = 'asistencia'
   const [oradorSearchResults, setOradorSearchResults] = useState([]);
   const [oradorFilterText, setOradorFilterText] = useState('');
   const [modalMinutaState, setModalMinutaState] = useState({});
+  // Mapa de solicitudes de Papeleta Digital indexadas por DNI
+  const [solicitudesPapeletaMap, setSolicitudesPapeletaMap] = useState({});
   // ID del orador cuyo selector de tags está expandido para corrección manual
   const [editingTagsFor, setEditingTagsFor] = useState(null);
   // Tags/Pines asignados manualmente por el agente en Acreditación o Minuta
@@ -392,11 +394,17 @@ export default function ControlAsistencia({ reunion, onBack, mode = 'asistencia'
 
     const exportData = oradoresModalList.map(o => {
       const nombreCompleto = `${o.vecino?.nombre || ''} ${o.vecino?.apellido || ''}`.trim();
+      const dniVal = o.vecino?.dni || o.vecino_id || '';
+      const paps = (solicitudesPapeletaMap[String(dniVal).trim()] || []);
+      const papsStr = paps.map(p => `[${p.tematica || 'General'}] ${p.direccion ? `📍 ${p.direccion}: ` : ''}${p.descripcion || ''}`).join(' | ');
+
       return {
-        'DNI': o.vecino?.dni || o.vecino_id || '',
+        'DNI': dniVal,
         'Nombre y Apellido': nombreCompleto || 'Sin Nombre',
         'Teléfono': o.vecino?.celular || 'No registrado',
-        'Tema que habló': o.tema_efectivo || o.tema_original || 'Sin minuta registrada'
+        'Tema previo / original': o.tema_original || o.vecino?.tema_previo || '',
+        'Tema que habló': o.tema_efectivo || o.tema_original || 'Sin minuta registrada',
+        'Papeleta Digital': papsStr || 'Sin papeleta cargada'
       };
     });
 
@@ -709,6 +717,33 @@ export default function ControlAsistencia({ reunion, onBack, mode = 'asistencia'
     };
   }, [reunion.id]);
 
+  // Cargar solicitudes de la Papeleta Digital indexadas por DNI para vincular con oradores
+  const loadSolicitudesPapeleta = async () => {
+    if (!reunion?.id) return;
+    try {
+      const res = await getSolicitudesPorReunion(reunion.id);
+      if (res && res.data) {
+        const map = {};
+        res.data.forEach(item => {
+          const cleanDni = String(item.dni || item.vecino_id || '').trim();
+          if (cleanDni) {
+            if (!map[cleanDni]) map[cleanDni] = [];
+            map[cleanDni].push(item);
+          }
+        });
+        setSolicitudesPapeletaMap(map);
+      }
+    } catch (e) {
+      console.warn('Error al cargar papeletas en ControlAsistencia:', e);
+    }
+  };
+
+  useEffect(() => {
+    if (reunion?.id) {
+      loadSolicitudesPapeleta();
+    }
+  }, [reunion?.id]);
+
   // Polling automático para la cola de oradores en la vista de minutas (cada 5 segundos)
   useEffect(() => {
     if (currentView !== 'minutas') return;
@@ -740,6 +775,9 @@ export default function ControlAsistencia({ reunion, onBack, mode = 'asistencia'
         if (!errReun && reunData) {
           setActiveOradorId(reunData.active_orador_id);
         }
+
+        // 3. Sincronizar papeletas digitales de la reunión
+        loadSolicitudesPapeleta();
       } catch (err) {
         console.error('Error en polling de oradores:', err);
       }
@@ -1252,7 +1290,10 @@ export default function ControlAsistencia({ reunion, onBack, mode = 'asistencia'
       const nombreFull = `${o.vecino?.nombre || ''} ${o.vecino?.apellido || ''}`.toLowerCase();
       const dni = String(o.vecino?.dni || o.vecino_id || '').toLowerCase();
       const tema = (o.tema_efectivo || o.tema_original || '').toLowerCase();
-      return nombreFull.includes(term) || dni.includes(term) || tema.includes(term);
+      const cleanDni = String(o.vecino?.dni || o.vecino_id || '').trim();
+      const paps = solicitudesPapeletaMap[cleanDni] || [];
+      const papsText = paps.map(p => `${p.tematica || ''} ${p.direccion || ''} ${p.descripcion || ''}`).join(' ').toLowerCase();
+      return nombreFull.includes(term) || dni.includes(term) || tema.includes(term) || papsText.includes(term);
     });
 
     return (
@@ -1431,6 +1472,10 @@ export default function ControlAsistencia({ reunion, onBack, mode = 'asistencia'
               const isHablo = o.estado === 'hablo';
               const isSeBajo = o.estado === 'se_bajo';
 
+              const cleanDni = String(o.vecino?.dni || o.vecino_id || '').trim();
+              const papeletasOrador = (cleanDni && solicitudesPapeletaMap[cleanDni]) || [];
+              const cargoPapeleta = papeletasOrador.length > 0;
+
               return (
                 <div
                   key={o.id}
@@ -1446,7 +1491,7 @@ export default function ControlAsistencia({ reunion, onBack, mode = 'asistencia'
                 >
                   {/* Fila Header de la tarjeta */}
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '8px', gap: '8px' }}>
-                    <div>
+                    <div style={{ flex: 1 }}>
                       <div style={{ fontWeight: '800', fontSize: '1.05rem', color: 'var(--color-primary)' }}>
                         #{o.orden || idx + 1} — {nombreFull}
                       </div>
@@ -1457,6 +1502,83 @@ export default function ControlAsistencia({ reunion, onBack, mode = 'asistencia'
                       {originalTema && (
                         <div style={{ fontSize: '0.85rem', color: '#475569', fontStyle: 'italic', marginTop: '6px', lineHeight: '1.4' }}>
                           "{originalTema}"
+                        </div>
+                      )}
+
+                      {/* Información de Papeleta Digital del Orador */}
+                      {cargoPapeleta ? (
+                        <div style={{
+                          marginTop: '8px',
+                          backgroundColor: '#F0FDF4',
+                          border: '1px solid #BBF7D0',
+                          borderRadius: '8px',
+                          padding: '8px 10px',
+                          display: 'flex',
+                          flexDirection: 'column',
+                          gap: '6px'
+                        }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                            <span style={{ fontSize: '0.78rem', fontWeight: '800', color: '#15803D' }}>
+                              ✅ CARGÓ PAPELETA DIGITAL ({papeletasOrador.length})
+                            </span>
+                          </div>
+                          {papeletasOrador.map((p, pIdx) => (
+                            <div key={p.id || pIdx} style={{ backgroundColor: '#FFFFFF', border: '1px solid #DCFCE7', borderRadius: '6px', padding: '6px 8px', fontSize: '0.8rem' }}>
+                              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '6px', flexWrap: 'wrap', marginBottom: '3px' }}>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}>
+                                  <span style={{ fontWeight: '700', color: '#1E293B', fontSize: '0.78rem' }}>
+                                    🏷️ {p.tematica || 'General'}
+                                  </span>
+                                  {p.direccion ? (
+                                    <span style={{ color: '#0369A1', backgroundColor: '#E0F2FE', padding: '1px 6px', borderRadius: '4px', fontSize: '0.72rem', fontWeight: '600' }}>
+                                      📍 {p.direccion}
+                                    </span>
+                                  ) : (
+                                    <span style={{ color: '#B45309', backgroundColor: '#FEF3C7', padding: '1px 6px', borderRadius: '4px', fontSize: '0.72rem', fontWeight: '600' }}>
+                                      ⚠️ Preocupación (En toda la Ciudad)
+                                    </span>
+                                  )}
+                                </div>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    const textToAdd = `[Papeleta: ${p.tematica || 'General'}${p.direccion ? ` - ${p.direccion}` : ''}]: ${p.descripcion || ''}`;
+                                    setModalMinutaState(prev => {
+                                      const current = prev[o.id] !== undefined ? prev[o.id] : (o.tema_efectivo || '');
+                                      const nextVal = current ? `${current}\n${textToAdd}` : textToAdd;
+                                      handleClassifyTopicLive(o.id, nextVal);
+                                      handleSaveOradorMinutaInModal(o.id, nextVal);
+                                      return { ...prev, [o.id]: nextVal };
+                                    });
+                                  }}
+                                  style={{
+                                    padding: '2px 8px',
+                                    fontSize: '0.7rem',
+                                    fontWeight: '700',
+                                    borderRadius: '4px',
+                                    backgroundColor: '#F8FAFC',
+                                    border: '1px solid #CBD5E1',
+                                    color: '#2563EB',
+                                    cursor: 'pointer',
+                                    whiteSpace: 'nowrap'
+                                  }}
+                                  title="Pegar esta papeleta en la transcripción en vivo"
+                                >
+                                  + Pegar en minuta
+                                </button>
+                              </div>
+                              {p.descripcion && (
+                                <div style={{ color: '#334155', fontStyle: 'italic', fontSize: '0.8rem', lineHeight: '1.35', wordBreak: 'break-word' }}>
+                                  "{p.descripcion}"
+                                </div>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      ) : (
+                        <div style={{ marginTop: '6px', fontSize: '0.75rem', color: '#94A3B8', display: 'flex', alignItems: 'center', gap: '5px' }}>
+                          <span>📋</span>
+                          <span>Papeleta Digital: <em>No cargó / Sin registrar aún</em></span>
                         </div>
                       )}
                     </div>
