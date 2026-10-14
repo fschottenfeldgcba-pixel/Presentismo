@@ -2,7 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import L from 'leaflet';
 import { getCentroComuna, normalizarDireccionUsig, buscarLugaresEpok } from '../services/georrefService';
 import { getComunaFeature } from '../data/comunasGeojson';
-import { TEMATICAS_PAPELETA, getSolicitudesPorReunion } from '../services/solicitudesService';
+import { TEMATICAS_PAPELETA, getSolicitudesPorReunion, clasificarUbicacion } from '../services/solicitudesService';
 import { MapPin, Filter, Layers, Info, X, Lightbulb, ChevronRight, User, Compass, Maximize2 } from 'lucide-react';
 
 /**
@@ -50,12 +50,12 @@ export default function MapaReclamosComuna({ reunion, solicitudes: propSolicitud
             return { ...s, lat: parseFloat(s.lat), lng: parseFloat(s.lng) };
           }
 
-          // Si es una preocupación puramente genérica de toda la ciudad sin punto
+          // Si es una preocupación (toda la ciudad, comuna, barrio o calle completa sin altura/esquina)
           const dirTexto = (s.direccion || '').trim();
-          if (!dirTexto) return s;
+          if (!dirTexto) return { ...s, tipo_registro: 'preocupacion' };
 
-          const dirLower = dirTexto.toLowerCase();
-          if (dirLower === 'en toda la ciudad' || dirLower === 'toda la ciudad' || dirLower === 'general' || dirLower === 'ciudad') {
+          const clasif = clasificarUbicacion(dirTexto, { lat: s.lat, lng: s.lng });
+          if (!clasif.esPuntual) {
             return { ...s, tipo_registro: 'preocupacion' };
           }
 
@@ -139,15 +139,10 @@ export default function MapaReclamosComuna({ reunion, solicitudes: propSolicitud
   // - Preocupación: Reclamos SIN dirección puntual (o explícitamente escala "en toda la ciudad").
   // - Solicitud Puntual: Todo reclamo con establecimiento, plaza, comercio o dirección identificada.
   const esPreocupacionReal = (s) => {
-    if (!s.direccion || !s.direccion.trim()) return true;
-    const d = s.direccion.trim().toLowerCase();
-    if (d === 'en toda la ciudad' || d === 'toda la ciudad' || d === 'general' || d === 'ciudad') {
-      return true;
-    }
-    if (s.tipo_registro === 'preocupacion' && !s.lat && !s.lng) {
-      return true;
-    }
-    return false;
+    if (!s) return true;
+    if (s.tipo_registro === 'preocupacion') return true;
+    const clasif = clasificarUbicacion(s.direccion, { lat: s.lat, lng: s.lng });
+    return !clasif.esPuntual;
   };
 
   const reclamosConUbicacion = solicitudesConGeo.filter(s => !esPreocupacionReal(s));

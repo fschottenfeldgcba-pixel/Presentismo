@@ -3,7 +3,8 @@ import {
   getSolicitudesPorReunion, 
   updateEstadoSolicitud, 
   TEMATICAS_PAPELETA, 
-  ESTADOS_SOLICITUD 
+  ESTADOS_SOLICITUD,
+  clasificarUbicacion 
 } from '../services/solicitudesService';
 import { 
   ArrowLeft, Search, Download, Copy, Check, QrCode, RefreshCw, 
@@ -117,6 +118,14 @@ ${item.descripcion}
     alert('¡Link del formulario copiado al portapapeles!');
   };
 
+  // Helper para evaluar si un registro califica como Solicitud Puntual o Preocupación General
+  const esSolicitudReal = (s) => {
+    if (!s) return false;
+    if (s.tipo_registro === 'preocupacion') return false;
+    const clasif = clasificarUbicacion(s.direccion, { lat: s.lat, lng: s.lng });
+    return clasif.esPuntual;
+  };
+
   // Exportar todas las solicitudes a Excel (.xlsx)
   const handleExportarExcel = () => {
     if (!solicitudes || solicitudes.length === 0) {
@@ -125,7 +134,7 @@ ${item.descripcion}
     }
 
     const exportRows = solicitudes.map((s, idx) => {
-      const tipo = s.tipo_registro === 'preocupacion' || !s.direccion?.trim() ? 'Preocupación / Sugerencia' : 'Solicitud Puntual';
+      const tipo = esSolicitudReal(s) ? 'Solicitud Puntual' : 'Preocupación / Sugerencia';
       return {
         '#': idx + 1,
         'Tipo': tipo,
@@ -157,8 +166,8 @@ ${item.descripcion}
 
   // Métricas
   const totalCount = solicitudes.length;
-  const solicitudesPuntualesCount = solicitudes.filter(s => s.tipo_registro === 'solicitud' || (s.direccion && s.direccion.trim())).length;
-  const preocupacionesCount = solicitudes.filter(s => s.tipo_registro === 'preocupacion' || (!s.direccion || !s.direccion.trim())).length;
+  const solicitudesPuntualesCount = solicitudes.filter(s => esSolicitudReal(s)).length;
+  const preocupacionesCount = solicitudes.filter(s => !esSolicitudReal(s)).length;
   const pendientesCount = solicitudes.filter(s => !s.estado || s.estado === 'pendiente').length;
   const enGestionCount = solicitudes.filter(s => s.estado === 'en_gestion').length;
   const cargadosSuaciCount = solicitudes.filter(s => s.estado === 'cargado_suaci').length;
@@ -167,7 +176,7 @@ ${item.descripcion}
   // Filtrado
   const filteredSolicitudes = solicitudes.filter(s => {
     // Filtro por Tipo de Registro (Solicitud vs Preocupación)
-    const esSolicitud = s.tipo_registro === 'solicitud' || Boolean(s.direccion?.trim());
+    const esSolicitud = esSolicitudReal(s);
     if (filtroTipoRegistro === 'solicitud' && !esSolicitud) return false;
     if (filtroTipoRegistro === 'preocupacion' && esSolicitud) return false;
 
@@ -444,7 +453,7 @@ ${item.descripcion}
                       </span>
 
                       {/* Pill de Tipo: Solicitud vs Preocupación */}
-                      {(item.tipo_registro === 'solicitud' || Boolean(item.direccion?.trim())) ? (
+                      {esSolicitudReal(item) ? (
                         <span style={{
                           backgroundColor: '#DCFCE7',
                           color: '#15803D',

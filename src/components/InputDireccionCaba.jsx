@@ -88,6 +88,8 @@ export default function InputDireccionCaba({
         lng: item.lng,
         comuna: comuna,
         tipo: item.tipo,
+        altura: item.altura || null,
+        cruce: item.cruce || null,
         fuente: item.fuente
       });
     }

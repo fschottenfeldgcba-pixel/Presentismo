@@ -3,7 +3,8 @@ import {
   TEMATICAS_PAPELETA, 
   getReunionParaPapeleta, 
   getVecinoParaPapeleta, 
-  guardarSolicitudesPapeleta 
+  guardarSolicitudesPapeleta,
+  clasificarUbicacion 
 } from '../services/solicitudesService';
 import InputDireccionCaba from './InputDireccionCaba';
 import { CheckCircle2, Plus, Trash2, Send, MapPin, FileText, User, Phone, Mail, Calendar, Sparkles, Building2, AlertCircle, AlertTriangle, Info } from 'lucide-react';
@@ -467,35 +468,45 @@ export default function PapeletaDigital({ reunionId, initialDni, onVolver }) {
                       </label>
                       
                       {/* Badge dinámico de clasificación en vivo */}
-                      {sol.direccion?.trim() ? (
-                        <span style={{
-                          fontSize: '0.72rem',
-                          fontWeight: '700',
-                          color: '#047857',
-                          backgroundColor: '#D1FAE5',
-                          padding: '2px 8px',
-                          borderRadius: '12px',
-                          display: 'inline-flex',
-                          alignItems: 'center',
-                          gap: '4px'
-                        }}>
-                          <CheckCircle2 size={12} /> Solicitud Puntual (Con Seguimiento)
-                        </span>
-                      ) : (
-                        <span style={{
-                          fontSize: '0.72rem',
-                          fontWeight: '700',
-                          color: '#B45309',
-                          backgroundColor: '#FEF3C7',
-                          padding: '2px 8px',
-                          borderRadius: '12px',
-                          display: 'inline-flex',
-                          alignItems: 'center',
-                          gap: '4px'
-                        }}>
-                          <Info size={12} /> Preocupación General
-                        </span>
-                      )}
+                      {(() => {
+                        const clasif = clasificarUbicacion(sol.direccion, {
+                          tipo: sol.tipo_ubicacion,
+                          lat: sol.lat,
+                          lng: sol.lng,
+                          altura: sol.altura,
+                          cruce: sol.cruce
+                        });
+
+                        return clasif.esPuntual ? (
+                          <span style={{
+                            fontSize: '0.72rem',
+                            fontWeight: '700',
+                            color: '#047857',
+                            backgroundColor: '#D1FAE5',
+                            padding: '2px 8px',
+                            borderRadius: '12px',
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            gap: '4px'
+                          }}>
+                            <CheckCircle2 size={12} /> Solicitud Puntual (Con Seguimiento)
+                          </span>
+                        ) : (
+                          <span style={{
+                            fontSize: '0.72rem',
+                            fontWeight: '700',
+                            color: '#B45309',
+                            backgroundColor: '#FEF3C7',
+                            padding: '2px 8px',
+                            borderRadius: '12px',
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            gap: '4px'
+                          }}>
+                            <Info size={12} /> Preocupación General
+                          </span>
+                        );
+                      })()}
                     </div>
 
                     <InputDireccionCaba
@@ -506,6 +517,9 @@ export default function PapeletaDigital({ reunionId, initialDni, onVolver }) {
                           handleSolicitudChange(sol.id, 'lat', null);
                           handleSolicitudChange(sol.id, 'lng', null);
                           handleSolicitudChange(sol.id, 'comuna_direccion', null);
+                          handleSolicitudChange(sol.id, 'tipo_ubicacion', null);
+                          handleSolicitudChange(sol.id, 'altura', null);
+                          handleSolicitudChange(sol.id, 'cruce', null);
                         }
                       }}
                       onSelectNormalizada={(norm) => {
@@ -513,41 +527,44 @@ export default function PapeletaDigital({ reunionId, initialDni, onVolver }) {
                         handleSolicitudChange(sol.id, 'lat', norm.lat);
                         handleSolicitudChange(sol.id, 'lng', norm.lng);
                         handleSolicitudChange(sol.id, 'comuna_direccion', norm.comuna);
+                        handleSolicitudChange(sol.id, 'tipo_ubicacion', norm.tipo);
+                        handleSolicitudChange(sol.id, 'altura', norm.altura);
+                        handleSolicitudChange(sol.id, 'cruce', norm.cruce);
                       }}
                       placeholder="Ej: Av. San Juan 2500, Callao y Corrientes, Parque Rivadavia, Hospital Fernández..."
                     />
 
-                    {/* Aviso explicativo pedagógico */}
-                    {!sol.direccion?.trim() ? (
-                      <div style={{
-                        marginTop: '6px',
-                        fontSize: '0.74rem',
-                        color: '#92400E',
-                        backgroundColor: '#FFFBEB',
-                        padding: '6px 10px',
-                        borderRadius: '6px',
-                        border: '1px solid #FDE68A',
-                        lineHeight: '1.3'
-                      }}>
-                        💡 <strong>Observación:</strong> Si no especificás una esquina, altura o lugar particular, tu reclamo se registrará como <strong>Preocupación general</strong> para elevar al equipo de gestión como sugerencia de mejora de la Ciudad.
-                      </div>
-                    ) : (
-                      <>
-                        <div style={{
-                          marginTop: '4px',
-                          fontSize: '0.72rem',
-                          color: '#059669',
-                          lineHeight: '1.3'
-                        }}>
-                          ✓ Al contar con una ubicación asociada, se registrará como <strong>Solicitud puntual</strong> para gestión operativa y carga en el sistema de la Ciudad.
-                        </div>
+                    {/* Aviso explicativo pedagógico según clasificación en vivo */}
+                    {(() => {
+                      const clasif = clasificarUbicacion(sol.direccion, {
+                        tipo: sol.tipo_ubicacion,
+                        lat: sol.lat,
+                        lng: sol.lng,
+                        altura: sol.altura,
+                        cruce: sol.cruce
+                      });
 
-                        {/* Captura 2: Notificación si la ubicación pertenece a otra Comuna */}
-                        {(() => {
-                          const comunaReunion = reunion?.comuna || '';
-                          const comunaDir = sol.comuna_direccion || '';
-                          if (comunaReunion && comunaDir && !comunaReunion.toLowerCase().includes(comunaDir.toLowerCase()) && !comunaDir.toLowerCase().includes(comunaReunion.toLowerCase())) {
-                            return (
+                      if (clasif.esPuntual) {
+                        const comunaReunion = reunion?.comuna || '';
+                        const comunaDir = sol.comuna_direccion || '';
+                        const esOtraComuna = comunaReunion && comunaDir && !comunaReunion.toLowerCase().includes(comunaDir.toLowerCase()) && !comunaDir.toLowerCase().includes(comunaReunion.toLowerCase());
+
+                        return (
+                          <>
+                            <div style={{
+                              marginTop: '6px',
+                              fontSize: '0.74rem',
+                              color: '#047857',
+                              backgroundColor: '#ECFDF5',
+                              padding: '6px 10px',
+                              borderRadius: '6px',
+                              border: '1px solid #A7F3D0',
+                              lineHeight: '1.3'
+                            }}>
+                              ✓ <strong>{clasif.motivo}:</strong> {clasif.mensaje}
+                            </div>
+
+                            {esOtraComuna && (
                               <div style={{
                                 marginTop: '6px',
                                 fontSize: '0.74rem',
@@ -566,12 +583,29 @@ export default function PapeletaDigital({ reunionId, initialDni, onVolver }) {
                                   <strong>Nota:</strong> Esta ubicación se encuentra en <strong>{comunaDir}</strong> (la reunión de hoy corresponde a <strong>{comunaReunion}</strong>). Tu solicitud será igualmente canalizada al área responsable correspondiente.
                                 </span>
                               </div>
-                            );
-                          }
-                          return null;
-                        })()}
-                      </>
-                    )}
+                            )}
+                          </>
+                        );
+                      } else {
+                        return (
+                          <div style={{
+                            marginTop: '6px',
+                            fontSize: '0.74rem',
+                            color: '#92400E',
+                            backgroundColor: '#FFFBEB',
+                            padding: '6px 10px',
+                            borderRadius: '6px',
+                            border: '1px solid #FDE68A',
+                            lineHeight: '1.3'
+                          }}>
+                            💡 <strong>{sol.direccion?.trim() ? clasif.motivo : 'Recomendación'}:</strong> {clasif.mensaje}
+                            <div style={{ marginTop: '3px', fontSize: '0.71rem', color: '#B45309' }}>
+                              Para registrar una <strong>Solicitud Puntual</strong> con seguimiento operativo, ingresá una altura (ej: <em>Rivadavia 2500</em>), una esquina (ej: <em>Callao y Corrientes</em>) o un lugar físico identificable (ej: <em>Escuela San Cayetano, Hospital Fernández</em>).
+                            </div>
+                          </div>
+                        );
+                      }
+                    })()}
                   </div>
 
                   {/* 3. Breve descripción */}

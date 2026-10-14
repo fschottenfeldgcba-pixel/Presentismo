@@ -22,7 +22,7 @@ import { autoDetectTags } from '../constants/oradorTags';
 import PreguntasTematicas from './PreguntasTematicas';
 import Cronometro1a1 from './Cronometro1a1';
 import PanelSolicitudesPapeleta from './PanelSolicitudesPapeleta';
-import { getUrlWhatsAppPapeleta, getSolicitudesPorReunion } from '../services/solicitudesService';
+import { getUrlWhatsAppPapeleta, getSolicitudesPorReunion, clasificarUbicacion } from '../services/solicitudesService';
 import { classifyTopicHeuristic, classifyTopicWithAI, isBaistrocchiMeeting, getBadgeDisplay, PIN_CONFIGS, BAISTROCCHI_PIN_OPTIONS, getBadgesFromTags } from '../services/topicClassificationService';
 import * as XLSX from 'xlsx';
 
@@ -1529,15 +1529,18 @@ export default function ControlAsistencia({ reunion, onBack, mode = 'asistencia'
                                   <span style={{ fontWeight: '700', color: '#1E293B', fontSize: '0.78rem' }}>
                                     🏷️ {p.tematica || 'General'}
                                   </span>
-                                  {p.direccion ? (
-                                    <span style={{ color: '#0369A1', backgroundColor: '#E0F2FE', padding: '1px 6px', borderRadius: '4px', fontSize: '0.72rem', fontWeight: '600' }}>
-                                      📍 {p.direccion}
-                                    </span>
-                                  ) : (
-                                    <span style={{ color: '#B45309', backgroundColor: '#FEF3C7', padding: '1px 6px', borderRadius: '4px', fontSize: '0.72rem', fontWeight: '600' }}>
-                                      ⚠️ Preocupación (En toda la Ciudad)
-                                    </span>
-                                  )}
+                                  {(() => {
+                                    const esPuntual = p.tipo_registro === 'solicitud' || clasificarUbicacion(p.direccion).esPuntual;
+                                    return esPuntual ? (
+                                      <span style={{ color: '#0369A1', backgroundColor: '#E0F2FE', padding: '1px 6px', borderRadius: '4px', fontSize: '0.72rem', fontWeight: '600' }}>
+                                        📍 {p.direccion}
+                                      </span>
+                                    ) : (
+                                      <span style={{ color: '#B45309', backgroundColor: '#FEF3C7', padding: '1px 6px', borderRadius: '4px', fontSize: '0.72rem', fontWeight: '600' }}>
+                                        ⚠️ Preocupación ({p.direccion ? p.direccion : 'En toda la Ciudad'})
+                                      </span>
+                                    );
+                                  })()}
                                 </div>
                                 <button
                                   type="button"

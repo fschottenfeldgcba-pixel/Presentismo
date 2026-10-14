@@ -84,6 +84,146 @@ export async function getVecinoParaPapeleta(dni, reunionId = null) {
   }
 }
 
+export const BARRIOS_CABA_LIST = [
+  "agronomia", "almagro", "balvanera", "barracas", "belgrano", "boedo", "caballito", 
+  "chacarita", "coghlan", "colegiales", "constitucion", "flores", "floresta", "la boca", 
+  "la paternal", "paternal", "liniers", "mataderos", "monte castro", "monserrat", 
+  "montserrat", "nueva pompeya", "pompeya", "nuñez", "nunez", "palermo", 
+  "parque avellaneda", "parque chacabuco", "parque chas", "parque patricios", 
+  "puerto madero", "recoleta", "retiro", "saavedra", "san cristobal", "san nicolas", 
+  "san telmo", "velez sarsfield", "versalles", "villa crespo", "villa del parque", 
+  "villa devoto", "villa general mitre", "villa lugano", "villa luro", "villa ortuzar", 
+  "villa pueyrredon", "villa real", "villa riachuelo", "villa santa rita", 
+  "villa soldati", "villa urquiza"
+];
+
+export const LUGARES_FISICOS_KEYWORDS = [
+  "colegio", "escuela", "instituto", "jardin", "jardín", "universidad", "facultad",
+  "hospital", "cesac", "sanatorio", "clinica", "clínica", "dispensario",
+  "plaza", "parque", "plazoleta", "boulevard",
+  "polideportivo", "club", "centro cultural", "teatro", "museo", "biblioteca",
+  "estacion", "estación", "terminal", "subte", "metrobus", "parada",
+  "iglesia", "parroquia", "templo", "catedral", "sinagoga", "basilica", "basílica",
+  "comisaria", "comisaría", "sede comunal", "comuna sede", "cementerio", "paseo"
+];
+
+/**
+ * Evalúa si una dirección o texto ingresado califica como "Solicitud Puntual" (lugar exacto con altura,
+ * intersección o lugar físico identificable) o como "Preocupación General" (toda la ciudad, comuna,
+ * barrio o calle completa sin altura/esquina).
+ */
+export function clasificarUbicacion(direccionRaw, meta = {}) {
+  const raw = (direccionRaw || '').trim();
+  const norm = raw
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .trim();
+
+  if (!norm || norm.length < 3) {
+    return {
+      tipo: 'preocupacion',
+      esPuntual: false,
+      motivo: 'Sin ubicación puntual especificada',
+      mensaje: 'Al no contar con una ubicación puntual, se registrará como Preocupación general para el equipo de gestión.'
+    };
+  }
+
+  // 1. Frases de "Toda la ciudad", CABA, etc.
+  const regexCiudad = /^(en\s+)?(toda\s+la\s+ciudad(\s+de\s+buenos\s+aires)?|toda\s+caba|toda\s+la\s+capital|caba|capital\s+federal|ciudad\s+de\s+buenos\s+aires|buenos\s+aires|general|en\s+general|toda\s+la\s+zona|todos\s+lados|por\s+todos\s+lados)$/i;
+  if (regexCiudad.test(norm) || norm.includes('toda la ciudad') || norm.includes('toda la capital') || norm.includes('por toda la ciudad') || norm.includes('en toda la ciudad')) {
+    return {
+      tipo: 'preocupacion',
+      esPuntual: false,
+      motivo: 'Área general (Toda la Ciudad)',
+      mensaje: 'Al referirse a toda la Ciudad sin un punto exacto, se registrará como Preocupación.'
+    };
+  }
+
+  // 2. Comunas generales: "Comuna 7", "toda la comuna 7", "en la comuna"
+  const regexComuna = /^(en\s+la\s+|toda\s+la\s+|por\s+la\s+)?comuna(\s+\d{1,2}(\s+norte|\s+sur)?)?$/i;
+  if (regexComuna.test(norm) || /^comuna\s+\d{1,2}$/i.test(norm)) {
+    return {
+      tipo: 'preocupacion',
+      esPuntual: false,
+      motivo: 'Área general (Comuna completa)',
+      mensaje: 'Al abarcar una Comuna completa sin un punto específico, se registrará como Preocupación.'
+    };
+  }
+
+  // 3. Barrios generales: "Flores", "en Caballito", "todo Palermo", "barrio Flores"
+  const regexEnBarrio = /^(en\s+|todo\s+|toda\s+|barrio\s+|el\s+barrio\s+de\s+)?([a-z\s]+)$/i;
+  const matchBarrio = norm.match(regexEnBarrio);
+  if (matchBarrio) {
+    const posibleBarrio = matchBarrio[2].trim();
+    if (BARRIOS_CABA_LIST.includes(posibleBarrio) || posibleBarrio === 'el barrio' || posibleBarrio === 'mi barrio' || posibleBarrio === 'barrio') {
+      if (!/\d{1,5}/.test(norm) && !/\s(y|esq|esquina|entre|e\/)\s/.test(norm)) {
+        return {
+          tipo: 'preocupacion',
+          esPuntual: false,
+          motivo: 'Área general (Barrio completo)',
+          mensaje: 'Al referirse al barrio en general sin una dirección exacta, se registrará como Preocupación.'
+        };
+      }
+    }
+  }
+
+  // 4. Si fue seleccionado desde el buscador oficial como lugar físico notable de EPOK
+  if (meta.tipo === 'lugar' || meta.esLugar || meta.fuente?.includes('Lugares')) {
+    return {
+      tipo: 'solicitud',
+      esPuntual: true,
+      motivo: 'Lugar físico o punto de referencia identificable',
+      mensaje: 'Lugar físico reconocido oficialmente. Se registrará como Solicitud puntual con seguimiento.'
+    };
+  }
+
+  // 5. Intersección o Esquina (ej: "Callao y Corrientes", "Rivadavia esq. Nazca", "Directorio entre Cachimayo y Riglos")
+  const regexEsquina = /\s+(y|e\/|entre|esq\.?|esquina)\s+/i;
+  if (regexEsquina.test(norm) || (meta.cruce && String(meta.cruce).trim())) {
+    return {
+      tipo: 'solicitud',
+      esPuntual: true,
+      motivo: 'Intersección o esquina exacta',
+      mensaje: 'Esquina identificada. Se registrará como Solicitud puntual para gestión operativa.'
+    };
+  }
+
+  // 6. Dirección con altura numérica (ej: "Av. San Juan 2500", "Cachimayo 733", "Rivadavia al 1500")
+  const regexAltura = /\b(\d{1,5}|al\s+\d{1,5})\b/;
+  if (regexAltura.test(norm) || (meta.altura && String(meta.altura).trim())) {
+    return {
+      tipo: 'solicitud',
+      esPuntual: true,
+      motivo: 'Dirección puntual con altura',
+      mensaje: 'Dirección exacta con altura. Se registrará como Solicitud puntual con seguimiento.'
+    };
+  }
+
+  // 7. Lugares físicos con nombre propio reconocibles (ej: "Colegio Niñas de Ayohuma", "Hospital Fernández", "Plaza Irlanda")
+  for (const kw of LUGARES_FISICOS_KEYWORDS) {
+    if (norm.startsWith(kw + ' ') || norm.includes(' ' + kw + ' ')) {
+      const palabras = norm.split(/\s+/).filter(Boolean);
+      if (palabras.length >= 2 && !/^(la|el|las|los|un|una|en\s+la|en\s+el)\s+(plaza|parque|escuela|hospital|colegio|comisaria)$/i.test(norm)) {
+        return {
+          tipo: 'solicitud',
+          esPuntual: true,
+          motivo: 'Lugar físico o establecimiento identificado',
+          mensaje: 'Lugar físico identificado. Se registrará como Solicitud puntual para gestión operativa.'
+        };
+      }
+    }
+  }
+
+  // 8. Calles completas sin altura ni esquina (ej: "Av. Rivadavia", "Rivadavia", "Cachimayo", "calle Larrea")
+  return {
+    tipo: 'preocupacion',
+    esPuntual: false,
+    motivo: 'Calle o zona sin altura ni esquina puntual',
+    mensaje: 'Al indicar solo el nombre de una calle sin altura o esquina, se registrará como Preocupación general.'
+  };
+}
+
 /**
  * Guarda una lista de solicitudes cargadas por un vecino en la papeleta digital
  */
@@ -108,8 +248,14 @@ export async function guardarSolicitudesPapeleta({
   const rowsToInsert = solicitudes
     .filter(s => s.tematica && (s.descripcion?.trim() || s.direccion?.trim()))
     .map(s => {
-      const tieneUbicacion = Boolean(s.direccion?.trim());
-      const tipoRegistro = s.tipo_registro || (tieneUbicacion ? 'solicitud' : 'preocupacion');
+      const clasif = clasificarUbicacion(s.direccion, {
+        tipo: s.tipo_ubicacion || s.tipo,
+        lat: s.lat,
+        lng: s.lng,
+        altura: s.altura,
+        cruce: s.cruce
+      });
+      const tipoRegistro = clasif.tipo; // 'solicitud' | 'preocupacion'
 
       return {
         reunion_id: reunion_id || null,
@@ -124,8 +270,8 @@ export async function guardarSolicitudesPapeleta({
         direccion: s.direccion?.trim() || '',
         descripcion: s.descripcion?.trim() || '',
         tipo_registro: tipoRegistro, // 'solicitud' | 'preocupacion'
-        lat: s.lat || null,
-        lng: s.lng || null,
+        lat: clasif.esPuntual ? s.lat || null : null,
+        lng: clasif.esPuntual ? s.lng || null : null,
         estado: 'pendiente',
         ticket_suaci: '',
         notas_operador: ''
