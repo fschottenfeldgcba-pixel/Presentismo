@@ -140,7 +140,6 @@ export default function MapaReclamosComuna({ reunion, solicitudes: propSolicitud
   // - Solicitud Puntual: Todo reclamo con establecimiento, plaza, comercio o dirección identificada.
   const esPreocupacionReal = (s) => {
     if (!s) return true;
-    if (s.tipo_registro === 'preocupacion') return true;
     const clasif = clasificarUbicacion(s.direccion, { lat: s.lat, lng: s.lng });
     return !clasif.esPuntual;
   };

@@ -121,9 +121,9 @@ ${item.descripcion}
   // Helper para evaluar si un registro califica como Solicitud Puntual o Preocupación General
   const esSolicitudReal = (s) => {
     if (!s) return false;
-    if (s.tipo_registro === 'preocupacion') return false;
     const clasif = clasificarUbicacion(s.direccion, { lat: s.lat, lng: s.lng });
-    return clasif.esPuntual;
+    if (clasif.esPuntual) return true;
+    return s.tipo_registro === 'solicitud';
   };
 
   // Exportar todas las solicitudes a Excel (.xlsx)
