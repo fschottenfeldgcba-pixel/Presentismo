@@ -22,6 +22,7 @@ import { autoDetectTags } from '../constants/oradorTags';
 import PreguntasTematicas from './PreguntasTematicas';
 import Cronometro1a1 from './Cronometro1a1';
 import PanelSolicitudesPapeleta from './PanelSolicitudesPapeleta';
+import { getUrlWhatsAppPapeleta } from '../services/solicitudesService';
 import { classifyTopicHeuristic, classifyTopicWithAI, isBaistrocchiMeeting, getBadgeDisplay, PIN_CONFIGS, BAISTROCCHI_PIN_OPTIONS, getBadgesFromTags } from '../services/topicClassificationService';
 import * as XLSX from 'xlsx';
 
@@ -2221,34 +2222,43 @@ export default function ControlAsistencia({ reunion, onBack, mode = 'asistencia'
                                 </button>
                               )}
 
-                              {isPresent && vecino.celular && (
-                                <a
-                                  href={`https://wa.me/${vecino.celular.replace(/\D/g, '')}?text=${encodeURIComponent(
-                                    `Hola ${vecino.nombre}! Te compartimos el enlace para ingresar tus reclamos o solicitudes en la reunión de hoy de BA Participación Ciudadana:\n${window.location.origin}${window.location.pathname}?view=papeleta&reunion_id=${reunion.id}&dni=${vecino.dni}`
-                                  )}`}
-                                  target="_blank"
-                                  rel="noopener noreferrer"
-                                  className="btn btn-sm"
-                                  style={{
-                                    backgroundColor: '#25D366',
-                                    color: '#FFFFFF',
-                                    fontWeight: '600',
-                                    fontSize: '0.78rem',
-                                    display: 'flex',
-                                    alignItems: 'center',
-                                    justifyContent: 'center',
-                                    gap: '4px',
-                                    textDecoration: 'none',
-                                    padding: '7px 10px',
-                                    borderRadius: '6px',
-                                    border: 'none',
-                                    boxShadow: '0 1px 2px rgba(0,0,0,0.1)'
-                                  }}
-                                  title="Enviar enlace personalizado de la Papeleta Digital por WhatsApp"
-                                >
-                                  📱 Enviar Papeleta WA
-                                </a>
-                              )}
+                              {isPresent && vecino.celular && (() => {
+                                const waUrl = getUrlWhatsAppPapeleta({
+                                  celular: vecino.celular,
+                                  nombre: vecino.nombre,
+                                  reunionId: reunion?.id,
+                                  dni: vecino.dni
+                                });
+
+                                if (!waUrl) return null;
+
+                                return (
+                                  <a
+                                    href={waUrl}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="btn btn-sm"
+                                    style={{
+                                      backgroundColor: '#25D366',
+                                      color: '#FFFFFF',
+                                      fontWeight: '600',
+                                      fontSize: '0.78rem',
+                                      display: 'flex',
+                                      alignItems: 'center',
+                                      justifyContent: 'center',
+                                      gap: '4px',
+                                      textDecoration: 'none',
+                                      padding: '7px 10px',
+                                      borderRadius: '6px',
+                                      border: 'none',
+                                      boxShadow: '0 1px 2px rgba(0,0,0,0.1)'
+                                    }}
+                                    title="Enviar enlace personalizado de la Papeleta Digital por WhatsApp"
+                                  >
+                                    📱 Enviar Papeleta WA
+                                  </a>
+                                );
+                              })()}
                               
                               {/* Botón de Editar Datos en Caliente (Requisito 1) */}
                               <button

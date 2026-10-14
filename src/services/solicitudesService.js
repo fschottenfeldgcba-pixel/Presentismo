@@ -295,3 +295,99 @@ export async function updateEstadoSolicitud(solicitudId, updates = {}) {
 
   return { data: updates, error: null };
 }
+
+/**
+ * Normaliza cualquier número de teléfono de Argentina al formato internacional oficial de WhatsApp (+54 9 ...).
+ * WhatsApp exige para líneas celulares de Argentina: código de país 54 + prefijo móvil 9 + código de área + número.
+ * Corrige casos comunes como:
+ * - "1166153911" -> "5491166153911"
+ * - "1534892412" -> "5491134892412"
+ * - "011 15 6615 3911" -> "5491166153911"
+ * - "011 6615 3911" -> "5491166153911"
+ * - "+54 11 6615 3911" -> "5491166153911"
+ * - "+54 9 11 6615 3911" -> "5491166153911"
+ * - "66153911" (8 dígitos) -> "5491166153911"
+ */
+export function formatWhatsAppArgentina(phone) {
+  if (!phone) return '';
+  const trimmed = String(phone).trim();
+  const startsWithPlus = trimmed.startsWith('+');
+  let clean = trimmed.replace(/\D/g, '');
+  if (!clean) return '';
+
+  // Si fue ingresado explícitamente con '+' y NO es de Argentina (+54)
+  if (startsWithPlus && !clean.startsWith('54')) {
+    return clean;
+  }
+
+  // Quitar prefijos de salida internacional duplicados
+  if (clean.startsWith('0054')) clean = clean.slice(4);
+  else if (clean.startsWith('054')) clean = clean.slice(3);
+
+  // Si ya empieza con 54
+  if (clean.startsWith('54')) {
+    let rest = clean.slice(2);
+    if (rest.startsWith('0')) rest = rest.replace(/^0+/, '');
+    
+    // Si ya tiene el 9 móvil de Argentina (549...)
+    if (rest.startsWith('9')) {
+      let restAfter9 = rest.slice(1);
+      if (restAfter9.startsWith('0')) restAfter9 = restAfter9.replace(/^0+/, '');
+      // Si pusieron el 15 después del código de área 11 (ej: 54 9 11 15 xxxxxxxx)
+      if (restAfter9.startsWith('1115') && restAfter9.length === 12) {
+        restAfter9 = '11' + restAfter9.slice(4);
+      }
+      return '549' + restAfter9;
+    } else {
+      // Tiene 54 pero le falta el 9 móvil (ej: 54 11 6615 3911)
+      if (rest.startsWith('1115') && rest.length === 12) {
+        rest = '11' + rest.slice(4);
+      }
+      return '549' + rest;
+    }
+  }
+
+  // Quitar ceros a la izquierda (ej: 011...)
+  if (clean.startsWith('0')) {
+    clean = clean.replace(/^0+/, '');
+  }
+
+  // Si empieza con 15 y tiene 10 dígitos (ej: 15 3489 2412 -> CABA 11 3489 2412)
+  if (clean.startsWith('15') && clean.length === 10) {
+    clean = '11' + clean.slice(2);
+  }
+
+  // Si tiene '1115' (ej: 11 15 6615 3911 -> 12 dígitos)
+  if (clean.startsWith('1115') && clean.length === 12) {
+    clean = '11' + clean.slice(4);
+  }
+
+  // Si tiene 8 dígitos (ej: 66153911, sin código de área CABA)
+  if (clean.length === 8) {
+    clean = '11' + clean;
+  }
+
+  // Asegurar 549 al inicio para números de Argentina
+  if (!clean.startsWith('549')) {
+    clean = '549' + clean;
+  }
+
+  return clean;
+}
+
+/**
+ * Genera el enlace directo wa.me para enviar la Papeleta Digital a un vecino
+ */
+export function getUrlWhatsAppPapeleta({ celular, nombre, reunionId, dni }) {
+  const phoneClean = formatWhatsAppArgentina(celular);
+  if (!phoneClean) return null;
+
+  const origin = window.location.origin;
+  const pathname = window.location.pathname;
+  const linkPapeleta = `${origin}${pathname}?view=papeleta&reunion_id=${reunionId || ''}&dni=${dni || ''}`;
+  
+  const saludo = nombre && nombre.trim() ? `Hola ${nombre.trim()}! ` : '¡Hola! ';
+  const mensaje = `${saludo}Te compartimos el enlace para ingresar tus reclamos o solicitudes en la reunión de hoy de BA Participación Ciudadana:\n${linkPapeleta}`;
+
+  return `https://wa.me/${phoneClean}?text=${encodeURIComponent(mensaje)}`;
+}
