@@ -26,7 +26,7 @@ export default function PapeletaDigital({ reunionId, initialDni, onVolver }) {
 
   // Lista dinámica de solicitudes
   const [solicitudes, setSolicitudes] = useState([
-    { id: 1, tematica: '', tematica_otro: '', direccion: '', descripcion: '' }
+    { id: 1, tematica: '', tematica_otro: '', direccion: '', descripcion: '', autocompletado: false }
   ]);
 
   // Error feedback
@@ -66,7 +66,8 @@ export default function PapeletaDigital({ reunionId, initialDni, onVolver }) {
                 tematica: '',
                 tematica_otro: '',
                 direccion: '',
-                descripcion: vData.tema_previo
+                descripcion: vData.tema_previo,
+                autocompletado: false
               }]);
             }
           }
@@ -99,7 +100,7 @@ export default function PapeletaDigital({ reunionId, initialDni, onVolver }) {
   const handleAddSolicitud = () => {
     setSolicitudes(prev => [
       ...prev,
-      { id: Date.now(), tematica: '', tematica_otro: '', direccion: '', descripcion: '' }
+      { id: Date.now(), tematica: '', tematica_otro: '', direccion: '', descripcion: '', autocompletado: false }
     ]);
   };
 
@@ -110,6 +111,10 @@ export default function PapeletaDigital({ reunionId, initialDni, onVolver }) {
 
   const handleSolicitudChange = (id, field, value) => {
     setSolicitudes(prev => prev.map(s => s.id === id ? { ...s, [field]: value } : s));
+  };
+
+  const handleSolicitudBulkChange = (id, fieldsObj) => {
+    setSolicitudes(prev => prev.map(s => s.id === id ? { ...s, ...fieldsObj } : s));
   };
 
   const handleSubmit = async (e) => {
@@ -470,6 +475,7 @@ export default function PapeletaDigital({ reunionId, initialDni, onVolver }) {
                       {/* Badge dinámico de clasificación en vivo */}
                       {(() => {
                         const clasif = clasificarUbicacion(sol.direccion, {
+                          autocompletado: sol.autocompletado,
                           tipo: sol.tipo_ubicacion,
                           lat: sol.lat,
                           lng: sol.lng,
@@ -512,31 +518,36 @@ export default function PapeletaDigital({ reunionId, initialDni, onVolver }) {
                     <InputDireccionCaba
                       value={sol.direccion}
                       onChange={(val) => {
-                        handleSolicitudChange(sol.id, 'direccion', val);
-                        if (!val) {
-                          handleSolicitudChange(sol.id, 'lat', null);
-                          handleSolicitudChange(sol.id, 'lng', null);
-                          handleSolicitudChange(sol.id, 'comuna_direccion', null);
-                          handleSolicitudChange(sol.id, 'tipo_ubicacion', null);
-                          handleSolicitudChange(sol.id, 'altura', null);
-                          handleSolicitudChange(sol.id, 'cruce', null);
-                        }
+                        handleSolicitudBulkChange(sol.id, {
+                          direccion: val,
+                          autocompletado: false,
+                          lat: null,
+                          lng: null,
+                          comuna_direccion: null,
+                          tipo_ubicacion: null,
+                          altura: null,
+                          cruce: null
+                        });
                       }}
                       onSelectNormalizada={(norm) => {
-                        handleSolicitudChange(sol.id, 'direccion', norm.direccion);
-                        handleSolicitudChange(sol.id, 'lat', norm.lat);
-                        handleSolicitudChange(sol.id, 'lng', norm.lng);
-                        handleSolicitudChange(sol.id, 'comuna_direccion', norm.comuna);
-                        handleSolicitudChange(sol.id, 'tipo_ubicacion', norm.tipo);
-                        handleSolicitudChange(sol.id, 'altura', norm.altura);
-                        handleSolicitudChange(sol.id, 'cruce', norm.cruce);
+                        handleSolicitudBulkChange(sol.id, {
+                          direccion: norm.direccion,
+                          autocompletado: true,
+                          lat: norm.lat,
+                          lng: norm.lng,
+                          comuna_direccion: norm.comuna,
+                          tipo_ubicacion: norm.tipo,
+                          altura: norm.altura,
+                          cruce: norm.cruce
+                        });
                       }}
-                      placeholder="Ej: Av. San Juan 2500, Callao y Corrientes, Parque Rivadavia, Hospital Fernández..."
+                      placeholder="Ej: Av. San Juan 2500, Callao y Corrientes, Parque Chacabuco, Sede Comunal 7..."
                     />
 
                     {/* Aviso explicativo pedagógico según clasificación en vivo */}
                     {(() => {
                       const clasif = clasificarUbicacion(sol.direccion, {
+                        autocompletado: sol.autocompletado,
                         tipo: sol.tipo_ubicacion,
                         lat: sol.lat,
                         lng: sol.lng,
@@ -600,7 +611,7 @@ export default function PapeletaDigital({ reunionId, initialDni, onVolver }) {
                           }}>
                             💡 <strong>{sol.direccion?.trim() ? clasif.motivo : 'Recomendación'}:</strong> {clasif.mensaje}
                             <div style={{ marginTop: '3px', fontSize: '0.71rem', color: '#B45309' }}>
-                              Para registrar una <strong>Solicitud Puntual</strong> con seguimiento operativo, ingresá una altura (ej: <em>Rivadavia 2500</em>), una esquina (ej: <em>Callao y Corrientes</em>) o un lugar físico identificable (ej: <em>Escuela San Cayetano, Hospital Fernández</em>).
+                              Para registrar una <strong>Solicitud Puntual</strong> con seguimiento operativo, seleccioná una dirección con altura (ej: <em>Rivadavia 2500</em>), una esquina (ej: <em>Callao y Corrientes</em>) o un lugar físico del buscador (ej: <em>Parque Chacabuco, Sede Comunal 7</em>).
                             </div>
                           </div>
                         );

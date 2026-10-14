@@ -90,8 +90,28 @@ export default function InputDireccionCaba({
         tipo: item.tipo,
         altura: item.altura || null,
         cruce: item.cruce || null,
-        fuente: item.fuente
+        fuente: item.fuente,
+        autocompletado: true
       });
+    }
+  };
+
+  const handleKeyDown = (e) => {
+    if (e.key === 'Enter') {
+      if (mostrarDropdown && sugerencias.length > 0) {
+        e.preventDefault();
+        handleSelectOption(sugerencias[0]);
+      }
+    }
+  };
+
+  const handleBlur = () => {
+    if (!seleccionada && sugerencias.length > 0 && query) {
+      const qNorm = query.trim().toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+      const firstNorm = sugerencias[0].label.trim().toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+      if (qNorm === firstNorm) {
+        handleSelectOption(sugerencias[0]);
+      }
     }
   };
 
@@ -104,6 +124,8 @@ export default function InputDireccionCaba({
           className="form-control"
           value={query}
           onChange={handleChange}
+          onKeyDown={handleKeyDown}
+          onBlur={handleBlur}
           onFocus={() => {
             if (sugerencias.length > 0) setMostrarDropdown(true);
           }}
