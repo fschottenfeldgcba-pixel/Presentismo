@@ -1,17 +1,12 @@
 import React, { useState, useEffect } from 'react';
 import { LogIn, Key, Users, UserPlus, ArrowLeft, Mail, RefreshCw } from 'lucide-react';
-import { login, signUp, recuperarPassword, updatePassword } from '../services/supabaseService';
+import { login, recuperarPassword, updatePassword } from '../services/supabaseService';
 
 export default function Login({ onLoginSuccess }) {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
-  
-  // Modo de registro
-  const [isSignUp, setIsSignUp] = useState(false);
-  const [nombre, setNombre] = useState('');
-  const [rol, setRol] = useState('gerencia');
 
   // Modo de recuperación y restablecimiento de contraseña
   const [isRecovery, setIsRecovery] = useState(false);
@@ -67,7 +62,6 @@ export default function Login({ onLoginSuccess }) {
       window.history.replaceState(null, null, window.location.pathname);
       setIsResetMode(false);
       setIsRecovery(false);
-      setIsSignUp(false);
       setPassword('');
       setNewPassword('');
     }
@@ -93,31 +87,6 @@ export default function Login({ onLoginSuccess }) {
       }
       setError(`Error de autenticación: ${msg}`);
     } else if (data) {
-      onLoginSuccess(data);
-    }
-  };
-
-  const handleSignUpSubmit = async (e) => {
-    e.preventDefault();
-    if (!email || !password || !nombre) {
-      setError('Por favor, completá todos los campos obligatorios.');
-      return;
-    }
-
-    setLoading(true);
-    setError('');
-
-    const { data, error: signUpError } = await signUp(email, password, nombre, rol);
-    setLoading(false);
-
-    if (signUpError) {
-      let msg = signUpError.message || 'No se pudo crear la cuenta.';
-      if (msg.includes('over_email_send_rate_limit') || msg.includes('rate limit')) {
-        msg = 'Se superó el límite de envío de correos de confirmación en Supabase Auth. Intentá más tarde o desactivá la confirmación de email obligatoria en el panel de Supabase.';
-      }
-      setError(`Error de registro: ${msg}`);
-    } else if (data) {
-      alert('¡Usuario registrado con éxito! Ya podés ingresar al sistema.');
       onLoginSuccess(data);
     }
   };
@@ -224,7 +193,6 @@ export default function Login({ onLoginSuccess }) {
                 onClick={() => {
                   setIsResetMode(false);
                   setIsRecovery(false);
-                  setIsSignUp(false);
                   setError('');
                 }}
               >
@@ -295,82 +263,6 @@ export default function Login({ onLoginSuccess }) {
               </>
             )}
           </form>
-        ) : isSignUp ? (
-          /* MODO REGISTRO */
-          <form onSubmit={handleSignUpSubmit}>
-            <div className="form-group">
-              <label htmlFor="reg-nombre">Nombre Completo *</label>
-              <input
-                type="text"
-                id="reg-nombre"
-                className="form-control"
-                value={nombre}
-                onChange={(e) => setNombre(e.target.value)}
-                required
-              />
-            </div>
-
-            <div className="form-group">
-              <label htmlFor="reg-email">Correo Electrónico *</label>
-              <input
-                type="email"
-                id="reg-email"
-                className="form-control"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                required
-              />
-            </div>
-
-            <div className="form-group">
-              <label htmlFor="reg-password">Contraseña *</label>
-              <input
-                type="password"
-                id="reg-password"
-                className="form-control"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                required
-              />
-            </div>
-
-            <div className="form-group">
-              <label htmlFor="reg-rol">Rol en el equipo *</label>
-              <select
-                id="reg-rol"
-                className="form-control"
-                value={rol}
-                onChange={(e) => setRol(e.target.value)}
-              >
-                <option value="gerencia">Gerencia</option>
-                <option value="cercania">Cercanía</option>
-                <option value="territorio_coordinacion">Coordinación Territorio</option>
-                <option value="agente_territorio">Agente Territorio</option>
-              </select>
-            </div>
-
-            <button 
-              type="submit" 
-              className="btn btn-primary" 
-              style={{ width: '100%', marginTop: '1rem', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px' }}
-              disabled={loading}
-            >
-              {loading ? 'Registrando...' : <><UserPlus size={18} /> Crear Cuenta y Acceder</>}
-            </button>
-
-            <div style={{ textAlign: 'center', marginTop: '1.5rem' }}>
-              <button 
-                type="button" 
-                style={{ border: 'none', background: 'none', color: 'var(--color-highlight)', textDecoration: 'underline', cursor: 'pointer', fontSize: '0.85rem' }}
-                onClick={() => {
-                  setIsSignUp(false);
-                  setError('');
-                }}
-              >
-                Volver al inicio de sesión
-              </button>
-            </div>
-          </form>
         ) : (
           /* MODO INGRESO */
           <>
@@ -414,16 +306,6 @@ export default function Login({ onLoginSuccess }) {
             <div style={{ textAlign: 'center', marginTop: '1.25rem', display: 'flex', flexDirection: 'column', gap: '10px', alignItems: 'center' }}>
               <button 
                 type="button" 
-                style={{ border: 'none', background: 'none', color: 'var(--color-highlight)', textDecoration: 'underline', cursor: 'pointer', fontSize: '0.85rem' }}
-                onClick={() => {
-                  setIsSignUp(true);
-                  setError('');
-                }}
-              >
-                ¿No tenés usuario? Registrar administrador aquí
-              </button>
-              <button 
-                type="button" 
                 style={{ border: 'none', background: 'none', color: 'var(--color-text-muted)', textDecoration: 'underline', cursor: 'pointer', fontSize: '0.8rem' }}
                 onClick={() => {
                   setIsRecovery(true);
@@ -432,6 +314,9 @@ export default function Login({ onLoginSuccess }) {
               >
                 ¿Olvidaste tu contraseña?
               </button>
+              <span style={{ fontSize: '0.75rem', color: '#94A3B8', marginTop: '6px' }}>
+                🔒 El registro público está deshabilitado. Nuevos accesos son administrados por el equipo de Gobierno.
+              </span>
             </div>
           </>
         )}

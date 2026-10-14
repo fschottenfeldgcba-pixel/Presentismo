@@ -8,8 +8,10 @@ import PanelModerador from './components/PanelModerador';
 import PapeletaDigital from './components/PapeletaDigital';
 import PanelSolicitudesPapeleta from './components/PanelSolicitudesPapeleta';
 import MapaReclamosComuna from './components/MapaReclamosComuna';
+import GestionUsuarios from './components/GestionUsuarios';
 import { getSolicitudesPorReunion } from './services/solicitudesService';
-import { LogOut, ShieldCheck } from 'lucide-react';
+import { isUserOwner } from './services/supabaseService';
+import { LogOut, ShieldCheck, Users } from 'lucide-react';
 import { supabase } from './lib/supabaseClient';
 
 // Polyfill seguro para prevenir errores de 'removeChild' / 'insertBefore' en React 
@@ -211,6 +213,29 @@ export default function App() {
     };
   }, []);
 
+  // Verificar que el usuario activo siga existiendo en perfiles_usuarios (por si fue revocado)
+  useEffect(() => {
+    if (!user?.id) return;
+    const verifyUserSession = async () => {
+      try {
+        const { data, error } = await supabase
+          .from('perfiles_usuarios')
+          .select('id, rol, nombre')
+          .eq('id', user.id)
+          .maybeSingle();
+
+        if (error || !data) {
+          console.warn('Usuario no encontrado en perfiles_usuarios o revocado. Cerrando sesión.');
+          handleLogout();
+        }
+      } catch (e) {
+        console.warn('Error verificando sesión de usuario:', e);
+      }
+    };
+
+    verifyUserSession();
+  }, [user?.id, currentView]);
+
   const handleLoginSuccess = (loggedInUser) => {
     setUser(loggedInUser);
     setCurrentView('dashboard');
@@ -234,6 +259,7 @@ export default function App() {
   };
 
   const isCercaniaOrGerencia = user && (user.rol === 'gerencia' || user.rol === 'cercania');
+  const isOwner = isUserOwner(user);
 
   return (
     <ErrorBoundary>
@@ -245,6 +271,30 @@ export default function App() {
               <span>BA</span> Participación Ciudadana
             </h1>
             <div className="user-info">
+              {isOwner && (
+                <button 
+                  type="button"
+                  className="btn btn-sm"
+                  onClick={() => setCurrentView(currentView === 'gestion_usuarios' ? 'dashboard' : 'gestion_usuarios')}
+                  style={{ 
+                    backgroundColor: currentView === 'gestion_usuarios' ? '#F59E0B' : 'rgba(255,255,255,0.18)', 
+                    color: '#ffffff', 
+                    border: '1px solid rgba(255,255,255,0.3)',
+                    fontWeight: '700',
+                    fontSize: '0.78rem',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '5px',
+                    padding: '4px 10px',
+                    borderRadius: '6px',
+                    cursor: 'pointer',
+                    boxShadow: currentView === 'gestion_usuarios' ? '0 0 8px rgba(245, 158, 11, 0.5)' : 'none'
+                  }}
+                  title="Auditar y administrar usuarios registrados"
+                >
+                  <Users size={14} /> Gestión Usuarios
+                </button>
+              )}
               <span style={{ display: 'flex', alignItems: 'center', gap: '4px', fontSize: '0.85rem' }}>
                 <ShieldCheck size={14} style={{ color: 'var(--color-highlight)' }} />
                 <strong>{user.nombre}</strong>
@@ -374,6 +424,13 @@ export default function App() {
               onClose={() => window.close()}
             />
           </div>
+        )}
+
+        {currentView === 'gestion_usuarios' && user && isOwner && (
+          <GestionUsuarios 
+            user={user}
+            onBack={() => setCurrentView('dashboard')}
+          />
         )}
       </main>
 

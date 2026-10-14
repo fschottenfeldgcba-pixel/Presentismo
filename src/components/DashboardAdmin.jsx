@@ -20,6 +20,8 @@ import EstadisticasFuncionario from './EstadisticasFuncionario';
 import ABMFuncionarios from './ABMFuncionarios';
 import CentralInformes from './CentralInformes';
 import ModalBriefIA from './ModalBriefIA';
+import GestionUsuarios from './GestionUsuarios';
+import { isUserOwner } from '../services/supabaseService';
 import { OradorTagsDisplay } from './OradorTagSelector';
 import { autoDetectTags } from '../constants/oradorTags';
 
@@ -3316,6 +3318,18 @@ ${obsStr}`;
         >
           <FileSpreadsheet size={16} /> Central de Informes
         </div>
+        {isUserOwner(user) && (
+          <div 
+            className={`tab ${activeDashboardTab === 'usuarios_sistema' ? 'active' : ''}`}
+            onClick={() => setActiveDashboardTab('usuarios_sistema')}
+            style={{ 
+              color: activeDashboardTab === 'usuarios_sistema' ? '#B45309' : undefined,
+              fontWeight: activeDashboardTab === 'usuarios_sistema' ? '800' : undefined 
+            }}
+          >
+            <Users size={16} /> Usuarios Registrados
+          </div>
+        )}
       </div>
 
       {activeDashboardTab === 'reuniones' ? (
@@ -4424,6 +4438,9 @@ ${obsStr}`;
       ) : activeDashboardTab === 'central_informes' ? (
         /* VISTA DE CENTRAL DE INFORMES */
         <CentralInformes user={user} />
+      ) : activeDashboardTab === 'usuarios_sistema' && isUserOwner(user) ? (
+        /* VISTA DE GESTIÓN Y AUDITORÍA DE USUARIOS */
+        <GestionUsuarios user={user} onBack={() => setActiveDashboardTab('reuniones')} isEmbedded={true} />
       ) : (
         /* VISTA DE ABM DE FUNCIONARIOS */
         <ABMFuncionarios />

@@ -64,24 +64,10 @@ export const login = async (email, password) => {
 
     if (profileError) throw profileError;
 
-    // Si la fila en perfiles_usuarios no existe (por ejemplo, si falló en el registro previo debido a RLS),
-    // la creamos de forma automática y transparente en el momento del login.
+    // Si la fila en perfiles_usuarios no existe, la cuenta no está autorizada o fue eliminada por el administrador
     if (!profileData) {
-      const { data: newProfile, error: insertError } = await supabase
-        .from('perfiles_usuarios')
-        .insert([
-          {
-            id: authData.user.id,
-            email: authData.user.email,
-            nombre: authData.user.user_metadata?.nombre || 'Francisco Schottenfeld',
-            rol: 'gerencia' // Rol inicial
-          }
-        ])
-        .select()
-        .single();
-
-      if (insertError) throw insertError;
-      profileData = newProfile;
+      await supabase.auth.signOut();
+      throw new Error('Esta cuenta no se encuentra habilitada o fue dada de baja por el administrador. Contactá a Fernando Schottenfeld para solicitar acceso.');
     }
 
     return { data: profileData, error: null };
@@ -92,44 +78,120 @@ export const login = async (email, password) => {
 };
 
 /**
- * Registra un nuevo usuario en Supabase Auth y crea su perfil correspondiente
- * en la tabla perfiles_usuarios de manera coordinada.
+ * Función auxiliar para verificar si el usuario logueado es el dueño/administrador general (Fernando Schottenfeld)
  */
-export const signUp = async (email, password, nombre, rol) => {
+export const isUserOwner = (user) => {
+  if (!user) return false;
+  const email = (user.email || '').trim().toLowerCase();
+  const nombre = (user.nombre || '').trim().toLowerCase();
+  const id = user.id;
+  return (
+    email === 'fschottenfeld@gmail.com' ||
+    id === 'd0538204-dda9-4263-87ef-10efc9566bf4' ||
+    (nombre.includes('schottenfeld') && user.rol === 'gerencia')
+  );
+};
+
+/**
+ * El registro público de usuarios se encuentra deshabilitado para evitar accesos indebidos.
+ */
+export const signUp = async () => {
+  return { 
+    data: null, 
+    error: new Error('El registro público de usuarios se encuentra deshabilitado. Solo el administrador puede crear cuentas.') 
+  };
+};
+
+/**
+ * Obtiene la lista completa de perfiles de usuario registrados para el panel de administración
+ */
+export const getPerfilesUsuarios = async () => {
   try {
-    // 1. Crear en Supabase Auth
+    const { data, error } = await supabase
+      .from('perfiles_usuarios')
+      .select('*')
+      .order('created_at', { ascending: false });
+
+    if (error) throw error;
+    return { data: data || [], error: null };
+  } catch (error) {
+    console.error('Error en getPerfilesUsuarios:', error);
+    return { data: [], error };
+  }
+};
+
+/**
+ * Elimina un perfil de usuario por ID (revoca acceso inmediato al sistema)
+ */
+export const deletePerfilUsuario = async (userId) => {
+  try {
+    const { data, error } = await supabase
+      .from('perfiles_usuarios')
+      .delete()
+      .eq('id', userId)
+      .select();
+
+    if (error) throw error;
+    return { data, error: null };
+  } catch (error) {
+    console.error('Error en deletePerfilUsuario:', error);
+    return { data: null, error };
+  }
+};
+
+/**
+ * Actualiza el rol de un perfil de usuario
+ */
+export const updatePerfilUsuarioRol = async (userId, nuevoRol) => {
+  try {
+    const { data, error } = await supabase
+      .from('perfiles_usuarios')
+      .update({ rol: nuevoRol })
+      .eq('id', userId)
+      .select()
+      .single();
+
+    if (error) throw error;
+    return { data, error: null };
+  } catch (error) {
+    console.error('Error en updatePerfilUsuarioRol:', error);
+    return { data: null, error };
+  }
+};
+
+/**
+ * Crea un usuario autorizado manualmente desde el panel de Fernando Schottenfeld
+ */
+export const crearUsuarioAutorizado = async (email, password, nombre, rol) => {
+  try {
     const { data: authData, error: authError } = await supabase.auth.signUp({
       email,
       password,
       options: {
-        data: {
-          nombre: nombre
-        }
+        data: { nombre }
       }
     });
 
     if (authError) throw authError;
-    if (!authData.user) throw new Error('No se pudo crear el usuario en el servicio de autenticación.');
+    if (!authData.user) throw new Error('No se pudo generar el usuario en el servicio de autenticación.');
 
-    // 2. Crear registro en la tabla perfiles_usuarios vinculando el UUID
     const { data: profileData, error: profileError } = await supabase
       .from('perfiles_usuarios')
       .insert([
         {
           id: authData.user.id,
-          email: email,
-          nombre: nombre,
-          rol: rol
+          email,
+          nombre,
+          rol
         }
       ])
       .select()
       .single();
 
     if (profileError) throw profileError;
-
     return { data: profileData, error: null };
   } catch (error) {
-    console.error('Error en signUp:', error);
+    console.error('Error en crearUsuarioAutorizado:', error);
     return { data: null, error };
   }
 };
