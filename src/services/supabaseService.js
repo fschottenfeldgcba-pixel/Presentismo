@@ -1,4 +1,4 @@
-import { supabase } from '../lib/supabaseClient';
+import { supabase } from '../lib/supabaseClient.js';
 
 /**
  * Servicio de conexión con Supabase para el Sistema de Presentismo.
@@ -661,6 +661,17 @@ export const guardarAsistencia = async (reunionId, vecinoDni, asistioVal, extraD
       .single();
 
     if (error) throw error;
+
+    // Sincronizar en segundo plano con lndlm_volunteers si existe la reunión/fila LNDLM
+    try {
+      supabase
+        .from('lndlm_volunteers')
+        .update({ attended_training: Boolean(asistioVal), updated_at: new Date().toISOString() })
+        .eq('meeting_id', reunionId)
+        .eq('dni', String(vecinoDni || '').trim())
+        .then(() => {});
+    } catch {}
+
     return { data, error: null };
   } catch (error) {
     console.error('Error en guardarAsistencia:', error);

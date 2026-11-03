@@ -1,13 +1,13 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { 
   Printer, Search, RefreshCw, ChevronDown, Users, CheckCircle2, TrendingUp, Mic, BarChart3, Download, Filter, 
-  Map, MessageSquare, Info, Calendar, Target, Activity
+  Map, MessageSquare, Info, Calendar, Target, Activity, Sparkles, Lightbulb, AlertTriangle
 } from 'lucide-react';
 import { 
-  ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, Legend, PieChart, Pie, Cell, CartesianGrid, LineChart, Line 
+  ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, Legend, PieChart, Pie, Cell, CartesianGrid, LineChart, Line, ComposedChart, LabelList 
 } from 'recharts';
 import { TIPOS_REUNION } from '../data/mockData';
-import { fetchDashboardData, generateInsights, processAndNormalizeWord } from '../services/analyticsService';
+import { fetchDashboardData, generateInsights, generateAIChartInsights, processAndNormalizeWord } from '../services/analyticsService';
 import { getFuncionariosList } from '../services/supabaseService';
 import { autoDetectTags } from '../constants/oradorTags';
 
@@ -184,6 +184,8 @@ export default function CentralInformes({ user, onBack }) {
   const [semaforoViewMode, setSemaforoViewMode] = useState('matrix');
   const [selectedComunaChart, setSelectedComunaChart] = useState('TODAS');
   const [selectedMesChart, setSelectedMesChart] = useState('TODOS');
+  const [aiChartInsights, setAiChartInsights] = useState([]);
+  const [loadingAiInsights, setLoadingAiInsights] = useState(false);
 
   useEffect(() => {
     if (!document.getElementById('analytics-print-styles')) {
@@ -872,7 +874,7 @@ export default function CentralInformes({ user, onBack }) {
   const semaforoTemporalData = Object.values(semaforoTempMap)
     .sort((a, b) => a.name.localeCompare(b.name));
 
-  // 5. Gráfico Inscriptos y Asistentes por Comuna y por Mes
+  // 5. Gráfico Inscriptos, Asistentes y Reuniones por Comuna y por Mes
   const comunaMesMap = {};
 
   const processComunaMes = (vecinosList, reunionesList) => {
@@ -890,15 +892,21 @@ export default function CentralInformes({ user, onBack }) {
     (reunionesList || []).forEach(r => {
       if (!r.fecha) return;
       const c = r.comuna || 'Sin Comuna';
-      const date = new Date(r.fecha);
-      if (isNaN(date.getTime())) return;
-      const mesStr = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
+      let mesStr = '';
+      if (typeof r.fecha === 'string' && r.fecha.length >= 7) {
+        mesStr = r.fecha.slice(0, 7);
+      } else {
+        const date = new Date(r.fecha);
+        if (isNaN(date.getTime())) return;
+        mesStr = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
+      }
       const key = `${c}___${mesStr}`;
       if (!comunaMesMap[key]) {
-        comunaMesMap[key] = { comuna: c, mes: mesStr, inscriptos: 0, asistentes: 0 };
+        comunaMesMap[key] = { comuna: c, mes: mesStr, inscriptos: 0, asistentes: 0, reuniones: 0 };
       }
       comunaMesMap[key].inscriptos += (reunionesInsc[r.id] || 0);
       comunaMesMap[key].asistentes += (reunionesAsist[r.id] || 0);
+      comunaMesMap[key].reuniones += 1;
     });
   };
 
@@ -930,31 +938,75 @@ export default function CentralInformes({ user, onBack }) {
       .map(e => ({
         name: e.comuna,
         Inscriptos: e.inscriptos,
-        Asistentes: e.asistentes
+        Asistentes: e.asistentes,
+        Reuniones: e.reuniones || 0
       }))
       .sort((a, b) => b.Inscriptos - a.Inscriptos);
-      
-    if (comunaMesChartData.length > 8) {
-      comunaMesChartLayout = 'vertical';
-    }
   } else if (selectedComunaChart !== 'TODAS') {
     const filteredByComuna = rawComunaMesEntries.filter(e => e.comuna === selectedComunaChart);
     comunaMesChartData = filteredByComuna
       .map(e => ({
         name: e.mes,
         Inscriptos: e.inscriptos,
-        Asistentes: e.asistentes
+        Asistentes: e.asistentes,
+        Reuniones: e.reuniones || 0
       }))
       .sort((a, b) => a.name.localeCompare(b.name));
   } else {
     const mesAgg = {};
     rawComunaMesEntries.forEach(e => {
-      if (!mesAgg[e.mes]) mesAgg[e.mes] = { name: e.mes, Inscriptos: 0, Asistentes: 0 };
+      if (!mesAgg[e.mes]) mesAgg[e.mes] = { name: e.mes, Inscriptos: 0, Asistentes: 0, Reuniones: 0 };
       mesAgg[e.mes].Inscriptos += e.inscriptos;
       mesAgg[e.mes].Asistentes += e.asistentes;
+      mesAgg[e.mes].Reuniones += (e.reuniones || 0);
     });
     comunaMesChartData = Object.values(mesAgg).sort((a, b) => a.name.localeCompare(b.name));
   }
+
+  // Generación reactiva de insights de IA para el gráfico combinado de reuniones
+  useEffect(() => {
+    const hasData = comunaMesChartData && comunaMesChartData.some(d => (d.Inscriptos || 0) > 0 || (d.Asistentes || 0) > 0 || (d.Reuniones || 0) > 0);
+    if (hasData) {
+      let isMounted = true;
+      setLoadingAiInsights(true);
+      generateAIChartInsights(comunaMesChartData, {
+        comuna: selectedComunaChart,
+        mes: selectedMesChart
+      })
+        .then((res) => {
+          if (isMounted) {
+            setAiChartInsights(res);
+            setLoadingAiInsights(false);
+          }
+        })
+        .catch(() => {
+          if (isMounted) setLoadingAiInsights(false);
+        });
+
+      return () => {
+        isMounted = false;
+      };
+    } else {
+      setAiChartInsights([]);
+    }
+  }, [selectedComunaChart, selectedMesChart, rawComunaMesEntries.length]);
+
+  const handleManualRefreshAIInsights = async () => {
+    const hasData = comunaMesChartData && comunaMesChartData.some(d => (d.Inscriptos || 0) > 0 || (d.Asistentes || 0) > 0 || (d.Reuniones || 0) > 0);
+    if (!hasData) return;
+    setLoadingAiInsights(true);
+    try {
+      const res = await generateAIChartInsights(comunaMesChartData, {
+        comuna: selectedComunaChart,
+        mes: selectedMesChart
+      });
+      setAiChartInsights(res);
+    } catch (e) {
+      console.warn('Error refrescando insights con IA:', e);
+    } finally {
+      setLoadingAiInsights(false);
+    }
+  };
 
   const convTot = kpis?.actual?.convocatorias || 0;
   const asisTot = kpis?.actual?.asistencias || 0;
@@ -2289,12 +2341,18 @@ export default function CentralInformes({ user, onBack }) {
                </div>
             </div>
 
-            {/* 5. Gráfico Inscriptos y Asistentes por Comuna y por Mes */}
+            {/* 5. Gráfico Inscriptos, Asistentes y Reuniones por Comuna y por Mes (Doble eje Y) */}
             <div className="card" style={{ margin: 0, padding: '20px', gridColumn: '1 / -1' }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px', flexWrap: 'wrap', gap: '12px' }}>
-                <h4 style={{ margin: 0, color: '#0F172A', display: 'flex', alignItems: 'center', gap: '8px' }}>
-                 <BarChart3 size={18} style={{ color: 'var(--color-highlight)' }} /> Inscriptos y Asistentes por Comuna y por Mes
-                </h4>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '16px', flexWrap: 'wrap', gap: '12px' }}>
+                <div>
+                  <h4 style={{ margin: 0, color: '#0F172A', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                   <BarChart3 size={18} style={{ color: 'var(--color-highlight)' }} /> Inscriptos, Asistentes y Reuniones por Comuna y por Mes
+                  </h4>
+                  <div style={{ fontSize: '0.78rem', color: '#64748B', marginTop: '4px' }}>
+                    📊 Gráfico combinado de doble eje: <strong>Barras</strong> (Inscriptos y Asistentes) + <strong>Línea</strong> (Cantidad de Reuniones)
+                  </div>
+                </div>
+
                 <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
                     <span style={{ fontSize: '0.8rem', color: 'var(--color-text-muted)', fontWeight: '600' }}>Comuna:</span>
@@ -2328,31 +2386,242 @@ export default function CentralInformes({ user, onBack }) {
                 </div>
               </div>
 
-              <div style={{ width: '100%', height: Math.max(340, comunaMesChartData.length * 30) }}>
+              <div style={{ width: '100%', height: 400 }}>
                 <ResponsiveContainer>
-                  <BarChart 
+                  <ComposedChart 
                     data={comunaMesChartData} 
-                    layout={comunaMesChartLayout} 
-                    margin={{ left: comunaMesChartLayout === 'vertical' ? 50 : 10, right: 30, top: 10, bottom: 10 }}
+                    margin={{ left: 10, right: 25, top: 25, bottom: comunaMesChartData.length > 8 ? 25 : 10 }}
                   >
-                    <CartesianGrid strokeDasharray="3 3" vertical={comunaMesChartLayout !== 'vertical'} horizontal={comunaMesChartLayout === 'vertical'} />
-                    {comunaMesChartLayout === 'vertical' ? (
-                      <>
-                        <XAxis type="number" />
-                        <YAxis dataKey="name" type="category" tick={{ fontSize: 11 }} width={90} interval={0} />
-                      </>
-                    ) : (
-                      <>
-                        <XAxis dataKey="name" tick={{ fontSize: 11 }} />
-                        <YAxis />
-                      </>
-                    )}
-                    <Tooltip formatter={(val, name) => [`${val} personas`, name]} />
+                    <CartesianGrid strokeDasharray="3 3" vertical={false} />
+                    <XAxis 
+                      dataKey="name" 
+                      tick={{ fontSize: 11 }}
+                      interval={0}
+                      angle={comunaMesChartData.length > 8 ? -25 : 0}
+                      textAnchor={comunaMesChartData.length > 8 ? 'end' : 'middle'}
+                      height={comunaMesChartData.length > 8 ? 45 : 30}
+                    />
+                    
+                    {/* EJE Y IZQUIERDO: Personas (Inscriptos y Asistentes) */}
+                    <YAxis 
+                      yAxisId="left" 
+                      tick={{ fontSize: 11 }}
+                      domain={[0, (dataMax) => Math.ceil(dataMax * 1.18)]}
+                      label={{ value: 'Personas', angle: -90, position: 'insideLeft', style: { textAnchor: 'middle', fontSize: 11, fill: '#64748B' } }}
+                    />
+
+                    {/* EJE Y DERECHO: Cantidad de Reuniones */}
+                    <YAxis 
+                      yAxisId="right" 
+                      orientation="right" 
+                      allowDecimals={false}
+                      domain={[0, (dataMax) => Math.max(dataMax + 2, 4)]}
+                      tick={{ fontSize: 11, fill: '#D97706' }}
+                      label={{ value: 'Reuniones', angle: 90, position: 'insideRight', style: { textAnchor: 'middle', fontSize: 11, fill: '#D97706' } }}
+                    />
+
+                    <Tooltip 
+                      formatter={(val, name) => {
+                        if (name.toLowerCase().includes('reuniones')) {
+                          return [`${val} reuniones`, name];
+                        }
+                        return [`${val} personas`, name];
+                      }} 
+                    />
+
                     <Legend verticalAlign="bottom" align="center" wrapperStyle={{ paddingTop: '16px', fontSize: '0.85rem' }} />
-                    <Bar dataKey="Inscriptos" name="Inscriptos (Convocatoria)" fill="#3B82F6" radius={[4, 4, 0, 0]} />
-                    <Bar dataKey="Asistentes" name="Asistentes Efectivos" fill="#10B981" radius={[4, 4, 0, 0]} />
-                  </BarChart>
+
+                    <Bar yAxisId="left" dataKey="Inscriptos" name="Inscriptos (Convocatoria)" fill="#3B82F6" radius={[4, 4, 0, 0]} maxBarSize={45}>
+                      <LabelList 
+                        dataKey="Inscriptos" 
+                        position="top" 
+                        fill="#1E40AF" 
+                        fontSize={10} 
+                        fontWeight={700} 
+                        formatter={(v) => (v && v > 0 ? v : '')} 
+                      />
+                    </Bar>
+
+                    <Bar yAxisId="left" dataKey="Asistentes" name="Asistentes Efectivos" fill="#10B981" radius={[4, 4, 0, 0]} maxBarSize={45}>
+                      <LabelList 
+                        dataKey="Asistentes" 
+                        position="top" 
+                        fill="#065F46" 
+                        fontSize={10} 
+                        fontWeight={700} 
+                        formatter={(v) => (v && v > 0 ? v : '')} 
+                      />
+                    </Bar>
+                    
+                    <Line 
+                      yAxisId="right" 
+                      type="monotone" 
+                      dataKey="Reuniones" 
+                      name="Cantidad de Reuniones" 
+                      stroke="#F59E0B" 
+                      strokeWidth={3} 
+                      dot={{ r: 5, fill: '#F59E0B', stroke: '#FFFFFF', strokeWidth: 2 }}
+                      activeDot={{ r: 7 }}
+                    >
+                      <LabelList 
+                        dataKey="Reuniones" 
+                        position="top" 
+                        offset={10} 
+                        fill="#B45309" 
+                        fontSize={11} 
+                        fontWeight={800} 
+                        formatter={(v) => (v && v > 0 ? `${v} reun.` : '')} 
+                      />
+                    </Line>
+                  </ComposedChart>
                 </ResponsiveContainer>
+              </div>
+
+              {/* SUBSECCIÓN: INSIGHTS ESTRATÉGICOS CON IA (GEMINI) */}
+              <div style={{
+                marginTop: '24px',
+                padding: '16px 18px',
+                backgroundColor: '#F8FAFC',
+                border: '1.5px solid #E2E8F0',
+                borderRadius: '12px'
+              }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '14px', flexWrap: 'wrap', gap: '10px' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                    <div style={{
+                      width: '32px',
+                      height: '32px',
+                      borderRadius: '8px',
+                      background: 'linear-gradient(135deg, #6366F1, #8B5CF6)',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      color: '#FFFFFF',
+                      boxShadow: '0 2px 6px rgba(99, 102, 241, 0.3)'
+                    }}>
+                      <Sparkles size={18} />
+                    </div>
+                    <div>
+                      <div style={{ fontSize: '0.9rem', fontWeight: '800', color: '#0F172A', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                        <span>Insights Estratégicos con IA</span>
+                        <span style={{ fontSize: '0.65rem', backgroundColor: '#EDE9FE', color: '#7C3AED', padding: '2px 8px', borderRadius: '12px', fontWeight: '800' }}>
+                          Gemini AI
+                        </span>
+                      </div>
+                      <div style={{ fontSize: '0.73rem', color: '#64748B', marginTop: '1px' }}>
+                        Lectura analítica de la relación entre reuniones realizadas, convocatoria y asistencia efectiva
+                      </div>
+                    </div>
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={handleManualRefreshAIInsights}
+                    disabled={loadingAiInsights}
+                    className="btn btn-sm"
+                    style={{
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: '6px',
+                      fontSize: '0.76rem',
+                      fontWeight: '700',
+                      backgroundColor: '#FFFFFF',
+                      border: '1px solid #CBD5E1',
+                      color: '#334155',
+                      borderRadius: '6px',
+                      padding: '6px 12px',
+                      cursor: loadingAiInsights ? 'not-allowed' : 'pointer',
+                      boxShadow: '0 1px 2px rgba(0,0,0,0.05)'
+                    }}
+                  >
+                    <RefreshCw size={13} className={loadingAiInsights ? 'animate-spin' : ''} />
+                    {loadingAiInsights ? 'Analizando con IA...' : 'Actualizar Insights'}
+                  </button>
+                </div>
+
+                {loadingAiInsights ? (
+                  <div style={{ textAlign: 'center', padding: '28px 16px', color: '#64748B' }}>
+                    <div style={{ width: '30px', height: '30px', border: '3px solid #E2E8F0', borderTopColor: '#8B5CF6', borderRadius: '50%', animation: 'spin 0.8s linear infinite', margin: '0 auto 10px auto' }} />
+                    <span style={{ fontSize: '0.82rem', fontWeight: '600' }}>
+                      Generando lectura ejecutiva y patrones con Inteligencia Artificial...
+                    </span>
+                  </div>
+                ) : aiChartInsights.length > 0 ? (
+                  <div style={{
+                    display: 'grid',
+                    gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))',
+                    gap: '12px'
+                  }}>
+                    {aiChartInsights.map((ins, idx) => {
+                      const isAlert = ins.tipo === 'alerta';
+                      const isPos = ins.tipo === 'positivo';
+                      const borderCol = isPos ? '#10B981' : (isAlert ? '#EF4444' : '#3B82F6');
+                      const bgCol = isPos ? '#F0FDF4' : (isAlert ? '#FEF2F2' : '#EFF6FF');
+                      const badgeCol = isPos ? '#047857' : (isAlert ? '#B91C1C' : '#1D4ED8');
+                      const badgeBg = isPos ? '#DCFCE7' : (isAlert ? '#FEE2E2' : '#DBEAFE');
+                      const badgeText = isPos ? 'Impacto Positivo' : (isAlert ? 'Alerta / Brecha' : 'Métrica Clave');
+
+                      return (
+                        <div
+                          key={idx}
+                          style={{
+                            backgroundColor: bgCol,
+                            borderLeft: `4px solid ${borderCol}`,
+                            borderTop: '1px solid rgba(0,0,0,0.06)',
+                            borderRight: '1px solid rgba(0,0,0,0.06)',
+                            borderBottom: '1px solid rgba(0,0,0,0.06)',
+                            borderRadius: '8px',
+                            padding: '14px 16px',
+                            display: 'flex',
+                            flexDirection: 'column',
+                            justifyContent: 'space-between',
+                            gap: '6px',
+                            boxShadow: '0 1px 3px rgba(0,0,0,0.03)'
+                          }}
+                        >
+                          <div>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '8px', marginBottom: '4px' }}>
+                              <div style={{ fontSize: '0.82rem', fontWeight: '800', color: '#1E293B', lineHeight: '1.25' }}>
+                                {ins.titulo}
+                              </div>
+                              <span style={{
+                                fontSize: '0.62rem',
+                                fontWeight: '700',
+                                color: badgeCol,
+                                backgroundColor: badgeBg,
+                                padding: '2px 6px',
+                                borderRadius: '4px',
+                                whiteSpace: 'nowrap'
+                              }}>
+                                {badgeText}
+                              </span>
+                            </div>
+
+                            {ins.kpi && (
+                              <div style={{
+                                fontSize: '1.5rem',
+                                fontWeight: '900',
+                                color: borderCol,
+                                lineHeight: '1.2',
+                                margin: '4px 0 6px 0',
+                                letterSpacing: '-0.5px'
+                              }}>
+                                {ins.kpi}
+                              </div>
+                            )}
+
+                            <div style={{ fontSize: '0.78rem', color: '#334155', lineHeight: '1.45' }}>
+                              {ins.descripcion}
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                ) : (
+                  <div style={{ textAlign: 'center', padding: '16px', color: '#64748B', fontSize: '0.8rem' }}>
+                    Hacé clic en <strong>Actualizar Insights</strong> para generar el análisis analítico de esta serie.
+                  </div>
+                )}
               </div>
             </div>
 

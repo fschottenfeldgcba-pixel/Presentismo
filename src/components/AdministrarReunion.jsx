@@ -3,6 +3,7 @@ import { ArrowLeft, Save, Shield, User, FileText, Check, AlertCircle, Mic, Refre
 import { TIPOS_REUNION } from '../data/mockData';
 import { updateReunion, getOradores, updateOradorDetails, deleteReunionCompleta, cachedQuery, getEquipoCercania, getAgentesTerritorio, DEFAULT_EQUIPO_CERCANIA, DEFAULT_AGENTES_TERRITORIO } from '../services/supabaseService';
 import { supabase } from '../lib/supabaseClient';
+import { isLndlmMeeting } from '../services/lndlmService';
 
 const COMUNAS = [
   "Comuna 1",
@@ -76,7 +77,7 @@ const BARRIOS = [
   "Villa Urquiza"
 ];
 
-export default function AdministrarReunion({ reunion, onBack, onSaveSuccess }) {
+export default function AdministrarReunion({ reunion, onOpenLndlm, onBack, onSaveSuccess }) {
   // Formulario general
   const [nombre, setNombre] = useState(reunion?.nombre || '');
   const [funcionario, setFuncionario] = useState(reunion?.funcionario || '');
@@ -88,6 +89,7 @@ export default function AdministrarReunion({ reunion, onBack, onSaveSuccess }) {
   const [barrio, setBarrio] = useState(reunion?.barrio || 'Convocatoria Comunal');
   const [arreglo1, setArreglo1] = useState(reunion?.arreglo_1 || '');
   const [tema, setTema] = useState(reunion?.tema || '');
+  const [isLndlmEvent, setIsLndlmEvent] = useState(() => isLndlmMeeting(reunion));
 
   // Estados para Cupo en Experiencias BA y Voluntariados
   const [modalidadCupo, setModalidadCupo] = useState('unico'); // 'unico' | 'doble'
@@ -161,9 +163,13 @@ export default function AdministrarReunion({ reunion, onBack, onSaveSuccess }) {
           if (cfg?.cupoGeneral !== undefined) setCupoGeneral(cfg.cupoGeneral);
           if (cfg?.cupoTM !== undefined) setCupoTM(cfg.cupoTM);
           if (cfg?.cupoTT !== undefined) setCupoTT(cfg.cupoTT);
+          if (cfg?.is_lndlm_event !== undefined) setIsLndlmEvent(Boolean(cfg.is_lndlm_event));
         } catch (e) {
           console.warn('Error al parsear config_uno_a_uno:', e);
         }
+      }
+      if (isLndlmMeeting(reunion)) {
+        setIsLndlmEvent(true);
       }
     }
   }, [reunion, equipoCercaniaList]);
@@ -304,6 +310,26 @@ export default function AdministrarReunion({ reunion, onBack, onSaveSuccess }) {
       return;
     }
 
+    let existingCfg = {};
+    try {
+      if (reunion?.config_uno_a_uno) {
+        existingCfg = typeof reunion.config_uno_a_uno === 'string'
+          ? JSON.parse(reunion.config_uno_a_uno)
+          : reunion.config_uno_a_uno;
+      }
+    } catch (e) {}
+
+    const nextConfigUnoAUno = (tipoReunion === TIPOS_REUNION.EXPERIENCIAS_BA || tipoReunion === TIPOS_REUNION.VOLUNTARIADOS || isLndlmEvent)
+      ? {
+          ...existingCfg,
+          modalidadCupo,
+          cupoGeneral: Number(cupoGeneral) || 0,
+          cupoTM: Number(cupoTM) || 0,
+          cupoTT: Number(cupoTT) || 0,
+          is_lndlm_event: Boolean(isLndlmEvent)
+        }
+      : (reunion?.config_uno_a_uno || null);
+
     setSavingReunion(true);
     const { error } = await updateReunion(reunion.id, {
       nombre: nombre.trim(),
@@ -320,12 +346,7 @@ export default function AdministrarReunion({ reunion, onBack, onSaveSuccess }) {
       responsable_cercania_id: selectedEquipoCercania.length > 0 ? selectedEquipoCercania[0].id : null,
       integrantes_asignados: selectedIntegrantes.length > 0 ? selectedIntegrantes.map(a => a.nombre_completo) : null,
       observaciones_preparacion: observacionesPreparacion.trim() || null,
-      config_uno_a_uno: (tipoReunion === TIPOS_REUNION.EXPERIENCIAS_BA || tipoReunion === TIPOS_REUNION.VOLUNTARIADOS) ? {
-        modalidadCupo,
-        cupoGeneral: Number(cupoGeneral) || 0,
-        cupoTM: Number(cupoTM) || 0,
-        cupoTT: Number(cupoTT) || 0
-      } : (reunion?.config_uno_a_uno || null)
+      config_uno_a_uno: nextConfigUnoAUno
     });
     setSavingReunion(false);
 
@@ -472,11 +493,33 @@ export default function AdministrarReunion({ reunion, onBack, onSaveSuccess }) {
 
   return (
     <div className="container">
-      {/* Botón Volver */}
-      <div style={{ marginBottom: '1.5rem' }}>
+      {/* Botón Volver y Acceso Condicional LNDLM */}
+      <div style={{ marginBottom: '1.5rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '0.75rem' }}>
         <button className="btn btn-secondary btn-sm" onClick={onBack}>
           <ArrowLeft size={16} /> Volver al Tablero
         </button>
+
+        {(isLndlmEvent || isLndlmMeeting({ ...reunion, nombre, tipo_reunion: tipoReunion, tema })) && (
+          <button
+            type="button"
+            onClick={() => onOpenLndlm && onOpenLndlm(reunion)}
+            className="btn"
+            style={{
+              background: 'linear-gradient(135deg, #F59E0B 0%, #D97706 100%)',
+              color: '#0F172A',
+              border: '1px solid #B45309',
+              fontWeight: 800,
+              fontSize: '0.88rem',
+              padding: '0.55rem 1.15rem',
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: '0.5rem',
+              boxShadow: '0 4px 12px rgba(245, 158, 11, 0.35)'
+            }}
+          >
+            🏛️ Asignación Espacios Culturales (LNDLM)
+          </button>
+        )}
       </div>
 
       <div style={{ position: 'relative' }}>
@@ -661,6 +704,19 @@ export default function AdministrarReunion({ reunion, onBack, onSaveSuccess }) {
                             required
                           />
                         </div>
+                      </div>
+                    )}
+
+                    {tipoReunion === TIPOS_REUNION.VOLUNTARIADOS && (
+                      <div style={{ marginTop: '0.85rem', paddingTop: '0.85rem', borderTop: '1px solid #BBF7D0' }}>
+                        <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer', fontSize: '0.84rem', fontWeight: 700, color: '#0F172A' }}>
+                          <input
+                            type="checkbox"
+                            checked={isLndlmEvent}
+                            onChange={e => setIsLndlmEvent(e.target.checked)}
+                          />
+                          🏛️ Evento Especial: La Noche de los Museos (LNDLM) - Habilitar Asignación de Espacios Culturales
+                        </label>
                       </div>
                     )}
                   </div>

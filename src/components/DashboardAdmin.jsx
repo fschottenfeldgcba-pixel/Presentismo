@@ -24,6 +24,7 @@ import GestionUsuarios from './GestionUsuarios';
 import { isUserOwner } from '../services/supabaseService';
 import { OradorTagsDisplay } from './OradorTagSelector';
 import { autoDetectTags } from '../constants/oradorTags';
+import { isLndlmMeeting, normalizeNeighborhoodCABA, getDisplayNeighborhoodCABA, extractComunaNumber, saveLndlmAssignments } from '../services/lndlmService';
 
 const COMUNAS = [
   "Comuna 1",
@@ -102,6 +103,7 @@ export default function DashboardAdmin({
   onSelectReunion, 
   onManageReunion, 
   onModerarReunion, 
+  onOpenLndlm,
   onCreateMeetingClick, 
   activeDashboardTab, 
   setActiveDashboardTab,
@@ -869,7 +871,36 @@ ${obsStr}`;
                       )}
                     </td>
                     <td style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
-                      <div style={{ display: 'inline-flex', gap: '3px' }}>
+                      <div style={{ display: 'inline-flex', gap: '3px', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+                        {isLndlmMeeting(r) && (
+                          <a
+                            href={`?view=tablero_lndlm&reunion_id=${r.id}`}
+                            onClick={(e) => {
+                              if (!e.ctrlKey && !e.metaKey && onOpenLndlm) {
+                                e.preventDefault();
+                                onOpenLndlm(r);
+                              }
+                            }}
+                            className="btn btn-sm"
+                            title="Abrir Tablero de Asignación de Voluntarios a Espacios Culturales (La Noche de los Museos)"
+                            style={{
+                              padding: '4px 10px',
+                              display: 'inline-flex',
+                              alignItems: 'center',
+                              gap: '4px',
+                              fontSize: '0.74rem',
+                              background: 'linear-gradient(135deg, #F59E0B 0%, #D97706 100%)',
+                              color: '#0F172A',
+                              border: '1px solid #B45309',
+                              fontWeight: '800',
+                              borderRadius: '6px',
+                              textDecoration: 'none',
+                              boxShadow: '0 2px 8px rgba(245, 158, 11, 0.35)'
+                            }}
+                          >
+                            🏛️ Asignación Espacios Culturales (LNDLM)
+                          </a>
+                        )}
                         {isCercaniaOrGerencia && (
                           <a 
                             href={`?view=administrar_reunion&reunion_id=${r.id}`}
@@ -2515,6 +2546,9 @@ ${obsStr}`;
         const idxInvitadoPor = findIndex(['invitado por', 'invitado', 'convocador']);
         const idxTemaPrevio = findIndex(['tema', 'reclamo', 'consulta', 'observacion']);
         const idxAccesibilidad = findIndex(['accesibilidad', 'acceso', 'discapacidad']);
+        const idxCuil = findIndex(['cuitcuil', 'cuit cuil', 'cuil', 'cuit']);
+        const idxBirthDate = findIndex(['fecha_de_nacimiento', 'fecha de nacimiento', 'nacimiento']);
+        const idxAsistio = findIndex(['asistio', 'asistencia', 'presente', 'attended']);
 
         const parsedData = [];
         const seenDnis = {}; // { [dni]: { nombre, apellido, count } }
@@ -2561,18 +2595,31 @@ ${obsStr}`;
             tempDniCount++;
           }
 
+          const rawBarrio = getValue(idxBarrio) || (selectedReunionInscriptos.barrio !== 'Convocatoria Comunal' ? selectedReunionInscriptos.barrio : null);
+          const normBarrioLndlm = rawBarrio ? normalizeNeighborhoodCABA(rawBarrio) : '';
+          const displayBarrio = normBarrioLndlm ? getDisplayNeighborhoodCABA(normBarrioLndlm) : rawBarrio;
+          const rawComuna = getValue(idxComuna) || selectedReunionInscriptos.comuna || null;
+          const autoComunaNum = extractComunaNumber(rawComuna, normBarrioLndlm);
+          const rawAsistio = (getValue(idxAsistio) || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+          const asistioFlag = ['true', 'si', '1', 'x', 'presente', 'asistio', 'yes'].includes(rawAsistio);
+
           parsedData.push({
             dni,
             nombre,
             apellido,
             celular: getValue(idxCelular),
             email: getValue(idxEmail),
-            barrio: getValue(idxBarrio) || (selectedReunionInscriptos.barrio !== 'Convocatoria Comunal' ? selectedReunionInscriptos.barrio : null),
-            comuna: getValue(idxComuna) || selectedReunionInscriptos.comuna || null,
+            barrio: displayBarrio,
+            barrio_normalizado: normBarrioLndlm,
+            comuna: autoComunaNum ? `Comuna ${autoComunaNum}` : rawComuna,
+            comuna_num: autoComunaNum,
             como_se_entero: getValue(idxComoEntero),
             invitado_por: getValue(idxInvitadoPor),
             tema_previo: getValue(idxTemaPrevio),
-            necesita_accesibilidad: getValue(idxAccesibilidad)
+            necesita_accesibilidad: getValue(idxAccesibilidad),
+            cuil: getValue(idxCuil),
+            birth_date: getValue(idxBirthDate),
+            asistio: asistioFlag
           });
         }
 
@@ -2617,16 +2664,34 @@ ${obsStr}`;
       const asistenciasPayload = modalImportedNeighbors.map(vecino => ({
         reunion_id: selectedReunionInscriptos.id,
         vecino_id: vecino.dni,
-        asistio: false,
+        asistio: Boolean(vecino.asistio),
         estado_convocatoria: 'inscripto',
         como_se_entero: normalizeCanalDifusion(vecino.como_se_entero),
         invitado_por: vecino.invitado_por || null,
-        tema_previo: vecino.tema_previo || null,
+        tema_previo: vecino.tema_previo || (vecino.cuil ? `CUIL: ${vecino.cuil}${vecino.birth_date ? ` | Nac: ${vecino.birth_date}` : ''}` : null),
         necesita_accesibilidad: vecino.necesita_accesibilidad || null
       }));
 
       await bulkUpsertVecinos(vecinosPayload);
       await bulkGuardarAsistencias(asistenciasPayload);
+
+      if (isLndlmMeeting(selectedReunionInscriptos)) {
+        const lndlmVols = modalImportedNeighbors.map(v => ({
+          dni: v.dni,
+          first_name: v.nombre,
+          last_name: v.apellido,
+          cuil: v.cuil || '',
+          birth_date: v.birth_date || '',
+          comuna: v.comuna_num || extractComunaNumber(v.comuna, v.barrio_normalizado),
+          neighborhood: v.barrio_normalizado || normalizeNeighborhoodCABA(v.barrio),
+          email: v.email || '',
+          phone: v.celular || '',
+          channel: v.como_se_entero || '',
+          attended_training: Boolean(v.asistio),
+          status: v.asistio ? 'PRESENTE_CAPACITACION' : 'INSCRIPTO'
+        }));
+        await saveLndlmAssignments(selectedReunionInscriptos.id, lndlmVols);
+      }
 
       alert(`¡${modalImportedNeighbors.length} vecinos importados e inscriptos con éxito!`);
       
@@ -4455,7 +4520,35 @@ ${obsStr}`;
                 <Users size={20} style={{ color: 'var(--color-highlight)' }} />
                 Inscriptos: {selectedReunionInscriptos.nombre}
               </h3>
-              <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+              <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
+                {isLndlmMeeting(selectedReunionInscriptos) && (
+                  <a
+                    href={`?view=tablero_lndlm&reunion_id=${selectedReunionInscriptos.id}`}
+                    onClick={(e) => {
+                      if (!e.ctrlKey && !e.metaKey && onOpenLndlm) {
+                        e.preventDefault();
+                        const targetReunion = selectedReunionInscriptos;
+                        setShowInscriptosModal(false);
+                        onOpenLndlm(targetReunion);
+                      }
+                    }}
+                    className="btn btn-sm"
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '5px',
+                      background: 'linear-gradient(135deg, #F59E0B 0%, #D97706 100%)',
+                      color: '#0F172A',
+                      border: '1px solid #B45309',
+                      fontWeight: '800',
+                      textDecoration: 'none',
+                      borderRadius: '6px',
+                      boxShadow: '0 2px 8px rgba(245, 158, 11, 0.35)'
+                    }}
+                  >
+                    🏛️ Asignación Espacios Culturales (LNDLM)
+                  </a>
+                )}
                 {selectedReunionInscriptos.tipo_reunion === 'Uno a Uno' && (
                   <>
                     <button 

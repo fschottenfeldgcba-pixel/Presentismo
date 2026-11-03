@@ -366,3 +366,203 @@ export const generateInsights = (kpisActual, kpisAnterior, periodos) => {
 
   return insights;
 };
+
+/**
+ * Fallback heurístico inteligente cuando no hay conexión a la API de Gemini
+ * enfocado estrictamente en datos concretos: promedios, ausentes y comparativas.
+ */
+function generateHeuristicChartInsights(chartData, filterContext = {}) {
+  if (!chartData || chartData.length === 0) return [];
+
+  const totalInsc = chartData.reduce((acc, d) => acc + (d.Inscriptos || 0), 0);
+  const totalAsis = chartData.reduce((acc, d) => acc + (d.Asistentes || 0), 0);
+  const totalReun = chartData.reduce((acc, d) => acc + (d.Reuniones || 0), 0);
+
+  if (totalInsc === 0 && totalAsis === 0 && totalReun === 0) return [];
+
+  const totalAusentes = Math.max(0, totalInsc - totalAsis);
+  const promAsisXReun = totalReun > 0 ? (totalAsis / totalReun).toFixed(1) : '0';
+  const promAusentesXReun = totalReun > 0 ? (totalAusentes / totalReun).toFixed(1) : '0';
+  const tasaAusentismo = totalInsc > 0 ? ((totalAusentes / totalInsc) * 100).toFixed(1) : '0';
+  const tasaAsistencia = totalInsc > 0 ? ((totalAsis / totalInsc) * 100).toFixed(1) : '0';
+
+  const insights = [];
+
+  // 1. Promedio de Asistentes
+  insights.push({
+    kpi: `${promAsisXReun}`,
+    titulo: '👥 Promedio de Asistentes',
+    descripcion: `Media de ${promAsisXReun} vecinos por reunión (${totalAsis.toLocaleString('es-AR')} asistentes en ${totalReun} encuentros realizados). Tasa de presencia efectiva del ${tasaAsistencia}%.`,
+    tipo: Number(promAsisXReun) >= 10 ? 'positivo' : 'alerta'
+  });
+
+  // 2. Promedio y Tasa de Ausentes
+  insights.push({
+    kpi: `${tasaAusentismo}%`,
+    titulo: '🚪 Tasa de Ausentismo (No-Show)',
+    descripcion: `${totalAusentes.toLocaleString('es-AR')} inscriptos no asistieron (${promAusentesXReun} ausentes promedio por encuentro). De cada 100 personas inscriptas, solo asisten ${Math.round(Number(tasaAsistencia))}.`,
+    tipo: 'alerta'
+  });
+
+  // 3. Comparación Último Mes (o Período) vs Promedio
+  if (chartData.length >= 2) {
+    const ultimoPeriodo = chartData[chartData.length - 1];
+    const ultAsis = ultimoPeriodo.Asistentes || 0;
+    const ultReun = ultimoPeriodo.Reuniones || 0;
+    const ultProm = ultReun > 0 ? ultAsis / ultReun : 0;
+    const promNum = Number(promAsisXReun);
+
+    let diffPercent = 0;
+    if (promNum > 0) {
+      diffPercent = Math.round(((ultProm - promNum) / promNum) * 100);
+    }
+    const diffSign = diffPercent > 0 ? `+${diffPercent}%` : `${diffPercent}%`;
+
+    insights.push({
+      kpi: diffSign,
+      titulo: `📉 ${ultimoPeriodo.name} vs Promedio General`,
+      descripcion: `El último período (${ultimoPeriodo.name}) registró ${ultProm.toFixed(1)} asistentes/reunión (${ultAsis} asistentes en ${ultReun} encuentros), un ${Math.abs(diffPercent)}% ${diffPercent >= 0 ? 'por encima' : 'por debajo'} de la media histórica (${promAsisXReun}).`,
+      tipo: diffPercent >= 0 ? 'positivo' : 'alerta'
+    });
+  }
+
+  // 4. Período Récord de Asistencia vs Pico de Convocatoria
+  const sortedByAsis = [...chartData].sort((a, b) => (b.Asistentes || 0) - (a.Asistentes || 0));
+  const sortedByInsc = [...chartData].sort((a, b) => (b.Inscriptos || 0) - (a.Inscriptos || 0));
+  const recordAsis = sortedByAsis[0];
+  const recordInsc = sortedByInsc[0];
+
+  if (recordAsis) {
+    const promRecord = recordAsis.Reuniones > 0 ? (recordAsis.Asistentes / recordAsis.Reuniones).toFixed(1) : recordAsis.Asistentes;
+    insights.push({
+      kpi: `${recordAsis.Asistentes} asis.`,
+      titulo: `🏆 Récord de Asistencia (${recordAsis.name})`,
+      descripcion: `Pico de asistencia en ${recordAsis.name} con ${recordAsis.Asistentes} asistentes en ${recordAsis.Reuniones || 0} reuniones (${promRecord} por encuentro). El mes con mayor volumen de inscriptos fue ${recordInsc?.name || recordAsis.name} (${(recordInsc?.Inscriptos || 0).toLocaleString('es-AR')} inscriptos).`,
+      tipo: 'positivo'
+    });
+  }
+
+  return insights;
+}
+
+/**
+ * Genera insights cuantitativos de alto impacto integrados con Inteligencia Artificial (Gemini)
+ * para el gráfico combinado de Inscriptos, Asistentes y Reuniones.
+ * Enfocado 100% en datos y cifras: promedio de asistentes, ausentes y comparativa del último mes vs promedio.
+ */
+export async function generateAIChartInsights(chartData, filterContext = {}) {
+  if (!chartData || chartData.length === 0) return [];
+
+  const totalInsc = chartData.reduce((acc, d) => acc + (d.Inscriptos || 0), 0);
+  const totalAsis = chartData.reduce((acc, d) => acc + (d.Asistentes || 0), 0);
+  const totalReun = chartData.reduce((acc, d) => acc + (d.Reuniones || 0), 0);
+
+  // Si no hay datos reales en la serie, no llamar a Gemini
+  if (totalInsc === 0 && totalAsis === 0 && totalReun === 0) return [];
+
+  const totalAusentes = Math.max(0, totalInsc - totalAsis);
+  const promAsisXReun = totalReun > 0 ? (totalAsis / totalReun).toFixed(1) : '0';
+  const promAusentesXReun = totalReun > 0 ? (totalAusentes / totalReun).toFixed(1) : '0';
+  const tasaAusentismo = totalInsc > 0 ? ((totalAusentes / totalInsc) * 100).toFixed(1) : '0';
+  const tasaAsistencia = totalInsc > 0 ? ((totalAsis / totalInsc) * 100).toFixed(1) : '0';
+
+  const sortedByAsis = [...chartData].sort((a, b) => (b.Asistentes || 0) - (a.Asistentes || 0));
+  const sortedByInsc = [...chartData].sort((a, b) => (b.Inscriptos || 0) - (a.Inscriptos || 0));
+  const recordAsis = sortedByAsis[0];
+  const recordInsc = sortedByInsc[0];
+
+  let ultimoCompText = '';
+  if (chartData.length >= 2) {
+    const ult = chartData[chartData.length - 1];
+    const ultProm = ult.Reuniones > 0 ? (ult.Asistentes / ult.Reuniones).toFixed(1) : '0';
+    const promNum = Number(promAsisXReun);
+    let diff = 0;
+    if (promNum > 0) diff = Math.round(((Number(ultProm) - promNum) / promNum) * 100);
+    ultimoCompText = `- Último período (${ult.name}): ${ult.Asistentes} asistentes en ${ult.Reuniones} reuniones (${ultProm} asis/reunión). Variación vs promedio general: ${diff > 0 ? '+' : ''}${diff}%.`;
+  }
+
+  const apiKey = (typeof import.meta !== 'undefined' && import.meta.env?.VITE_GEMINI_API_KEY) || '';
+
+  if (apiKey) {
+    try {
+      const prompt = `Actuá como un analista de datos cuantitativo sénior del Gobierno de la Ciudad de Buenos Aires (GCBA).
+Tu tarea es analizar la serie de datos del gráfico de Reuniones, Inscriptos y Asistentes, y generar 4 tarjetas de INSIGHTS CONCRETOS CENTRADOS 100% EN DATOS Y CIFRAS.
+PROHIBIDO: No uses frases genéricas, ni relleno corporativo, ni consejos obvios ("se recomienda mejorar", "optimizar canales").
+OBLIGATORIO: Enfocate pura y exclusivamente en los números: promedios, tasas de ausentismo, comparación del último período vs el promedio, y récords.
+
+DATOS AGREGADOS PRECALCULADOS:
+- Total Inscriptos: ${totalInsc.toLocaleString('es-AR')}
+- Total Asistentes Efectivos: ${totalAsis.toLocaleString('es-AR')}
+- Total Ausentes: ${totalAusentes.toLocaleString('es-AR')}
+- Total Reuniones Realizadas: ${totalReun}
+- Promedio de Asistentes por Reunión: ${promAsisXReun}
+- Promedio de Ausentes por Reunión: ${promAusentesXReun}
+- Tasa de Ausentismo (No-Show): ${tasaAusentismo}%
+- Tasa de Asistencia Efectiva: ${tasaAsistencia}%
+${ultimoCompText}
+- Período Récord de Asistencia: ${recordAsis?.name} (${recordAsis?.Asistentes} asistentes en ${recordAsis?.Reuniones} reuniones)
+- Período Récord de Convocatoria (Inscriptos): ${recordInsc?.name} (${recordInsc?.Inscriptos} inscriptos)
+
+SERIE HISTÓRICA COMPLETA:
+${JSON.stringify(chartData, null, 2)}
+
+Devolver exactamente un array JSON con 4 objetos correspondientes a:
+1. Promedio de Asistentes por Reunión.
+2. Promedio y Tasa de Ausentes (No-Show).
+3. Comparación del Último Mes/Período vs Promedio General.
+4. Período Récord de Asistencia y Convocatoria.
+
+Cada objeto debe tener estas claves exactas:
+- "kpi": String contundente con el valor numérico principal (ej: "10.2", "94.1%", "-31.4%", "Julio 2026").
+- "titulo": Título breve con emoji (ej: "👥 Promedio de Asistentes", "🚪 Tasa de Ausentismo", "📉 Último Mes vs Promedio", "🏆 Mes Récord de Asistencia").
+- "descripcion": 1 a 2 oraciones directas con las cifras exactas y comparativas.
+- "tipo": "positivo" | "alerta" | "estrategia"
+
+Respondé ÚNICAMENTE con el array JSON válido, sin bloques de código markdown ni texto adicional.`;
+
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 12000);
+
+      const modelsToTry = [
+        'gemini-3.5-flash-lite',
+        'gemini-flash-latest',
+        'gemini-3-flash-preview'
+      ];
+
+      for (const model of modelsToTry) {
+        try {
+          const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`, {
+            method: 'POST',
+            signal: controller.signal,
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              contents: [{ parts: [{ text: prompt }] }],
+              generationConfig: { temperature: 0.2, maxOutputTokens: 2048 }
+            })
+          });
+
+          if (res.ok) {
+            const data = await res.json();
+            const rawText = data.candidates?.[0]?.content?.parts?.[0]?.text;
+            if (rawText) {
+              clearTimeout(timeoutId);
+              const cleanJson = rawText.replace(/```json/gi, '').replace(/```/g, '').trim();
+              const parsed = JSON.parse(cleanJson);
+              if (Array.isArray(parsed) && parsed.length > 0) {
+                return parsed;
+              }
+            }
+          }
+        } catch (mErr) {
+          // continuar con siguiente modelo
+        }
+      }
+      clearTimeout(timeoutId);
+    } catch (err) {
+      console.warn('Error llamando a Gemini para insights:', err);
+    }
+  }
+
+  // Fallback heurístico con cálculos matemáticos exactos
+  return generateHeuristicChartInsights(chartData, filterContext);
+}

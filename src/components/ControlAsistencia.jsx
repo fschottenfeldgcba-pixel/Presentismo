@@ -24,6 +24,7 @@ import Cronometro1a1 from './Cronometro1a1';
 import PanelSolicitudesPapeleta from './PanelSolicitudesPapeleta';
 import { getUrlWhatsAppPapeleta, getSolicitudesPorReunion, clasificarUbicacion } from '../services/solicitudesService';
 import { classifyTopicHeuristic, classifyTopicWithAI, isBaistrocchiMeeting, getBadgeDisplay, PIN_CONFIGS, BAISTROCCHI_PIN_OPTIONS, getBadgesFromTags } from '../services/topicClassificationService';
+import { isLndlmMeeting } from '../services/lndlmService';
 import * as XLSX from 'xlsx';
 
 const COMUNAS = [
@@ -181,6 +182,7 @@ export default function ControlAsistencia({ reunion, onBack, mode = 'asistencia'
   const [oradorSearchResults, setOradorSearchResults] = useState([]);
   const [oradorFilterText, setOradorFilterText] = useState('');
   const [modalMinutaState, setModalMinutaState] = useState({});
+  const [minutaTab, setMinutaTab] = useState('pendientes'); // 'pendientes' | 'guardadas' | 'todos'
   // Mapa de solicitudes de Papeleta Digital indexadas por DNI
   const [solicitudesPapeletaMap, setSolicitudesPapeletaMap] = useState({});
   // ID del orador cuyo selector de tags está expandido para corrección manual
@@ -450,6 +452,13 @@ export default function ControlAsistencia({ reunion, onBack, mode = 'asistencia'
       setOradoresModalList(prev => prev.map(o =>
         o.id === oradorId ? { ...o, tema_efectivo: newMinutaText, tags: newTags } : o
       ));
+
+      // Limpiar borrador local del orador guardado
+      setModalMinutaState(prev => {
+        const next = { ...prev };
+        delete next[oradorId];
+        return next;
+      });
 
       // 4. Persistir tags en Supabase
       if (newTags.length > 0) {
@@ -757,9 +766,14 @@ export default function ControlAsistencia({ reunion, onBack, mode = 'asistencia'
           
           setOradoresModalList(prev => {
             return sorted.map(newItem => {
+              const prevItem = prev.find(p => p.id === newItem.id);
               // Si este item se está editando en este preciso momento (enfocado), no pisar su tema_efectivo
               if (editingOradorId === newItem.id) {
                 return { ...newItem, tema_efectivo: editingMinutaText };
+              }
+              // Si localmente ya se registró tema_efectivo y la respuesta de la DB vino vacía o demorada, preservar
+              if (prevItem && prevItem.tema_efectivo && !newItem.tema_efectivo) {
+                return { ...newItem, tema_efectivo: prevItem.tema_efectivo, tags: prevItem.tags || newItem.tags };
               }
               return newItem;
             });
@@ -1284,7 +1298,19 @@ export default function ControlAsistencia({ reunion, onBack, mode = 'asistencia'
 
   // Renderizar contenido de Toma de Temas / Minuta a pantalla completa si está activo
   if (currentView === 'minutas') {
-    const filteredList = oradoresModalList.filter(o => {
+    const pendientesList = oradoresModalList.filter(o => !o.tema_efectivo || !o.tema_efectivo.trim());
+    const guardadasList = oradoresModalList.filter(o => o.tema_efectivo && o.tema_efectivo.trim());
+    const pendientesCount = pendientesList.length;
+    const guardadasCount = guardadasList.length;
+    const totalCount = oradoresModalList.length;
+
+    const baseList = minutaTab === 'pendientes' 
+      ? pendientesList 
+      : minutaTab === 'guardadas' 
+        ? guardadasList 
+        : oradoresModalList;
+
+    const filteredList = baseList.filter(o => {
       if (!oradorFilterText.trim()) return true;
       const term = oradorFilterText.toLowerCase();
       const nombreFull = `${o.vecino?.nombre || ''} ${o.vecino?.apellido || ''}`.toLowerCase();
@@ -1345,6 +1371,95 @@ export default function ControlAsistencia({ reunion, onBack, mode = 'asistencia'
               style={{ padding: '9px 14px', fontSize: '0.85rem', fontWeight: 'bold', display: 'flex', alignItems: 'center', gap: '6px', borderRadius: '8px', whiteSpace: 'nowrap' }}
             >
               <UserPlus size={16} /> {showAddSpeakerTerritorio ? 'Ocultar Panel' : '+ Agregar Orador'}
+            </button>
+          </div>
+
+          {/* Pestañas de estado de Minuta: Pendientes (desaparecen al guardar) vs Guardadas vs Todos */}
+          <div style={{ display: 'flex', gap: '8px', borderTop: '1px solid #E2E8F0', paddingTop: '10px' }}>
+            <button
+              type="button"
+              onClick={() => setMinutaTab('pendientes')}
+              style={{
+                flex: 1,
+                padding: '8px 10px',
+                fontSize: '0.82rem',
+                fontWeight: '700',
+                borderRadius: '8px',
+                border: 'none',
+                backgroundColor: minutaTab === 'pendientes' ? 'var(--color-primary)' : '#F1F5F9',
+                color: minutaTab === 'pendientes' ? '#FFFFFF' : '#475569',
+                cursor: 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: '6px'
+              }}
+            >
+              <span>⏳ Pendientes</span>
+              <span style={{
+                backgroundColor: minutaTab === 'pendientes' ? '#25C2B9' : '#CBD5E1',
+                color: minutaTab === 'pendientes' ? '#042A38' : '#334155',
+                padding: '1px 6px',
+                borderRadius: '10px',
+                fontSize: '0.72rem',
+                fontWeight: '800'
+              }}>
+                {pendientesCount}
+              </span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setMinutaTab('guardadas')}
+              style={{
+                flex: 1,
+                padding: '8px 10px',
+                fontSize: '0.82rem',
+                fontWeight: '700',
+                borderRadius: '8px',
+                border: 'none',
+                backgroundColor: minutaTab === 'guardadas' ? 'var(--color-primary)' : '#F1F5F9',
+                color: minutaTab === 'guardadas' ? '#FFFFFF' : '#475569',
+                cursor: 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: '6px'
+              }}
+            >
+              <span>✅ Guardadas</span>
+              <span style={{
+                backgroundColor: minutaTab === 'guardadas' ? '#10B981' : '#CBD5E1',
+                color: minutaTab === 'guardadas' ? '#FFFFFF' : '#334155',
+                padding: '1px 6px',
+                borderRadius: '10px',
+                fontSize: '0.72rem',
+                fontWeight: '800'
+              }}>
+                {guardadasCount}
+              </span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setMinutaTab('todos')}
+              style={{
+                flex: 1,
+                padding: '8px 10px',
+                fontSize: '0.82rem',
+                fontWeight: '700',
+                borderRadius: '8px',
+                border: 'none',
+                backgroundColor: minutaTab === 'todos' ? 'var(--color-primary)' : '#F1F5F9',
+                color: minutaTab === 'todos' ? '#FFFFFF' : '#475569',
+                cursor: 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: '6px'
+              }}
+            >
+              <span>Todos ({totalCount})</span>
             </button>
           </div>
 
@@ -1459,7 +1574,11 @@ export default function ControlAsistencia({ reunion, onBack, mode = 'asistencia'
         <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
           {filteredList.length === 0 ? (
             <div className="card" style={{ textAlign: 'center', padding: '2rem', color: 'var(--color-text-muted)' }}>
-              {oradoresModalList.length === 0 ? 'Aún no hay oradores anotados.' : 'Sin resultados para la búsqueda.'}
+              {minutaTab === 'pendientes' && pendientesCount === 0
+                ? '🎉 ¡Excelente! No hay oradores pendientes de minuta. Todas las intervenciones han sido guardadas.'
+                : oradoresModalList.length === 0 
+                  ? 'Aún no hay oradores anotados.' 
+                  : 'Sin resultados para la búsqueda en esta pestaña.'}
             </div>
           ) : (
             filteredList.map((o, idx) => {
@@ -1966,12 +2085,37 @@ export default function ControlAsistencia({ reunion, onBack, mode = 'asistencia'
   return (
     <div className="container">
       {/* Botón Volver */}
-      <div style={{ marginBottom: '1.5rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+      <div style={{ marginBottom: '1.5rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '8px' }}>
         <button className="btn btn-secondary btn-sm" onClick={onBack}>
           <ArrowLeft size={16} /> Volver al Tablero
         </button>
 
-        <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+        <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
+          {isLndlmMeeting(reunion) && (
+            <a
+              href={`?view=tablero_lndlm&reunion_id=${reunion.id}`}
+              target="_blank"
+              rel="noreferrer"
+              className="btn btn-sm"
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '6px',
+                padding: '6px 14px',
+                fontSize: '0.82rem',
+                fontWeight: '800',
+                background: 'linear-gradient(135deg, #F59E0B 0%, #D97706 100%)',
+                color: '#0F172A',
+                border: '1px solid #B45309',
+                borderRadius: '6px',
+                textDecoration: 'none',
+                boxShadow: '0 2px 8px rgba(245, 158, 11, 0.35)'
+              }}
+              title="Abrir Tablero de Asignación de Espacios Culturales (LNDLM 2026)"
+            >
+              🏛️ Asignación Espacios Culturales (LNDLM)
+            </a>
+          )}
           <button 
             type="button"
             className="btn btn-highlight btn-sm" 

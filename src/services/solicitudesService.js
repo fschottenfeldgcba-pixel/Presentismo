@@ -1,4 +1,5 @@
 import { supabase } from '../lib/supabaseClient.js';
+import { normalizarDireccionUsig } from './georrefService.js';
 
 /**
  * Servicio para gestión de Formularios de Solicitudes / Papeletas Digitales.
@@ -33,7 +34,7 @@ export async function getReunionParaPapeleta(reunionId) {
   try {
     const { data, error } = await supabase
       .from('reuniones')
-      .select('id, nombre, fecha, lugar, comuna, barrio, funcionario')
+      .select('id, nombre, fecha, lugar, comuna, barrio, funcionario, hora_inicio_real, hora_fin_real')
       .eq('id', reunionId)
       .maybeSingle();
 
@@ -42,6 +43,118 @@ export async function getReunionParaPapeleta(reunionId) {
   } catch (err) {
     console.warn('Error al cargar datos de reunión para papeleta:', err);
     return null;
+  }
+}
+
+/**
+ * Determina si una reunión ya finalizó (plazo límite: 2 horas y 30 minutos desde el horario de inicio programado).
+ * Devuelve { finalizada: boolean, horaInicio: string, horaCierre: string, mensaje: string }
+ */
+export function checkReunionFinalizada(reunion) {
+  if (!reunion || !reunion.fecha) return { finalizada: false, horaInicio: '', horaCierre: '' };
+
+  // 1. Extraer horario de inicio (Prioridad: hora_inicio_real -> nombre con '18hs'/'18:30' -> fallback '17:00')
+  let horaStr = (reunion.hora_inicio_real || '').trim();
+  if (!horaStr && reunion.nombre && reunion.nombre.includes('-')) {
+    const parts = reunion.nombre.split('-');
+    const lastPart = parts[parts.length - 1].trim();
+    const match = lastPart.match(/(\d{1,2})(:(\d{2}))?\s*(hs|h)?/i);
+    if (match) {
+      const h = match[1].padStart(2, '0');
+      const m = match[3] || '00';
+      horaStr = `${h}:${m}`;
+    }
+  }
+
+  if (!horaStr || !/^\d{1,2}:\d{2}$/.test(horaStr)) {
+    horaStr = '17:00';
+  }
+
+  try {
+    // 2. Parsear fecha (YYYY-MM-DD) y hora (HH:mm)
+    const [year, month, day] = reunion.fecha.split('-').map(Number);
+    const [hour, minute] = horaStr.split(':').map(Number);
+
+    const inicioDate = new Date(year, month - 1, day, hour, minute, 0);
+
+    // 2.30 hs después del horario seteado (150 minutos = 2.5 * 3600 * 1000 ms)
+    const limiteDate = new Date(inicioDate.getTime() + (2.5 * 60 * 60 * 1000));
+    const ahora = new Date();
+
+    const finalizada = ahora > limiteDate;
+    const horaCierre = limiteDate.toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit' });
+
+    return {
+      finalizada,
+      horaInicio: horaStr,
+      horaCierre,
+      limiteDate,
+      mensaje: finalizada 
+        ? `El período para cargar solicitudes digitales para este encuentro ha finalizado (cerró a las ${horaCierre} hs, 2:30 hs posteriores al inicio de la reunión).`
+        : ''
+    };
+  } catch (err) {
+    console.warn('Error calculando horario límite de reunión:', err);
+    return { finalizada: false, horaInicio: horaStr, horaCierre: '' };
+  }
+}
+
+/**
+ * Valida si un vecino está registrado en la reunión y ya figura presente (asistio === true).
+ * Requisito estricto: Solo pueden cargar reclamos quienes estén inscriptos y acreditados en el encuentro.
+ */
+export async function validarVecinoPresenteEnReunion(dni, reunionId, options = {}) {
+  if (!dni || !reunionId) {
+    return {
+      valido: false,
+      motivo: 'faltan_datos',
+      mensaje: 'Por favor ingresá tu número de DNI para validar tu asistencia a la reunión.'
+    };
+  }
+
+  const cleanDni = String(dni).trim();
+
+  try {
+    const { data, error } = await supabase
+      .from('inscripciones_asistencias')
+      .select('reunion_id, vecino_id, asistio, tema_previo, vecinos(nombre, apellido, celular, barrio, email)')
+      .eq('reunion_id', reunionId)
+      .eq('vecino_id', cleanDni)
+      .maybeSingle();
+
+    if (error) throw error;
+
+    if (!data) {
+      return {
+        valido: false,
+        motivo: 'no_registrado',
+        mensaje: `El DNI ${cleanDni} no figura inscripto para esta reunión. Solo pueden cargar reclamos quienes estén inscriptos y acreditados en el encuentro.`
+      };
+    }
+
+    if (!data.asistio && !options.permitirInscripto) {
+      const nom = data.vecinos ? `${data.vecinos.nombre || ''} ${data.vecinos.apellido || ''}`.trim() : '';
+      return {
+        valido: false,
+        motivo: 'no_presente',
+        nombreVecino: nom,
+        mensaje: `Hola ${nom ? nom + ', ' : ''}figurás inscripto/a pero aún no registraste tu presencia en la acreditación. Por favor acercate a la mesa de entrada para validar tu asistencia antes de cargar tu reclamo.`
+      };
+    }
+
+    return {
+      valido: true,
+      vecino: data.vecinos || {},
+      tema_previo: data.tema_previo || '',
+      asistio: data.asistio
+    };
+  } catch (err) {
+    console.warn('Error validando asistencia del vecino en Supabase:', err);
+    return {
+      valido: false,
+      motivo: 'error_red',
+      mensaje: 'No pudimos verificar tu acreditación en este momento. Por favor revisá tu conexión e intentá nuevamente.'
+    };
   }
 }
 
@@ -98,13 +211,14 @@ export const BARRIOS_CABA_LIST = [
 ];
 
 export const LUGARES_FISICOS_KEYWORDS = [
-  "colegio", "escuela", "instituto", "jardin", "jardín", "universidad", "facultad",
-  "hospital", "cesac", "sanatorio", "clinica", "clínica", "dispensario",
-  "plaza", "parque", "plazoleta", "boulevard",
-  "polideportivo", "club", "centro cultural", "teatro", "museo", "biblioteca",
-  "estacion", "estación", "terminal", "subte", "metrobus", "parada",
+  "colegio", "escuela", "instituto", "jardin", "jardín", "universidad", "universitaria", "facultad", "campus", "fadu", "exactas", "cbc", "medicina", "derecho",
+  "hospital", "cesac", "sanatorio", "clinica", "clínica", "dispensario", "centro de salud", "maternidad", "vacunatorio",
+  "plaza", "parque", "plazoleta", "boulevard", "paseo", "patio",
+  "polideportivo", "club", "centro cultural", "teatro", "museo", "biblioteca", "estadio", "cancha", "cenard",
+  "estacion", "estación", "terminal", "subte", "metrobus", "parada", "aeroparque",
   "iglesia", "parroquia", "templo", "catedral", "sinagoga", "basilica", "basílica",
-  "comisaria", "comisaría", "sede comunal", "comuna sede", "cementerio", "paseo"
+  "comisaria", "comisaría", "sede comunal", "subsede", "comuna sede", "cementerio", "ecoparque", "planetario", "botanico", "botánico",
+  "ciudad universitaria"
 ];
 
 /**
@@ -191,48 +305,77 @@ export function clasificarUbicacion(direccionRaw, meta = {}) {
     };
   }
 
-  // 6. CRITERIO DE AUTOCOMPLETADO EN EL CALLEJERO OFICIAL:
-  // Si en el formulario interactivo NO se autocompletó/seleccionó desde el callejero:
-  if (meta.autocompletado === false) {
+  // 6. DETECCIÓN DE CALLE COMPLETA (sin altura ni intersección):
+  // Si es una calle o avenida (ej: "Av. Monroe", "Monroe", "Av Monroe", "Av. Rivadavia", "Corrientes", "Av Santa Fe")
+  // sin altura numérica y sin cruce/esquina, y no es un lugar físico reconocible:
+  // SIEMPRE ES PREOCUPACIÓN GENERAL (no califica como Solicitud Puntual).
+  const tieneAltura = Boolean(
+    (meta.altura && String(meta.altura).trim()) ||
+    /\b(\d{1,5}|al\s+\d{1,5})\b/.test(norm)
+  );
+
+  const tieneCruce = Boolean(
+    (meta.cruce && String(meta.cruce).trim()) ||
+    /[\s(](?:y|e\/|entre|esq\.?|esquina|cruce|con)[\s)]/i.test(norm) ||
+    /\b(?:esquina|esq\.?|cruce)\b/i.test(norm) ||
+    /\([^)]+\)/i.test(norm) ||
+    /\s+y\s+/i.test(norm)
+  );
+
+  const esLugarFisico = Boolean(
+    meta.tipo === 'lugar' || meta.esLugar || meta.fuente?.includes('Lugares') ||
+    esSedeComunal ||
+    /^(ciudad\s+universitaria|fadu|exactas|cbc|cenard|ecoparque|planetario|aeroparque)/i.test(norm) ||
+    /\b(ciudad\s+universitaria)\b/i.test(norm) ||
+    /\b(cesac|ce\.?s\.?a\.?c\.?|centro\s+de\s+salud)\b/i.test(norm) ||
+    /\b(hospital|sanatorio|clinica|clínica|dispensario|maternidad)\b/i.test(norm) ||
+    /\b(escuela|colegio|jardin|jardín|liceo|instituto)\b/i.test(norm) ||
+    /\b(facultad|universidad|universitaria)\b/i.test(norm) ||
+    /\b(plaza|parque|plazoleta|boulevard|paseo)\b/i.test(norm) ||
+    /\b(polideportivo|club|estadio|cancha)\b/i.test(norm) ||
+    /\b(estacion|estación|terminal|aeroparque)\b/i.test(norm) ||
+    /\b(comisaria|comisaría)\b/i.test(norm) ||
+    /\b(teatro|museo|biblioteca|centro\s+cultural)\b/i.test(norm) ||
+    /\b(parroquia|iglesia|templo|catedral|basilica|basílica)\b/i.test(norm) ||
+    LUGARES_FISICOS_KEYWORDS.some(kw => {
+      const cleanKw = kw.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+      const regex = new RegExp(`\\b${cleanKw}\\b`, 'i');
+      return regex.test(norm);
+    })
+  );
+
+  // Si no tiene altura, no tiene cruce y no es lugar físico:
+  // Es una calle completa o texto genérico -> SIEMPRE PREOCUPACIÓN GENERAL
+  if (!tieneAltura && !tieneCruce && !esLugarFisico) {
     return {
       tipo: 'preocupacion',
       esPuntual: false,
-      motivo: 'Sin autocompletar en el Callejero Oficial',
-      mensaje: 'Al no seleccionar una opción del callejero oficial, se registrará como Preocupación general (sugerencia de mejora al área). Para seguimiento puntual, seleccioná la sugerencia oficial del buscador.'
+      motivo: 'Calle o avenida completa sin altura ni esquina',
+      mensaje: 'Al referirse a una calle completa sin número exacto ni esquina, se registrará como Preocupación general. Si querés registrar una Solicitud puntual con seguimiento, agregá la altura (ej: Monroe 2500) o la esquina (ej: Monroe y Cabildo).'
     };
   }
 
-  // 7. Si fue autocompletado en el Callejero Oficial (meta.autocompletado === true):
-  // Al no ser Comuna, Barrio ni Toda la Ciudad (ya descartados arriba), califica como Solicitud Puntual!
+  // 7. Si fue autocompletado en el Callejero Oficial (y cuenta con altura, cruce o lugar físico):
   if (meta.autocompletado === true) {
-    const esLugar = meta.tipo === 'lugar' || meta.esLugar || meta.fuente?.includes('Lugares');
     return {
       tipo: 'solicitud',
       esPuntual: true,
-      motivo: esLugar ? 'Lugar físico o espacio público identificado' : 'Dirección validada en el Callejero Oficial',
-      mensaje: 'Ubicación validada en el Callejero Oficial de la Ciudad. Se registrará como Solicitud puntual para gestión operativa.'
+      motivo: esLugarFisico ? 'Lugar físico o espacio público identificado' : (tieneCruce ? 'Intersección o esquina validada' : 'Dirección con altura validada'),
+      mensaje: 'Ubicación puntual validada en el Callejero Oficial. Se registrará como Solicitud puntual para gestión operativa.'
     };
   }
 
-  // 8. Para registros preexistentes o cuando meta.autocompletado no fue provisto (ej. lectura desde BD):
-  // a) Lugares físicos reconocibles de la lista oficial (ej: "Parque Chacabuco", "Plaza Irlanda", "Hospital Fernández", "Colegio Niñas de Ayohuma")
-  for (const kw of LUGARES_FISICOS_KEYWORDS) {
-    if (norm.startsWith(kw + ' ') || norm.includes(' ' + kw + ' ') || norm === kw + ' chacabuco' || norm === kw + ' patricios' || norm === kw + ' avellaneda' || norm === kw + ' centenario' || norm === kw + ' rivadavia' || norm === kw + ' lezama' || norm === kw + ' saavedra' || norm === kw + ' irlanda' || norm === kw + ' almagro' || norm === kw + ' flores') {
-      const palabras = norm.split(/\s+/).filter(Boolean);
-      if (palabras.length >= 2 && !/^(la|el|las|los|un|una|en\s+la|en\s+el)\s+(plaza|parque|escuela|hospital|colegio|comisaria)$/i.test(norm)) {
-        return {
-          tipo: 'solicitud',
-          esPuntual: true,
-          motivo: 'Lugar físico o espacio público identificado',
-          mensaje: 'Lugar físico identificado. Se registrará como Solicitud puntual para gestión operativa.'
-        };
-      }
-    }
+  // 8. Para registros preexistentes o ingresados manualmente:
+  if (esLugarFisico) {
+    return {
+      tipo: 'solicitud',
+      esPuntual: true,
+      motivo: 'Lugar físico o espacio público identificado',
+      mensaje: 'Lugar físico identificado. Se registrará como Solicitud puntual para gestión operativa.'
+    };
   }
 
-  // b) Intersección o Esquina (ej: "Callao y Corrientes", "Rivadavia esq. Nazca", "Directorio entre Cachimayo y Riglos")
-  const regexEsquina = /\s+(y|e\/|entre|esq\.?|esquina)\s+/i;
-  if (regexEsquina.test(norm) || (meta.cruce && String(meta.cruce).trim())) {
+  if (tieneCruce) {
     return {
       tipo: 'solicitud',
       esPuntual: true,
@@ -241,9 +384,7 @@ export function clasificarUbicacion(direccionRaw, meta = {}) {
     };
   }
 
-  // c) Dirección con altura numérica (ej: "Av. San Juan 2500", "Cachimayo 733", "Rivadavia al 1500")
-  const regexAltura = /\b(\d{1,5}|al\s+\d{1,5})\b/;
-  if (regexAltura.test(norm) || (meta.altura && String(meta.altura).trim())) {
+  if (tieneAltura) {
     return {
       tipo: 'solicitud',
       esPuntual: true,
@@ -252,22 +393,12 @@ export function clasificarUbicacion(direccionRaw, meta = {}) {
     };
   }
 
-  // d) Si tiene coordenadas ya resueltas
-  if (meta.lat && meta.lng) {
-    return {
-      tipo: 'solicitud',
-      esPuntual: true,
-      motivo: 'Ubicación geolocalizada',
-      mensaje: 'Ubicación geolocalizada. Se registrará como Solicitud puntual para gestión operativa.'
-    };
-  }
-
-  // e) Texto libre no validado -> Preocupación
+  // Fallback seguro: Preocupación
   return {
     tipo: 'preocupacion',
     esPuntual: false,
     motivo: 'Sin validación puntual de callejero',
-    mensaje: 'Al no seleccionar una dirección exacta del callejero oficial, se registrará como Preocupación general.'
+    mensaje: 'Al no contar con una ubicación puntual, se registrará como Preocupación general.'
   };
 }
 
@@ -292,39 +423,58 @@ export async function guardarSolicitudesPapeleta({
   const cleanDni = String(dni || vecino_id || '').trim();
   const fechaStr = fecha || new Date().toISOString().split('T')[0];
 
-  const rowsToInsert = solicitudes
-    .filter(s => s.tematica && (s.descripcion?.trim() || s.direccion?.trim()))
-    .map(s => {
-      const clasif = clasificarUbicacion(s.direccion, {
-        autocompletado: s.autocompletado,
-        tipo: s.tipo_ubicacion || s.tipo,
-        lat: s.lat,
-        lng: s.lng,
-        altura: s.altura,
-        cruce: s.cruce
-      });
-      const tipoRegistro = clasif.tipo; // 'solicitud' | 'preocupacion'
+  const rowsToInsert = await Promise.all(
+    solicitudes
+      .filter(s => s.tematica && (s.descripcion?.trim() || s.direccion?.trim()))
+      .map(async (s, idx) => {
+        let latVal = s.lat || null;
+        let lngVal = s.lng || null;
 
-      return {
-        reunion_id: reunion_id || null,
-        vecino_id: cleanDni || null,
-        nombre_apellido: nombre_apellido?.trim() || '',
-        dni: cleanDni,
-        telefono: telefono?.trim() || '',
-        barrio: barrio?.trim() || '',
-        email: email?.trim() || '',
-        fecha: fechaStr,
-        tematica: s.tematica === 'Otros' && s.tematica_otro?.trim() ? `Otros: ${s.tematica_otro.trim()}` : s.tematica,
-        direccion: s.direccion?.trim() || '',
-        descripcion: s.descripcion?.trim() || '',
-        tipo_registro: tipoRegistro, // 'solicitud' | 'preocupacion'
-        lat: clasif.esPuntual ? s.lat || null : null,
-        lng: clasif.esPuntual ? s.lng || null : null,
-        estado: 'pendiente',
-        ticket_suaci: '',
-        notas_operador: ''
-      };
-    });
+        // Si la dirección no vino geolocalizada (ej. el vecino no eligió del desplegable),
+        // intentar resolverla en el momento para que quede guardada con lat/lng en Supabase
+        if ((!latVal || !lngVal) && s.direccion && s.direccion.trim().length >= 3) {
+          try {
+            const geo = await normalizarDireccionUsig(s.direccion);
+            if (geo && geo.lat && geo.lng) {
+              latVal = geo.lat;
+              lngVal = geo.lng;
+            }
+          } catch (e) {}
+        }
+
+        const clasif = clasificarUbicacion(s.direccion, {
+          autocompletado: s.autocompletado || Boolean(latVal && lngVal),
+          tipo: s.tipo_ubicacion || s.tipo,
+          lat: latVal,
+          lng: lngVal,
+          altura: s.altura,
+          cruce: s.cruce
+        });
+        const tipoRegistro = clasif.tipo; // 'solicitud' | 'preocupacion'
+        const stableId = s.id || `pap_${cleanDni}_${Date.now()}_${idx}_${Math.random().toString(36).substring(2, 7)}`;
+
+        return {
+          id: stableId,
+          reunion_id: reunion_id || null,
+          vecino_id: cleanDni || null,
+          nombre_apellido: nombre_apellido?.trim() || '',
+          dni: cleanDni,
+          telefono: telefono?.trim() || '',
+          barrio: barrio?.trim() || '',
+          email: email?.trim() || '',
+          fecha: fechaStr,
+          tematica: s.tematica === 'Otros' && s.tematica_otro?.trim() ? `Otros: ${s.tematica_otro.trim()}` : s.tematica,
+          direccion: s.direccion?.trim() || '',
+          descripcion: s.descripcion?.trim() || '',
+          tipo_registro: tipoRegistro, // 'solicitud' | 'preocupacion'
+          lat: clasif.esPuntual ? latVal : null,
+          lng: clasif.esPuntual ? lngVal : null,
+          estado: 'pendiente',
+          ticket_suaci: '',
+          notas_operador: ''
+        };
+      })
+  );
 
   if (rowsToInsert.length === 0) {
     return { success: false, error: 'Por favor completá al menos la temática y descripción de una solicitud.' };
@@ -427,12 +577,16 @@ export async function getSolicitudesPorReunion(reunionId) {
               if (l.startsWith('{') && l.includes('PAPELETA_DIGITAL')) {
                 const parsed = JSON.parse(l);
                 if (parsed.items && Array.isArray(parsed.items)) {
-                  parsed.items.forEach(it => {
+                  parsed.items.forEach((it, idx) => {
+                    // ID determinístico y permanente: NUNCA usar Math.random() para evitar refrescos y pérdida de foco
+                    const descHash = String(it.descripcion || '').slice(0, 15).replace(/[^a-zA-Z0-9]/g, '');
+                    const stableId = it.id || `insc_${a.vecino_id || it.dni || 'v'}_${idx}_${descHash}`;
+
                     // Evitar duplicados si ya vino de la tabla
-                    if (!listaSolicitudes.some(s => s.dni === it.dni && s.descripcion === it.descripcion)) {
+                    if (!listaSolicitudes.some(s => s.id === stableId || (s.dni === it.dni && s.descripcion === it.descripcion))) {
                       listaSolicitudes.push({
                         ...it,
-                        id: it.id || `insc_${it.dni}_${Math.random()}`
+                        id: stableId
                       });
                     }
                   });
@@ -460,9 +614,76 @@ export async function getSolicitudesPorReunion(reunionId) {
 }
 
 /**
+ * Sincroniza modificaciones o eliminaciones en el fallback de `inscripciones_asistencias`
+ */
+async function sincronizarFallbackAsistencias(reunionId, solicitudId, updates = null, isDelete = false) {
+  if (!reunionId || !solicitudId) return;
+  try {
+    const { data: asistencias } = await supabase
+      .from('inscripciones_asistencias')
+      .select('id, vecino_id, pregunta_puerta')
+      .eq('reunion_id', reunionId)
+      .not('pregunta_puerta', 'is', null);
+
+    if (asistencias && asistencias.length > 0) {
+      for (const a of asistencias) {
+        if (a.pregunta_puerta && a.pregunta_puerta.includes('PAPELETA_DIGITAL')) {
+          let modificado = false;
+          const lines = a.pregunta_puerta.split('\n');
+          const newLines = lines.map(line => {
+            if (line.startsWith('{') && line.includes('PAPELETA_DIGITAL')) {
+              try {
+                const parsed = JSON.parse(line);
+                if (parsed.items && Array.isArray(parsed.items)) {
+                  let filteredItems;
+                  if (isDelete) {
+                    filteredItems = parsed.items.filter((it, idx) => {
+                      const descHash = String(it.descripcion || '').slice(0, 15).replace(/[^a-zA-Z0-9]/g, '');
+                      const stableId = it.id || `insc_${a.vecino_id || it.dni || 'v'}_${idx}_${descHash}`;
+                      if (it.id === solicitudId || stableId === solicitudId) {
+                        modificado = true;
+                        return false;
+                      }
+                      return true;
+                    });
+                  } else {
+                    filteredItems = parsed.items.map((it, idx) => {
+                      const descHash = String(it.descripcion || '').slice(0, 15).replace(/[^a-zA-Z0-9]/g, '');
+                      const stableId = it.id || `insc_${a.vecino_id || it.dni || 'v'}_${idx}_${descHash}`;
+                      if (it.id === solicitudId || stableId === solicitudId) {
+                        modificado = true;
+                        return { ...it, ...updates, id: stableId };
+                      }
+                      return it;
+                    });
+                  }
+                  if (modificado) {
+                    return JSON.stringify({ ...parsed, items: filteredItems });
+                  }
+                }
+              } catch (e) {}
+            }
+            return line;
+          });
+
+          if (modificado) {
+            await supabase
+              .from('inscripciones_asistencias')
+              .update({ pregunta_puerta: newLines.join('\n') })
+              .eq('id', a.id);
+          }
+        }
+      }
+    }
+  } catch (err) {
+    console.warn('Aviso sincronizando fallback asistencias:', err);
+  }
+}
+
+/**
  * Actualiza el estado, nro de ticket SUACI o notas de una solicitud
  */
-export async function updateEstadoSolicitud(solicitudId, updates = {}) {
+export async function updateEstadoSolicitud(solicitudId, updates = {}, reunionId = null) {
   try {
     const { data, error } = await supabase
       .from('solicitudes_papeleta')
@@ -470,12 +691,117 @@ export async function updateEstadoSolicitud(solicitudId, updates = {}) {
       .eq('id', solicitudId)
       .select();
 
-    if (!error) return { data, error: null };
+    if (!error && data && data.length > 0) {
+      actualizarSolicitudEnCacheLocal(solicitudId, updates, reunionId);
+      return { data, error: null };
+    }
   } catch (err) {
     console.warn('Error al actualizar solicitud en Supabase:', err);
   }
 
+  // Sincronizar también con el fallback de inscripciones_asistencias
+  if (reunionId) {
+    await sincronizarFallbackAsistencias(reunionId, solicitudId, updates, false);
+  }
+
   // Actualizar también en caché local
+  actualizarSolicitudEnCacheLocal(solicitudId, updates, reunionId);
+  return { data: updates, error: null };
+}
+
+/**
+ * Actualiza los datos de un reclamo cargado por un vecino (temática, dirección, descripción, etc.)
+ */
+export async function actualizarDetalleSolicitud(solicitudId, updates = {}, reunionId = null) {
+  try {
+    const payload = { ...updates };
+    // Si la dirección fue editada, recalcular clasificación y geocodificar si faltan coords
+    if (updates.direccion !== undefined) {
+      if ((!payload.lat || !payload.lng) && updates.direccion && updates.direccion.trim().length >= 3) {
+        try {
+          const geo = await normalizarDireccionUsig(updates.direccion);
+          if (geo && geo.lat && geo.lng) {
+            payload.lat = geo.lat;
+            payload.lng = geo.lng;
+            payload.tipo_registro = 'solicitud';
+          }
+        } catch (e) {}
+      }
+
+      const clasif = clasificarUbicacion(updates.direccion, { ...updates.meta, lat: payload.lat, lng: payload.lng });
+      payload.tipo_registro = clasif.tipo;
+      if (!clasif.esPuntual && !payload.lat) {
+        payload.lat = null;
+        payload.lng = null;
+      }
+    }
+
+    const { data, error } = await supabase
+      .from('solicitudes_papeleta')
+      .update(payload)
+      .eq('id', solicitudId)
+      .select();
+
+    if (!error && data && data.length > 0) {
+      // Sincronizar en asistencias y caché local
+      if (reunionId) {
+        await sincronizarFallbackAsistencias(reunionId, solicitudId, payload, false);
+      }
+      actualizarSolicitudEnCacheLocal(solicitudId, payload, reunionId);
+      return { success: true, data, error: null };
+    }
+  } catch (err) {
+    console.warn('Error al actualizar reclamo en Supabase:', err);
+  }
+
+  // Sincronizar en asistencias
+  if (reunionId) {
+    await sincronizarFallbackAsistencias(reunionId, solicitudId, updates, false);
+  }
+
+  // Fallback a caché local si falló o no existe la tabla
+  actualizarSolicitudEnCacheLocal(solicitudId, updates, reunionId);
+  return { success: true, data: updates, error: null };
+}
+
+/**
+ * Elimina una solicitud / reclamo por su ID tanto de Supabase como de cachés y fallbacks
+ */
+export async function eliminarSolicitudPapeleta(solicitudId, reunionId = null) {
+  try {
+    const { error } = await supabase
+      .from('solicitudes_papeleta')
+      .delete()
+      .eq('id', solicitudId);
+
+    if (error) {
+      console.warn('Aviso al eliminar de solicitudes_papeleta en Supabase:', error.message);
+    }
+  } catch (err) {
+    console.warn('Error al eliminar en Supabase:', err);
+  }
+
+  // Sincronizar eliminación en asistencias
+  if (reunionId) {
+    await sincronizarFallbackAsistencias(reunionId, solicitudId, null, true);
+  }
+
+  // Eliminar de caché local
+  try {
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i);
+      if (key && key.startsWith('papeletas_reunion_')) {
+        const list = JSON.parse(localStorage.getItem(key) || '[]');
+        const filtered = list.filter(item => item.id !== solicitudId);
+        localStorage.setItem(key, JSON.stringify(filtered));
+      }
+    }
+  } catch (e) {}
+
+  return { success: true };
+}
+
+function actualizarSolicitudEnCacheLocal(solicitudId, updates, reunionId) {
   try {
     for (let i = 0; i < localStorage.length; i++) {
       const key = localStorage.key(i);
@@ -486,8 +812,6 @@ export async function updateEstadoSolicitud(solicitudId, updates = {}) {
       }
     }
   } catch (e) {}
-
-  return { data: updates, error: null };
 }
 
 /**

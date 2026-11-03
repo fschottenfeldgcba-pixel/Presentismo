@@ -1,6 +1,10 @@
 import React, { useState, useEffect } from 'react';
-import { Play, Square, UserPlus, Clock, Trash2, CheckCircle2, UserCheck, RotateCcw, RefreshCw, FileText, Download, Copy, Activity, MessageSquare, Users, PhoneCall } from 'lucide-react';
+import { Play, Square, UserPlus, Clock, Trash2, CheckCircle2, UserCheck, RotateCcw, RefreshCw, FileText, Download, Copy, Activity, MessageSquare, Users, PhoneCall, ExternalLink, Search, X, MapPin, Tv } from 'lucide-react';
 import { guardarAsistencia, upsertVecino, getAsistentesPorReunion } from '../services/supabaseService';
+import { getSolicitudesPorReunion } from '../services/solicitudesService';
+import { emitProyectorEvent, PROYECTOR_EVENTS } from '../services/proyectorSyncService';
+import PanelSolicitudesPapeleta from './PanelSolicitudesPapeleta';
+import MapaReclamosComuna from './MapaReclamosComuna';
 import { supabase } from '../lib/supabaseClient';
 import * as XLSX from 'xlsx';
 
@@ -53,7 +57,79 @@ export default function Cronometro1a1({ reunion, initialAsistencias, onUpdate, o
   // Formulario para registro "Por la ventana" (Walk-In excepcional)
   const [showVentanaModal, setShowVentanaModal] = useState(false);
   const [showInformeModal, setShowInformeModal] = useState(false);
+  const [showInscBaseModal, setShowInscBaseModal] = useState(false);
+  const [showPapeletasModal, setShowPapeletasModal] = useState(false);
+  const [showMapaModal, setShowMapaModal] = useState(false);
+  const [solicitudesCount, setSolicitudesCount] = useState(0);
+  const [solicitudesList, setSolicitudesList] = useState([]);
+  const [inscBaseSearch, setInscBaseSearch] = useState('');
+  const [inscBaseFilter, setInscBaseFilter] = useState('todos');
   const [vetDni, setVetDni] = useState('');
+
+  // Estado para Devolución del Funcionario (2da Pantalla / Proyector)
+  const [isDevolucionActive, setIsDevolucionActive] = useState(() => {
+    if (typeof window !== 'undefined' && reunion?.id) {
+      try {
+        const raw = localStorage.getItem(`presentismo_devolucion_${reunion.id}`);
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          return Boolean(parsed?.activa);
+        }
+      } catch (e) {}
+    }
+    return false;
+  });
+
+  const handleToggleDevolucion = () => {
+    const nextState = !isDevolucionActive;
+    setIsDevolucionActive(nextState);
+
+    const funcionarioName = reunion?.funcionario || 'Funcionario';
+
+    if (nextState) {
+      try {
+        localStorage.setItem(`presentismo_devolucion_${reunion.id}`, JSON.stringify({
+          activa: true,
+          funcionario: funcionarioName,
+          timestamp: Date.now()
+        }));
+      } catch (e) {}
+
+      emitProyectorEvent(PROYECTOR_EVENTS.DEVOLUCION_START, {
+        reunionId: reunion.id,
+        isDevolucion: true,
+        funcionario: funcionarioName
+      });
+    } else {
+      try {
+        localStorage.removeItem(`presentismo_devolucion_${reunion.id}`);
+      } catch (e) {}
+
+      emitProyectorEvent(PROYECTOR_EVENTS.DEVOLUCION_CLEAR, {
+        reunionId: reunion.id,
+        isDevolucion: false
+      });
+    }
+  };
+
+  // Cargar solicitudes de papeleta digital para conteo y mapa
+  const fetchSolicitudes = async () => {
+    if (reunion?.id) {
+      try {
+        const res = await getSolicitudesPorReunion(reunion.id);
+        if (res && res.data) {
+          setSolicitudesCount(res.data.length);
+          setSolicitudesList(res.data);
+        }
+      } catch (err) {
+        console.warn('Error al cargar solicitudes de reunión en 1a1:', err);
+      }
+    }
+  };
+
+  useEffect(() => {
+    fetchSolicitudes();
+  }, [reunion?.id]);
   
   // Variables cualitativas editables locales
   const [localSintesis, setLocalSintesis] = useState(reunion.sintesis_cualitativa || '');
@@ -164,6 +240,8 @@ export default function Cronometro1a1({ reunion, initialAsistencias, onUpdate, o
       if (!errAsis && freshAsis) {
         setAsistencias(freshAsis);
       }
+
+      await fetchSolicitudes();
 
       if (onUpdate) await onUpdate();
     } catch (err) {
@@ -334,13 +412,82 @@ export default function Cronometro1a1({ reunion, initialAsistencias, onUpdate, o
     }
   };
 
-  const handleSaveReunionQualitative = async (newSintesis, newClima, newSemaforo, newGestionPresente) => {
+  // Helper para asignar automáticamente el próximo turno libre en Inscripción Base
+  const getNextAvailableSlot = () => {
+    const usedSlots = new Set(
+      asistencias
+        .filter(a => a.estado_convocatoria === 'citado' || a.estado_convocatoria === 'walk_in')
+        .map(a => a.horario_bloque_asignado)
+        .filter(Boolean)
+    );
+    const freeSlot = HORAS_BLOQUE.find(slot => !usedSlots.has(slot));
+    return freeSlot || HORAS_BLOQUE[0] || '17:00 - 17:05';
+  };
+
+  // Toggle citado/convocado desde el modal de Inscripción Base
+  const handleToggleCitadoBase = async (item) => {
+    const isCurrentlyCitado = item.estado_convocatoria === 'citado' || item.estado_convocatoria === 'walk_in';
+    const nextCitado = !isCurrentlyCitado;
+    const nextSlot = nextCitado ? (item.horario_bloque_asignado || getNextAvailableSlot()) : null;
+
+    setAsistencias(prev => prev.map(a => a.vecino_id === item.vecino_id ? {
+      ...a,
+      estado_convocatoria: nextCitado ? 'citado' : null,
+      horario_bloque_asignado: nextSlot
+    } : a));
+
+    try {
+      await guardarAsistencia(reunion.id, item.vecino_id, item.asistio, {
+        estado_convocatoria: nextCitado ? 'citado' : null,
+        horario_bloque_asignado: nextSlot
+      });
+      onUpdate();
+    } catch (err) {
+      console.error('Error al cambiar citado en base:', err);
+    }
+  };
+
+  // Toggle confirmado desde el modal de Inscripción Base
+  const handleToggleConfirmadoBase = async (item) => {
+    const nextConf = !item.confirmado;
+    setAsistencias(prev => prev.map(a => a.vecino_id === item.vecino_id ? {
+      ...a,
+      confirmado: nextConf
+    } : a));
+
+    try {
+      await guardarAsistencia(reunion.id, item.vecino_id, item.asistio, {
+        confirmado: nextConf
+      });
+      onUpdate();
+    } catch (err) {
+      console.error('Error al cambiar confirmación en base:', err);
+    }
+  };
+
+  // Cambio de bloque horario desde el modal de Inscripción Base
+  const handleChangeSlotBase = async (item, newSlot) => {
+    setAsistencias(prev => prev.map(a => a.vecino_id === item.vecino_id ? {
+      ...a,
+      horario_bloque_asignado: newSlot
+    } : a));
+
+    try {
+      await guardarAsistencia(reunion.id, item.vecino_id, item.asistio, {
+        horario_bloque_asignado: newSlot
+      });
+      onUpdate();
+    } catch (err) {
+      console.error('Error al cambiar bloque en base:', err);
+    }
+  };
+
+  const handleSaveReunionQualitative = async (newSintesis, newSemaforo, newGestionPresente) => {
     try {
       const { error } = await supabase
         .from('reuniones')
         .update({
           sintesis_cualitativa: newSintesis,
-          clima: newClima,
           semaforo_politico: newSemaforo,
           gestion_presente: newGestionPresente
         })
@@ -529,6 +676,37 @@ export default function Cronometro1a1({ reunion, initialAsistencias, onUpdate, o
     if (autoEnd && autoEnd !== estimatedEnd) setEstimatedEnd(autoEnd);
 
     await saveUnoAUnoConfig(updatedStart, updatedEnd, newRecords, serializeActiveTimers(newActiveTimers));
+    
+    // Notificar a pantalla de proyección (2da pantalla / proyector)
+    const targetVecino = asistencias.find(a => a.vecino_id === vecinoDni);
+    const upcomingQueue1a1 = asistencias
+      .filter(a => (a.estado_convocatoria === 'citado' || a.estado_convocatoria === 'walk_in' || a.confirmado || a.asistio) && !newRecords[a.vecino_id]?.horaSalida && String(a.vecino_id) !== String(vecinoDni))
+      .sort((a, b) => {
+        if (a.asistio && !b.asistio) return -1;
+        if (!a.asistio && b.asistio) return 1;
+        return (a.horario_bloque_asignado || '').localeCompare(b.horario_bloque_asignado || '');
+      })
+      .slice(0, 4)
+      .map((item, idx) => ({
+        id: item.vecino_id,
+        posicion: String(idx + 1),
+        nombre: item.vecino ? `${item.vecino.nombre} ${item.vecino.apellido}` : `Vecino DNI ${item.vecino_id}`,
+        tema: item.tema_previo || 'Consulta vecinal'
+      }));
+
+    emitProyectorEvent(PROYECTOR_EVENTS.SPEAKER_CALL, {
+      reunionId: reunion.id,
+      speaker: {
+        id: vecinoDni,
+        dni: vecinoDni,
+        nombre: `${targetVecino?.vecino?.nombre || ''} ${targetVecino?.vecino?.apellido || ''}`.trim() || `Vecino DNI ${vecinoDni}`,
+        tema: targetVecino?.tema_previo || '',
+        orden: 1,
+        totalSeconds: 120
+      },
+      nextSpeakers: upcomingQueue1a1
+    });
+
     onUpdate();
   };
 
@@ -569,6 +747,12 @@ export default function Cronometro1a1({ reunion, initialAsistencias, onUpdate, o
     if (autoEnd && autoEnd !== estimatedEnd) setEstimatedEnd(autoEnd);
 
     await saveUnoAUnoConfig(updatedStart, updatedEnd, newRecords, serializeActiveTimers(newActiveTimers));
+    
+    // Notificar a pantalla de proyección que se finalizó la atención
+    emitProyectorEvent(PROYECTOR_EVENTS.SPEAKER_CLEARED, {
+      reunionId: reunion.id
+    });
+
     onUpdate();
   };
 
@@ -582,6 +766,10 @@ export default function Cronometro1a1({ reunion, initialAsistencias, onUpdate, o
     setAsistencias(prev => prev.map(a => a.vecino_id === vecinoDni ? { ...a, asistio: false } : a));
 
     await guardarAsistencia(reunion.id, vecinoDni, false);
+
+    emitProyectorEvent(PROYECTOR_EVENTS.SPEAKER_CLEARED, {
+      reunionId: reunion.id
+    });
 
     const newActiveTimers = { ...activeTimers };
     delete newActiveTimers[vecinoDni];
@@ -1136,7 +1324,6 @@ export default function Cronometro1a1({ reunion, initialAsistencias, onUpdate, o
 🎤 Vecinos atendidos: ${atendidos.length}
 ⏱️ Tiempo de atención prom: ${displayAvg}
 
-🔥 Clima ${CLIMA_MAP[reunion.clima]?.waLabel || reunion.clima || 'bajo'}
 🚦 Semáforo político: ${SEMAFORO_MAP[reunion.semaforo_politico]?.waLabel || reunion.semaforo_politico || 'verde'}
 
 *📝 Síntesis cualitativa:*
@@ -1187,7 +1374,106 @@ ${sortedCited.length > 0
             </p>
           </div>
 
-          <div style={{ display: 'flex', gap: '8px' }} className="hide-on-print">
+          <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'center' }} className="hide-on-print">
+            <button 
+              type="button"
+              className="btn btn-sm" 
+              onClick={() => setShowPapeletasModal(true)} 
+              style={{ 
+                display: 'inline-flex', 
+                alignItems: 'center', 
+                gap: '6px', 
+                backgroundColor: '#0F766E', 
+                color: '#FFFFFF', 
+                border: 'none',
+                borderRadius: '6px',
+                padding: '6px 12px',
+                fontWeight: '700',
+                cursor: 'pointer',
+                boxShadow: '0 1px 3px rgba(0,0,0,0.1)'
+              }}
+              title="Ver el estado de las papeletas digitales cargadas para esta reunión"
+            >
+              <FileText size={15} /> 📄 Estado Papeletas ({solicitudesCount})
+            </button>
+
+            <button 
+              type="button"
+              className="btn btn-sm" 
+              onClick={() => setShowMapaModal(true)} 
+              style={{ 
+                display: 'inline-flex', 
+                alignItems: 'center', 
+                gap: '6px', 
+                backgroundColor: '#0284C7', 
+                color: '#FFFFFF', 
+                border: 'none',
+                borderRadius: '6px',
+                padding: '6px 12px',
+                fontWeight: '700',
+                cursor: 'pointer',
+                boxShadow: '0 1px 3px rgba(0,0,0,0.1)'
+              }}
+              title="Abrir mapa territorial de reclamos de esta comuna"
+            >
+              <MapPin size={15} /> 🗺️ Mapa de Reclamos
+            </button>
+
+            <button 
+              type="button"
+              className="btn btn-sm" 
+              onClick={() => window.open(`?view=proyector&reunion_id=${reunion.id}`, '_blank', 'width=1920,height=1080')} 
+              style={{ 
+                display: 'inline-flex', 
+                alignItems: 'center', 
+                gap: '6px', 
+                backgroundColor: '#7C3AED', 
+                color: '#FFFFFF', 
+                border: 'none',
+                borderRadius: '6px',
+                padding: '6px 12px',
+                fontWeight: '700',
+                cursor: 'pointer',
+                boxShadow: '0 1px 3px rgba(0,0,0,0.15)'
+              }}
+              title="Abrir Pantalla de Proyección para Escritorio Extendido (sin backoffice)"
+            >
+              <Tv size={15} /> 📺 2da Pantalla ↗
+            </button>
+
+            {/* BOTÓN: DEVOLUCIÓN DEL FUNCIONARIO (CONTROL PARA 2DA PANTALLA) */}
+            <button
+              type="button"
+              className="btn btn-sm"
+              onClick={handleToggleDevolucion}
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '6px',
+                backgroundColor: isDevolucionActive ? '#DC2626' : '#0D9488',
+                color: '#FFFFFF',
+                border: isDevolucionActive ? '2px solid #EF4444' : 'none',
+                borderRadius: '6px',
+                padding: '6px 14px',
+                fontWeight: '700',
+                cursor: 'pointer',
+                boxShadow: isDevolucionActive ? '0 0 12px rgba(220, 38, 38, 0.45)' : '0 1px 3px rgba(0,0,0,0.15)',
+                transition: 'all 0.2s ease'
+              }}
+              title={isDevolucionActive ? 'Finalizar devolución del funcionario y volver a modo oradores' : 'Iniciar Devolución del Funcionario en la 2da Pantalla de proyección'}
+            >
+              {isDevolucionActive ? (
+                <>
+                  <span style={{ width: '8px', height: '8px', borderRadius: '50%', backgroundColor: '#FFFFFF', display: 'inline-block' }} />
+                  ⏹️ Finalizar Devolución ({reunion?.funcionario || 'Funcionario'})
+                </>
+              ) : (
+                <>
+                  <Clock size={15} /> 🎙️ Devolución del Funcionario
+                </>
+              )}
+            </button>
+
             <button 
               className="btn btn-secondary btn-sm" 
               onClick={() => setShowInformeModal(true)} 
@@ -1242,12 +1528,30 @@ ${sortedCited.length > 0
 
         {/* KPI Cards de Resumen para Mano a Mano */}
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: '10px', marginBottom: '1.25rem' }} className="hide-on-print">
-          <div className="card" style={{ margin: 0, padding: '10px 14px', display: 'flex', alignItems: 'center', gap: '10px', backgroundColor: '#F8FAFC', border: '1px solid var(--color-border)' }}>
+          <div 
+            className="card" 
+            onClick={() => setShowInscBaseModal(true)}
+            style={{ 
+              margin: 0, 
+              padding: '10px 14px', 
+              display: 'flex', 
+              alignItems: 'center', 
+              gap: '10px', 
+              backgroundColor: '#F8FAFC', 
+              border: '1.5px solid #CBD5E1', 
+              cursor: 'pointer',
+              transition: 'all 0.15s ease'
+            }}
+            title="Abrir padrón base de inscriptos para citar, asignar bloques o confirmar vecinos"
+          >
             <div style={{ padding: '6px', borderRadius: '6px', backgroundColor: '#E2E8F0', color: '#334155' }}>
               <Users size={18} />
             </div>
             <div>
-              <div style={{ fontSize: '0.7rem', color: 'var(--color-text-muted)', fontWeight: '600', textTransform: 'uppercase' }}>Insc. Base</div>
+              <div style={{ fontSize: '0.7rem', color: 'var(--color-text-muted)', fontWeight: '600', textTransform: 'uppercase', display: 'flex', alignItems: 'center', gap: '5px' }}>
+                <span>Insc. Base</span>
+                <span style={{ fontSize: '0.62rem', backgroundColor: '#DBEAFE', color: '#1D4ED8', padding: '1px 5px', borderRadius: '4px', fontWeight: '700' }}>Gestionar</span>
+              </div>
               <div style={{ fontSize: '1.15rem', fontWeight: '700', color: 'var(--color-primary)' }}>{asistencias.length}</div>
             </div>
           </div>
@@ -1718,34 +2022,50 @@ ${sortedCited.length > 0
                               DNI: {item.vecino_id} 
                             </div>
                           </td>
-                           {/* Columna Tema */}
-                           <td style={{ fontSize: '0.85rem', maxWidth: '180px' }}>
-                             {editingTemaDni === item.vecino_id ? (
-                               <input
-                                 type="text"
-                                 value={tempTemaVal}
-                                 onChange={(e) => setTempTemaVal(e.target.value)}
-                                 onBlur={() => handleSaveTemaChange(item.vecino_id, tempTemaVal, item.asistio)}
-                                 onKeyDown={(e) => {
-                                   if (e.key === 'Enter') handleSaveTemaChange(item.vecino_id, tempTemaVal, item.asistio);
-                                   if (e.key === 'Escape') setEditingTemaDni(null);
-                                 }}
-                                 className="form-control"
-                                 style={{ width: '100%', padding: '2px 4px', fontSize: '0.8rem' }}
-                                 autoFocus
-                               />
-                             ) : (
-                               <span 
-                                 onClick={() => {
-                                   setEditingTemaDni(item.vecino_id);
-                                   setTempTemaVal(item.tema_previo || '');
-                                 }}
-                                 title="Haga clic para editar el tema"
-                                 style={{ cursor: 'pointer', display: 'block', minHeight: '20px' }}
-                               >
-                                 {item.tema_previo || <span style={{ color: 'var(--color-text-muted)', fontStyle: 'italic' }}>Sin tema (clic para editar)</span>}
+                           {/* Columna Tema: Link directo a Papeleta Digital */}
+                           <td style={{ fontSize: '0.85rem', maxWidth: '210px' }}>
+                             <a
+                               href={`?view=papeleta&reunion_id=${reunion.id}&dni=${item.vecino_id}&from=moderacion`}
+                               target="_blank"
+                               rel="noopener noreferrer"
+                               title="Abrir Papeleta Digital de este vecino en nueva pestaña (importa tema y datos)"
+                               style={{
+                                 display: 'inline-flex',
+                                 alignItems: 'center',
+                                 gap: '6px',
+                                 color: '#0369A1',
+                                 textDecoration: 'none',
+                                 fontWeight: '600',
+                                 padding: '5px 9px',
+                                 borderRadius: '6px',
+                                 backgroundColor: '#F0F9FF',
+                                 border: '1px solid #BAE6FD',
+                                 maxWidth: '100%',
+                                 transition: 'all 0.15s ease',
+                                 boxShadow: '0 1px 2px rgba(0,0,0,0.03)'
+                               }}
+                               onMouseEnter={(e) => {
+                                 e.currentTarget.style.backgroundColor = '#E0F2FE';
+                                 e.currentTarget.style.borderColor = '#0284C7';
+                                 e.currentTarget.style.color = '#0284C7';
+                               }}
+                               onMouseLeave={(e) => {
+                                 e.currentTarget.style.backgroundColor = '#F0F9FF';
+                                 e.currentTarget.style.borderColor = '#BAE6FD';
+                                 e.currentTarget.style.color = '#0369A1';
+                               }}
+                             >
+                               <FileText size={14} style={{ flexShrink: 0, color: '#0284C7' }} />
+                               <span style={{ 
+                                 overflow: 'hidden', 
+                                 textOverflow: 'ellipsis', 
+                                 whiteSpace: 'nowrap', 
+                                 maxWidth: '150px' 
+                                }}>
+                                 {item.tema_previo || 'Cargar Reclamo'}
                                </span>
-                             )}
+                               <ExternalLink size={12} style={{ flexShrink: 0, color: '#0284C7', opacity: 0.8 }} />
+                             </a>
                            </td>
                           {/* Columna Hora Ingreso */}
                           <td style={{ fontFamily: 'monospace' }}>
@@ -1892,24 +2212,10 @@ ${sortedCited.length > 0
               borderTop: '2px solid var(--color-border)' 
             }} className="hide-on-print">
               <h4 style={{ fontSize: '1.1rem', color: 'var(--color-primary)', marginTop: 0, marginBottom: '1rem', fontWeight: '700' }}>
-                ✏️ Síntesis Cualitativa y Clima de la Reunión
+                ✏️ Síntesis Cualitativa y Semáforo Político
               </h4>
               
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '1rem', marginBottom: '1.25rem' }}>
-                <div className="form-group" style={{ marginBottom: 0 }}>
-                  <label style={{ fontSize: '0.8rem', color: 'var(--color-text-muted)', fontWeight: '600', display: 'block', marginBottom: '4px' }}>Clima de la Reunión</label>
-                  <select 
-                    className="form-control" 
-                    value={localClima} 
-                    onChange={(e) => setLocalClima(e.target.value)}
-                    style={{ height: '38px' }}
-                  >
-                    <option value="bajo">🔥 Clima bajo</option>
-                    <option value="medio">🔥 Clima medio</option>
-                    <option value="alto">🔥 Clima caliente</option>
-                  </select>
-                </div>
-                
+              <div style={{ marginBottom: '1.25rem', maxWidth: '320px' }}>
                 <div className="form-group" style={{ marginBottom: 0 }}>
                   <label style={{ fontSize: '0.8rem', color: 'var(--color-text-muted)', fontWeight: '600', display: 'block', marginBottom: '4px' }}>Semáforo Político</label>
                   <select 
@@ -1952,7 +2258,7 @@ ${sortedCited.length > 0
               <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
                 <button 
                   className="btn btn-primary"
-                  onClick={() => handleSaveReunionQualitative(localSintesis, localClima, localSemaforo, localGestionPresente)}
+                  onClick={() => handleSaveReunionQualitative(localSintesis, localSemaforo, localGestionPresente)}
                   style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', backgroundColor: 'var(--color-success)', borderColor: 'var(--color-success)' }}
                 >
                   Guardar Síntesis y Variables
@@ -2050,6 +2356,412 @@ ${sortedCited.length > 0
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL PADRÓN BASE DE INSCRIPTOS (PISCINA) */}
+      {showInscBaseModal && (
+        <div className="modal-overlay" style={{ zIndex: 99999 }}>
+          <div className="modal-content" style={{ maxWidth: '980px', width: '96%', maxHeight: '90vh', display: 'flex', flexDirection: 'column', backgroundColor: '#FFFFFF', padding: '1.25rem', borderRadius: '12px', boxShadow: '0 20px 25px -5px rgba(0, 0, 0, 0.2)' }}>
+            
+            {/* Header del modal */}
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem', borderBottom: '1px solid #E2E8F0', paddingBottom: '10px' }}>
+              <div>
+                <h3 style={{ fontSize: '1.2rem', color: 'var(--color-primary)', margin: 0, display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <Users size={20} style={{ color: '#0284C7' }} />
+                  Padrón Base de Inscriptos (Total: {asistencias.length})
+                </h3>
+                <div style={{ fontSize: '0.8rem', color: '#64748B', marginTop: '2px' }}>
+                  Citar vecinos al 1 a 1, asignar bloques de atención o confirmar su participación.
+                </div>
+              </div>
+              <button 
+                type="button"
+                className="btn btn-secondary btn-sm"
+                onClick={() => setShowInscBaseModal(false)}
+                style={{ padding: '6px 10px', borderRadius: '6px' }}
+              >
+                <X size={16} />
+              </button>
+            </div>
+
+            {/* Métricas rápidas y Filtros */}
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '10px', marginBottom: '12px' }}>
+              <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                <button
+                  type="button"
+                  onClick={() => setInscBaseFilter('todos')}
+                  style={{
+                    fontSize: '0.78rem',
+                    fontWeight: '700',
+                    padding: '4px 10px',
+                    borderRadius: '20px',
+                    border: '1px solid',
+                    cursor: 'pointer',
+                    backgroundColor: inscBaseFilter === 'todos' ? '#0F172A' : '#F1F5F9',
+                    color: inscBaseFilter === 'todos' ? '#FFFFFF' : '#475569',
+                    borderColor: inscBaseFilter === 'todos' ? '#0F172A' : '#CBD5E1'
+                  }}
+                >
+                  Todos ({asistencias.length})
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setInscBaseFilter('piscina')}
+                  style={{
+                    fontSize: '0.78rem',
+                    fontWeight: '700',
+                    padding: '4px 10px',
+                    borderRadius: '20px',
+                    border: '1px solid',
+                    cursor: 'pointer',
+                    backgroundColor: inscBaseFilter === 'piscina' ? '#F59E0B' : '#FEF3C7',
+                    color: inscBaseFilter === 'piscina' ? '#FFFFFF' : '#B45309',
+                    borderColor: inscBaseFilter === 'piscina' ? '#D97706' : '#FDE68A'
+                  }}
+                >
+                  En Piscina / Pendientes ({inscriptosPool.length})
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setInscBaseFilter('citados')}
+                  style={{
+                    fontSize: '0.78rem',
+                    fontWeight: '700',
+                    padding: '4px 10px',
+                    borderRadius: '20px',
+                    border: '1px solid',
+                    cursor: 'pointer',
+                    backgroundColor: inscBaseFilter === 'citados' ? '#2563EB' : '#EFF6FF',
+                    color: inscBaseFilter === 'citados' ? '#FFFFFF' : '#1D4ED8',
+                    borderColor: inscBaseFilter === 'citados' ? '#1D4ED8' : '#BFDBFE'
+                  }}
+                >
+                  Convocados / Citados ({convocadosList.length})
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setInscBaseFilter('confirmados')}
+                  style={{
+                    fontSize: '0.78rem',
+                    fontWeight: '700',
+                    padding: '4px 10px',
+                    borderRadius: '20px',
+                    border: '1px solid',
+                    cursor: 'pointer',
+                    backgroundColor: inscBaseFilter === 'confirmados' ? '#059669' : '#ECFDF5',
+                    color: inscBaseFilter === 'confirmados' ? '#FFFFFF' : '#047857',
+                    borderColor: inscBaseFilter === 'confirmados' ? '#047857' : '#A7F3D0'
+                  }}
+                >
+                  Confirmados ({listConfirmados.length})
+                </button>
+              </div>
+
+              {/* Buscador libre */}
+              <div style={{ position: 'relative', minWidth: '240px', flex: '1', maxWidth: '320px' }}>
+                <input
+                  type="text"
+                  placeholder="Buscar por DNI, Nombre o Tema..."
+                  value={inscBaseSearch}
+                  onChange={(e) => setInscBaseSearch(e.target.value)}
+                  className="form-control"
+                  style={{ fontSize: '0.82rem', paddingLeft: '28px', height: '34px' }}
+                />
+                <Search size={14} style={{ position: 'absolute', left: '9px', top: '50%', transform: 'translateY(-50%)', color: '#94A3B8' }} />
+                {inscBaseSearch && (
+                  <button
+                    type="button"
+                    onClick={() => setInscBaseSearch('')}
+                    style={{ position: 'absolute', right: '8px', top: '50%', transform: 'translateY(-50%)', background: 'none', border: 'none', cursor: 'pointer', color: '#94A3B8' }}
+                  >
+                    <X size={13} />
+                  </button>
+                )}
+              </div>
+            </div>
+
+            {/* Listado de inscriptos en tabla scrollable */}
+            <div style={{ flex: 1, overflowY: 'auto', border: '1px solid #E2E8F0', borderRadius: '8px', minHeight: '250px' }}>
+              {(() => {
+                const term = inscBaseSearch.toLowerCase().trim();
+                const filtered = asistencias.filter(item => {
+                  // Filtro por tab
+                  const isCitado = item.estado_convocatoria === 'citado' || item.estado_convocatoria === 'walk_in';
+                  if (inscBaseFilter === 'piscina' && isCitado) return false;
+                  if (inscBaseFilter === 'citados' && !isCitado) return false;
+                  if (inscBaseFilter === 'confirmados' && !item.confirmado) return false;
+
+                  // Filtro por búsqueda
+                  if (!term) return true;
+                  const v = item.vecino || {};
+                  const fullName = `${v.nombre || ''} ${v.apellido || ''}`.toLowerCase();
+                  return (
+                    item.vecino_id.includes(term) ||
+                    fullName.includes(term) ||
+                    (v.celular && v.celular.includes(term)) ||
+                    (item.tema_previo && item.tema_previo.toLowerCase().includes(term)) ||
+                    (item.horario_bloque_asignado && item.horario_bloque_asignado.toLowerCase().includes(term))
+                  );
+                });
+
+                if (filtered.length === 0) {
+                  return (
+                    <div style={{ padding: '2.5rem', textAlign: 'center', color: '#64748B', fontSize: '0.9rem' }}>
+                      No se encontraron vecinos con los filtros aplicados.
+                    </div>
+                  );
+                }
+
+                return (
+                  <table className="table" style={{ margin: 0, fontSize: '0.82rem' }}>
+                    <thead style={{ position: 'sticky', top: 0, backgroundColor: '#F8FAFC', zIndex: 2, boxShadow: '0 1px 2px rgba(0,0,0,0.05)' }}>
+                      <tr>
+                        <th style={{ width: '85px', textAlign: 'center' }}>¿Citado?</th>
+                        <th style={{ width: '150px' }}>Bloque Horario</th>
+                        <th style={{ width: '90px', textAlign: 'center' }}>¿Confirmó?</th>
+                        <th>Vecino (Nombre y DNI)</th>
+                        <th>Tema / Papeleta</th>
+                        <th style={{ width: '85px', textAlign: 'center' }}>¿Presente?</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {filtered.map(item => {
+                        const isCitado = item.estado_convocatoria === 'citado' || item.estado_convocatoria === 'walk_in';
+                        const v = item.vecino || {};
+                        return (
+                          <tr key={item.id || item.vecino_id} style={{ backgroundColor: isCitado ? '#F8FAFC' : '#FFFFFF' }}>
+                            {/* Checkbox ¿Citado? */}
+                            <td style={{ textAlign: 'center', verticalAlign: 'middle' }}>
+                              <input
+                                type="checkbox"
+                                checked={isCitado}
+                                onChange={() => handleToggleCitadoBase(item)}
+                                style={{ width: '18px', height: '18px', cursor: 'pointer', accentColor: '#2563EB' }}
+                                title={isCitado ? 'Quitar de citados (volver a piscina)' : 'Citar al 1 a 1'}
+                              />
+                            </td>
+
+                            {/* Bloque Horario Editable */}
+                            <td style={{ verticalAlign: 'middle' }}>
+                              {isCitado ? (
+                                <select
+                                  value={item.horario_bloque_asignado || ''}
+                                  onChange={(e) => handleChangeSlotBase(item, e.target.value)}
+                                  className="form-control"
+                                  style={{ fontSize: '0.78rem', padding: '3px 6px', height: '28px', width: '100%' }}
+                                >
+                                  <option value="">Sin horario</option>
+                                  {HORAS_BLOQUE.map(h => (
+                                    <option key={h} value={h}>{h}</option>
+                                  ))}
+                                  {item.horario_bloque_asignado && !HORAS_BLOQUE.includes(item.horario_bloque_asignado) && (
+                                    <option value={item.horario_bloque_asignado}>{item.horario_bloque_asignado}</option>
+                                  )}
+                                </select>
+                              ) : (
+                                <span style={{ color: '#94A3B8', fontSize: '0.75rem', fontStyle: 'italic' }}>
+                                  (Auto al citar)
+                                </span>
+                              )}
+                            </td>
+
+                            {/* Checkbox ¿Confirmó? */}
+                            <td style={{ textAlign: 'center', verticalAlign: 'middle' }}>
+                              <input
+                                type="checkbox"
+                                checked={!!item.confirmado}
+                                onChange={() => handleToggleConfirmadoBase(item)}
+                                style={{ width: '17px', height: '17px', cursor: 'pointer', accentColor: '#10B981' }}
+                                title={item.confirmado ? 'Desmarcar reconfirmación' : 'Marcar como reconfirmado'}
+                              />
+                            </td>
+
+                            {/* Vecino */}
+                            <td style={{ verticalAlign: 'middle' }}>
+                              <div style={{ fontWeight: '700', color: '#1E293B' }}>
+                                {v.nombre} {v.apellido}
+                              </div>
+                              <div style={{ fontSize: '0.74rem', color: '#64748B', display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                                <span>DNI: {item.vecino_id}</span>
+                                {v.celular && <span>Tel: {v.celular}</span>}
+                                {v.barrio && <span>• {v.barrio}</span>}
+                              </div>
+                            </td>
+
+                            {/* Tema / Papeleta */}
+                            <td style={{ verticalAlign: 'middle' }}>
+                              <a
+                                href={`?view=papeleta&reunion_id=${reunion.id}&dni=${item.vecino_id}&from=moderacion`}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                title="Abrir Papeleta Digital de este vecino en nueva pestaña"
+                                style={{
+                                  display: 'inline-flex',
+                                  alignItems: 'center',
+                                  gap: '4px',
+                                  color: '#0284C7',
+                                  textDecoration: 'none',
+                                  fontWeight: '600',
+                                  fontSize: '0.78rem',
+                                  backgroundColor: '#F0F9FF',
+                                  border: '1px solid #BAE6FD',
+                                  padding: '3px 8px',
+                                  borderRadius: '5px'
+                                }}
+                              >
+                                <FileText size={12} />
+                                <span style={{ maxWidth: '140px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                  {item.tema_previo || 'Cargar Reclamo'}
+                                </span>
+                                <ExternalLink size={10} />
+                              </a>
+                            </td>
+
+                            {/* ¿Presente? */}
+                            <td style={{ textAlign: 'center', verticalAlign: 'middle' }}>
+                              <input
+                                type="checkbox"
+                                checked={!!item.asistio}
+                                onChange={() => handleToggleAsistio(item.vecino_id, item.asistio)}
+                                style={{ width: '17px', height: '17px', cursor: 'pointer', accentColor: '#10B981' }}
+                                title={item.asistio ? 'Quitar presente' : 'Marcar presente'}
+                              />
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                );
+              })()}
+            </div>
+
+            {/* Footer */}
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '12px', borderTop: '1px solid #E2E8F0', paddingTop: '10px' }}>
+              <div style={{ fontSize: '0.76rem', color: '#64748B' }}>
+                💡 Los cambios en citados, turnos y confirmaciones se guardan inmediatamente en vivo.
+              </div>
+              <button
+                type="button"
+                className="btn btn-primary btn-sm"
+                onClick={() => setShowInscBaseModal(false)}
+                style={{ padding: '6px 16px' }}
+              >
+                Listo / Volver al Cronómetro
+              </button>
+            </div>
+
+          </div>
+        </div>
+      )}
+
+      {/* MODAL ESTADO DE PAPELETAS DIGITALES (Image 2) */}
+      {showPapeletasModal && (
+        <div className="modal-overlay" style={{ zIndex: 99999 }}>
+          <div className="modal-content" style={{ maxWidth: '1240px', width: '96%', height: '90vh', display: 'flex', flexDirection: 'column', backgroundColor: '#FFFFFF', padding: '1.25rem', borderRadius: '12px', boxShadow: '0 25px 35px -5px rgba(0, 0, 0, 0.25)', overflow: 'hidden' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px', borderBottom: '1px solid #E2E8F0', paddingBottom: '8px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                <span style={{ fontSize: '0.95rem', fontWeight: '800', color: '#0F766E', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                  <FileText size={18} /> Módulo de Papeleta Digital • Estado de Reclamos
+                </span>
+                <a
+                  href={`?view=panel_papeletas&reunion_id=${reunion.id}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  style={{
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: '4px',
+                    fontSize: '0.75rem',
+                    color: '#0284C7',
+                    fontWeight: '700',
+                    textDecoration: 'none',
+                    backgroundColor: '#F0F9FF',
+                    padding: '3px 8px',
+                    borderRadius: '4px',
+                    border: '1px solid #BAE6FD'
+                  }}
+                  title="Abrir en pestaña completa aparte"
+                >
+                  <ExternalLink size={12} /> Abrir en nueva pestaña
+                </a>
+              </div>
+              <button 
+                type="button"
+                className="btn btn-secondary btn-sm"
+                onClick={() => {
+                  setShowPapeletasModal(false);
+                  fetchSolicitudes();
+                }}
+                style={{ padding: '4px 10px', borderRadius: '6px', fontWeight: '700' }}
+              >
+                <X size={16} /> Cerrar
+              </button>
+            </div>
+
+            <div style={{ flex: 1, overflowY: 'auto' }}>
+              <PanelSolicitudesPapeleta 
+                reunion={reunion}
+                onBack={() => {
+                  setShowPapeletasModal(false);
+                  fetchSolicitudes();
+                }}
+              />
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL MAPA TERRITORIAL DE RECLAMOS (Image 3) */}
+      {showMapaModal && (
+        <div className="modal-overlay" style={{ zIndex: 99999 }}>
+          <div className="modal-content" style={{ maxWidth: '1240px', width: '96%', height: '90vh', display: 'flex', flexDirection: 'column', backgroundColor: '#FFFFFF', padding: '1rem', borderRadius: '12px', boxShadow: '0 25px 35px -5px rgba(0, 0, 0, 0.25)', overflow: 'hidden' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px', borderBottom: '1px solid #E2E8F0', paddingBottom: '8px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                <span style={{ fontSize: '0.95rem', fontWeight: '800', color: '#0284C7', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                  <MapPin size={18} /> Mapa Territorial de Reclamos
+                </span>
+                <a
+                  href={`?view=mapa_comuna&reunion_id=${reunion.id}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  style={{
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: '4px',
+                    fontSize: '0.75rem',
+                    color: '#0284C7',
+                    fontWeight: '700',
+                    textDecoration: 'none',
+                    backgroundColor: '#F0F9FF',
+                    padding: '3px 8px',
+                    borderRadius: '4px',
+                    border: '1px solid #BAE6FD'
+                  }}
+                  title="Abrir mapa en pantalla completa en una nueva pestaña"
+                >
+                  <ExternalLink size={12} /> Abrir en nueva pestaña
+                </a>
+              </div>
+              <button 
+                type="button"
+                className="btn btn-secondary btn-sm"
+                onClick={() => setShowMapaModal(false)}
+                style={{ padding: '4px 10px', borderRadius: '6px', fontWeight: '700' }}
+              >
+                <X size={16} /> Cerrar
+              </button>
+            </div>
+
+            <div style={{ flex: 1, minHeight: '520px', overflowY: 'auto' }}>
+              <MapaReclamosComuna
+                reunion={reunion}
+                solicitudes={solicitudesList}
+                onClose={() => setShowMapaModal(false)}
+              />
+            </div>
           </div>
         </div>
       )}
@@ -2156,10 +2868,6 @@ ${sortedCited.length > 0
                   <div>
                     <span style={{ fontSize: '0.8rem', color: 'var(--color-text-muted)', fontWeight: '600', display: 'block', marginBottom: '2px' }}>Cierre Real</span>
                     <strong style={{ fontSize: '0.9rem' }}>{estimatedEnd || '--:--'} hs</strong>
-                  </div>
-                  <div>
-                    <span style={{ fontSize: '0.8rem', color: 'var(--color-text-muted)', fontWeight: '600', display: 'block', marginBottom: '2px' }}>Clima de la Reunión</span>
-                    <strong style={{ fontSize: '0.9rem' }}>{CLIMA_MAP[reunion.clima]?.label || 'Bajo'}</strong>
                   </div>
                   <div>
                     <span style={{ fontSize: '0.8rem', color: 'var(--color-text-muted)', fontWeight: '600', display: 'block', marginBottom: '2px' }}>Semáforo Político</span>

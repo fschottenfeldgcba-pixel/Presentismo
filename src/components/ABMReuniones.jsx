@@ -127,6 +127,7 @@ export default function ABMReuniones({ onBack, onSaveSuccess }) {
   const [cupoGeneral, setCupoGeneral] = useState(50);
   const [cupoTM, setCupoTM] = useState(25);
   const [cupoTT, setCupoTT] = useState(25);
+  const [isLndlmEvent, setIsLndlmEvent] = useState(false);
 
   // Estados para funcionarios y autocompletado
   const [funcionariosList, setFuncionariosList] = useState([]);
@@ -520,7 +521,8 @@ export default function ABMReuniones({ onBack, onSaveSuccess }) {
         modalidadCupo,
         cupoGeneral: Number(cupoGeneral) || 0,
         cupoTM: Number(cupoTM) || 0,
-        cupoTT: Number(cupoTT) || 0
+        cupoTT: Number(cupoTT) || 0,
+        is_lndlm_event: Boolean(isLndlmEvent)
       } : null
     });
 
@@ -781,6 +783,19 @@ export default function ABMReuniones({ onBack, onSaveSuccess }) {
                               required
                             />
                           </div>
+                        </div>
+                      )}
+
+                      {tipoReunion === TIPOS_REUNION.VOLUNTARIADOS && (
+                        <div style={{ marginTop: '0.85rem', paddingTop: '0.85rem', borderTop: '1px solid #BBF7D0' }}>
+                          <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer', fontSize: '0.84rem', fontWeight: 700, color: '#0F172A' }}>
+                            <input
+                              type="checkbox"
+                              checked={isLndlmEvent}
+                              onChange={e => setIsLndlmEvent(e.target.checked)}
+                            />
+                            🏛️ Evento Especial: La Noche de los Museos (LNDLM) - Habilitar Asignación de Espacios Culturales
+                          </label>
                         </div>
                       )}
                     </div>

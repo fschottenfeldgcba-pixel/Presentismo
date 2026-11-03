@@ -1,15 +1,21 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { 
   getSolicitudesPorReunion, 
   updateEstadoSolicitud, 
+  actualizarDetalleSolicitud,
+  eliminarSolicitudPapeleta,
   TEMATICAS_PAPELETA, 
   ESTADOS_SOLICITUD,
   clasificarUbicacion 
 } from '../services/solicitudesService';
+import InputDireccionCaba from './InputDireccionCaba';
+import SelectorUbicacionPapeleta from './SelectorUbicacionPapeleta';
+import { normalizarDireccionUsig } from '../services/georrefService';
 import { 
   ArrowLeft, Search, Download, Copy, Check, QrCode, RefreshCw, 
   Filter, CheckCircle2, Clock, AlertTriangle, ExternalLink, MessageSquare, 
-  MapPin, User, FileText, Sparkles, Tag, ChevronRight, Share2, X
+  MapPin, User, FileText, Sparkles, Tag, ChevronRight, Share2, X,
+  Edit2, Trash2, Save
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 
@@ -25,15 +31,51 @@ export default function PanelSolicitudesPapeleta({ reunion, onBack }) {
   const [showQrModal, setShowQrModal] = useState(false);
   const [ticketInputs, setTicketInputs] = useState({});
   const [notasInputs, setNotasInputs] = useState({});
+  const [editingId, setEditingId] = useState(null);
+  const [editForm, setEditForm] = useState({ 
+    tematica: '', 
+    direccion: '', 
+    descripcion: '',
+    autocompletado: false,
+    lat: null,
+    lng: null,
+    altura: null,
+    cruce: null,
+    tipo_ubicacion: null,
+    comuna_direccion: null
+  });
+
+  // Referencia para sincronizar editingId con los timers asíncronos y evitar reescritura en segundo plano
+  const editingIdRef = useRef(null);
+  editingIdRef.current = editingId;
 
   // Cargar solicitudes
   const loadData = async (isSilent = false) => {
+    // Si el usuario está activamente editando un reclamo, pausar el refresco silencioso
+    if (isSilent && editingIdRef.current) return;
+
     if (!isSilent) setLoading(true);
     try {
       const { data } = await getSolicitudesPorReunion(reunion?.id);
       if (data) {
-        setSolicitudes(data);
-        // Inicializar estados locales de inputs
+        // Doble verificación: si mientras la llamada estaba en curso se abrió una edición, no pisar
+        if (isSilent && editingIdRef.current) return;
+
+        setSolicitudes(prev => {
+          if (editingIdRef.current) {
+            // Preservar el item que se está editando para no perder cambios locales en curso
+            return data.map(newItem => {
+              if (newItem.id === editingIdRef.current) {
+                const prevItem = prev.find(p => p.id === newItem.id);
+                return prevItem || newItem;
+              }
+              return newItem;
+            });
+          }
+          return data;
+        });
+
+        // Inicializar estados locales de inputs sin sobreescribir lo que el usuario esté escribiendo
         const tObj = {};
         const nObj = {};
         data.forEach(s => {
@@ -53,8 +95,11 @@ export default function PanelSolicitudesPapeleta({ reunion, onBack }) {
   useEffect(() => {
     loadData();
     // Polling en vivo cada 6 segundos para stream en tiempo real en la sala
+    // Pausado automáticamente si el usuario está en modo edición
     const interval = setInterval(() => {
-      loadData(true);
+      if (!editingIdRef.current) {
+        loadData(true);
+      }
     }, 6000);
     return () => clearInterval(interval);
   }, [reunion?.id]);
@@ -68,7 +113,7 @@ export default function PanelSolicitudesPapeleta({ reunion, onBack }) {
   const handleCambiarEstado = async (solicitudId, nuevoEstado) => {
     setSavingId(solicitudId);
     try {
-      await updateEstadoSolicitud(solicitudId, { estado: nuevoEstado });
+      await updateEstadoSolicitud(solicitudId, { estado: nuevoEstado }, reunion?.id);
       setSolicitudes(prev => prev.map(s => s.id === solicitudId ? { ...s, estado: nuevoEstado } : s));
     } catch (err) {
       console.error(err);
@@ -86,7 +131,7 @@ export default function PanelSolicitudesPapeleta({ reunion, onBack }) {
         ticket_suaci: ticketInputs[solicitudId] || '',
         notas_operador: notasInputs[solicitudId] || ''
       };
-      await updateEstadoSolicitud(solicitudId, updates);
+      await updateEstadoSolicitud(solicitudId, updates, reunion?.id);
       setSolicitudes(prev => prev.map(s => s.id === solicitudId ? { ...s, ...updates } : s));
       alert('¡Detalles de la solicitud guardados con éxito!');
     } catch (err) {
@@ -94,6 +139,95 @@ export default function PanelSolicitudesPapeleta({ reunion, onBack }) {
       alert('Error al guardar detalles.');
     } finally {
       setSavingId(null);
+    }
+  };
+
+  // Iniciar edición de reclamo
+  const handleStartEdit = (item) => {
+    setEditingId(item.id);
+    setEditForm({
+      tematica: item.tematica || 'Arbolado',
+      direccion: item.direccion || '',
+      descripcion: item.descripcion || '',
+      autocompletado: Boolean(item.autocompletado),
+      lat: item.lat || null,
+      lng: item.lng || null,
+      altura: item.altura || null,
+      cruce: item.cruce || null,
+      tipo_ubicacion: item.tipo_ubicacion || null,
+      comuna_direccion: item.comuna_direccion || null
+    });
+  };
+
+  const handleCancelEdit = () => {
+    setEditingId(null);
+  };
+
+  const handleGuardarEdicion = async (solicitudId) => {
+    setSavingId(solicitudId);
+    try {
+      let latVal = editForm.lat || null;
+      let lngVal = editForm.lng || null;
+
+      // Si no tiene coordenadas pero escribió una dirección puntual (ej: no seleccionó del desplegable),
+      // resolver en el momento para vincular automáticamente al mapa
+      if ((!latVal || !lngVal) && editForm.direccion && editForm.direccion.trim().length >= 3) {
+        try {
+          const geo = await normalizarDireccionUsig(editForm.direccion);
+          if (geo && geo.lat && geo.lng) {
+            latVal = geo.lat;
+            lngVal = geo.lng;
+          }
+        } catch (e) {}
+      }
+
+      const clasif = clasificarUbicacion(editForm.direccion, {
+        autocompletado: editForm.autocompletado || Boolean(latVal && lngVal),
+        altura: editForm.altura,
+        cruce: editForm.cruce,
+        tipo: editForm.tipo_ubicacion,
+        lat: latVal,
+        lng: lngVal
+      });
+
+      const updatesPayload = {
+        ...editForm,
+        tipo_registro: clasif.tipo,
+        lat: clasif.esPuntual ? latVal : null,
+        lng: clasif.esPuntual ? lngVal : null
+      };
+
+      const res = await actualizarDetalleSolicitud(solicitudId, updatesPayload, reunion?.id);
+      if (res.success) {
+        setSolicitudes(prev => prev.map(s => {
+          if (s.id === solicitudId) {
+            return {
+              ...s,
+              ...updatesPayload
+            };
+          }
+          return s;
+        }));
+        setEditingId(null);
+      } else {
+        alert('No se pudo guardar la edición del reclamo.');
+      }
+    } catch (err) {
+      console.error(err);
+      alert('Error al guardar edición.');
+    } finally {
+      setSavingId(null);
+    }
+  };
+
+  const handleDeleteSolicitud = async (solicitudId) => {
+    if (!window.confirm('¿Estás seguro de que deseas eliminar este reclamo? Esta acción no se puede deshacer.')) return;
+    try {
+      await eliminarSolicitudPapeleta(solicitudId, reunion?.id);
+      setSolicitudes(prev => prev.filter(s => s.id !== solicitudId));
+    } catch (err) {
+      console.error(err);
+      alert('No se pudo eliminar el reclamo.');
     }
   };
 
@@ -119,11 +253,18 @@ ${item.descripcion}
   };
 
   // Helper para evaluar si un registro califica como Solicitud Puntual o Preocupación General
+  // Solo califica como puntual si cuenta con altura, cruce o lugar físico identificable
   const esSolicitudReal = (s) => {
-    if (!s) return false;
-    const clasif = clasificarUbicacion(s.direccion, { lat: s.lat, lng: s.lng });
-    if (clasif.esPuntual) return true;
-    return s.tipo_registro === 'solicitud';
+    if (!s || !s.direccion) return false;
+    const clasif = clasificarUbicacion(s.direccion, {
+      autocompletado: s.autocompletado,
+      altura: s.altura,
+      cruce: s.cruce,
+      tipo: s.tipo_ubicacion,
+      lat: s.lat,
+      lng: s.lng
+    });
+    return clasif.esPuntual;
   };
 
   // Exportar todas las solicitudes a Excel (.xlsx)
@@ -225,6 +366,28 @@ ${item.descripcion}
         </button>
 
         <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+          <a
+            href={`?view=mapa_comuna&reunion_id=${reunion?.id || ''}`}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="btn btn-sm"
+            style={{ 
+              backgroundColor: '#0284C7', 
+              color: '#FFFFFF', 
+              display: 'inline-flex', 
+              alignItems: 'center', 
+              gap: '6px', 
+              fontWeight: 'bold', 
+              borderRadius: '6px', 
+              padding: '6px 12px',
+              textDecoration: 'none',
+              boxShadow: '0 1px 3px rgba(0,0,0,0.1)'
+            }}
+            title="Abrir mapa territorial de reclamos de esta comuna en una nueva pestaña"
+          >
+            <MapPin size={15} /> 🗺️ Ver Mapa
+          </a>
+
           <button
             type="button"
             className="btn btn-sm"
@@ -494,7 +657,7 @@ ${item.descripcion}
                     </div>
                   </div>
 
-                  {/* Badge de Estado y Selector de Estado */}
+                  {/* Badge de Estado y Selector de Estado + Acciones de Edición/Eliminar */}
                   <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
                     <select
                       value={item.estado || 'pendiente'}
@@ -515,29 +678,152 @@ ${item.descripcion}
                         <option key={est.id} value={est.id}>{est.icon} {est.label}</option>
                       ))}
                     </select>
+
+                    <button
+                      type="button"
+                      onClick={() => handleStartEdit(item)}
+                      title="Editar temática, dirección o descripción del reclamo"
+                      style={{
+                        padding: '4px 8px',
+                        borderRadius: '6px',
+                        fontSize: '0.75rem',
+                        fontWeight: '600',
+                        backgroundColor: '#EFF6FF',
+                        color: '#1D4ED8',
+                        border: '1px solid #BFDBFE',
+                        cursor: 'pointer',
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        gap: '4px'
+                      }}
+                    >
+                      <Edit2 size={13} /> Editar
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => handleDeleteSolicitud(item.id)}
+                      title="Eliminar este reclamo"
+                      style={{
+                        padding: '4px 8px',
+                        borderRadius: '6px',
+                        fontSize: '0.75rem',
+                        fontWeight: '600',
+                        backgroundColor: '#FEF2F2',
+                        color: '#DC2626',
+                        border: '1px solid #FECACA',
+                        cursor: 'pointer',
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        gap: '4px'
+                      }}
+                    >
+                      <Trash2 size={13} />
+                    </button>
                   </div>
                 </div>
 
-                {/* Contenido: Dirección y Descripción */}
-                <div style={{ backgroundColor: '#F8FAFC', borderRadius: '8px', padding: '12px', border: '1px solid #E2E8F0', marginBottom: '12px' }}>
-                  <div style={{ marginBottom: '8px' }}>
-                    <span style={{ fontSize: '0.72rem', color: '#64748B', fontWeight: '800', textTransform: 'uppercase', letterSpacing: '0.3px', display: 'block', marginBottom: '2px' }}>
-                      📍 Dirección exacta de la consulta:
-                    </span>
-                    <div style={{ fontSize: '0.9rem', color: '#1E293B', fontWeight: '600' }}>
-                      {item.direccion || 'Sin dirección específica ingresada'}
+                {/* Contenido: Modo Edición vs Modo Visualización */}
+                {editingId === item.id ? (
+                  <div style={{ backgroundColor: '#EFF6FF', borderRadius: '8px', padding: '14px', border: '1px solid #BFDBFE', marginBottom: '12px' }}>
+                    <div style={{ fontWeight: '700', color: '#1E40AF', fontSize: '0.85rem', marginBottom: '10px', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                      <Edit2 size={15} /> Modificar Reclamo del Vecino
                     </div>
-                  </div>
 
-                  <div>
-                    <span style={{ fontSize: '0.72rem', color: '#64748B', fontWeight: '800', textTransform: 'uppercase', letterSpacing: '0.3px', display: 'block', marginBottom: '2px' }}>
-                      📝 Breve descripción del reclamo:
-                    </span>
-                    <div style={{ fontSize: '0.88rem', color: '#334155', lineHeight: '1.4', whiteSpace: 'pre-wrap' }}>
-                      {item.descripcion || 'Sin descripción'}
+                    <div style={{ marginBottom: '12px' }}>
+                      <label style={{ fontSize: '0.75rem', fontWeight: '700', color: '#334155', display: 'block', marginBottom: '4px' }}>
+                        Temática:
+                      </label>
+                      <select
+                        className="form-control form-control-sm"
+                        value={editForm.tematica}
+                        onChange={(e) => setEditForm(prev => ({ ...prev, tematica: e.target.value }))}
+                        style={{ fontSize: '0.82rem', maxWidth: '320px' }}
+                      >
+                        {TEMATICAS_PAPELETA.map(t => (
+                          <option key={t.id} value={t.id}>{t.icon} {t.label}</option>
+                        ))}
+                      </select>
+                    </div>
+
+                    <SelectorUbicacionPapeleta
+                      value={editForm.direccion}
+                      meta={{
+                        autocompletado: editForm.autocompletado,
+                        lat: editForm.lat,
+                        lng: editForm.lng,
+                        altura: editForm.altura,
+                        cruce: editForm.cruce,
+                        tipo_ubicacion: editForm.tipo_ubicacion,
+                        comuna_direccion: editForm.comuna_direccion
+                      }}
+                      reunion={reunion}
+                      barrioVecino={item.barrio}
+                      onChange={(nuevaDir, nuevoMeta) => {
+                        setEditForm(prev => ({
+                          ...prev,
+                          direccion: nuevaDir,
+                          ...nuevoMeta
+                        }));
+                      }}
+                    />
+
+                    <div style={{ marginBottom: '12px' }}>
+                      <label style={{ fontSize: '0.75rem', fontWeight: '700', color: '#334155', display: 'block', marginBottom: '4px' }}>
+                        Descripción del reclamo:
+                      </label>
+                      <textarea
+                        rows={3}
+                        className="form-control form-control-sm"
+                        value={editForm.descripcion}
+                        onChange={(e) => setEditForm(prev => ({ ...prev, descripcion: e.target.value }))}
+                        placeholder="Detalle del reclamo..."
+                        style={{ fontSize: '0.85rem' }}
+                      />
+                    </div>
+
+                    <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end' }}>
+                      <button
+                        type="button"
+                        className="btn btn-secondary btn-sm"
+                        onClick={handleCancelEdit}
+                        disabled={savingId === item.id}
+                        style={{ padding: '6px 12px', fontSize: '0.8rem' }}
+                      >
+                        Cancelar
+                      </button>
+                      <button
+                        type="button"
+                        className="btn btn-primary btn-sm"
+                        onClick={() => handleGuardarEdicion(item.id)}
+                        disabled={savingId === item.id}
+                        style={{ display: 'inline-flex', alignItems: 'center', gap: '5px', padding: '6px 14px', fontSize: '0.8rem', fontWeight: 'bold' }}
+                      >
+                        <Save size={14} /> {savingId === item.id ? 'Guardando...' : 'Guardar Cambios'}
+                      </button>
                     </div>
                   </div>
-                </div>
+                ) : (
+                  <div style={{ backgroundColor: '#F8FAFC', borderRadius: '8px', padding: '12px', border: '1px solid #E2E8F0', marginBottom: '12px' }}>
+                    <div style={{ marginBottom: '8px' }}>
+                      <span style={{ fontSize: '0.72rem', color: '#64748B', fontWeight: '800', textTransform: 'uppercase', letterSpacing: '0.3px', display: 'block', marginBottom: '2px' }}>
+                        📍 Dirección exacta de la consulta:
+                      </span>
+                      <div style={{ fontSize: '0.9rem', color: '#1E293B', fontWeight: '600' }}>
+                        {item.direccion || 'Sin dirección específica ingresada'}
+                      </div>
+                    </div>
+
+                    <div>
+                      <span style={{ fontSize: '0.72rem', color: '#64748B', fontWeight: '800', textTransform: 'uppercase', letterSpacing: '0.3px', display: 'block', marginBottom: '2px' }}>
+                        📝 Breve descripción del reclamo:
+                      </span>
+                      <div style={{ fontSize: '0.88rem', color: '#334155', lineHeight: '1.4', whiteSpace: 'pre-wrap' }}>
+                        {item.descripcion || 'Sin descripción'}
+                      </div>
+                    </div>
+                  </div>
+                )}
 
                 {/* Barra de Acciones y Gestión de SUACI */}
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '10px' }}>

@@ -8,7 +8,18 @@ import PanelModerador from './components/PanelModerador';
 import PapeletaDigital from './components/PapeletaDigital';
 import PanelSolicitudesPapeleta from './components/PanelSolicitudesPapeleta';
 import MapaReclamosComuna from './components/MapaReclamosComuna';
+import PantallaProyeccion from './components/PantallaProyeccion';
 import GestionUsuarios from './components/GestionUsuarios';
+import TableroLNDLM from './components/TableroLNDLM';
+import ComandoLNDLM from './components/ComandoLNDLM';
+import LndlmCheckinApp from './components/LndlmCheckinApp';
+
+// Vista pública del voluntario: link general único (?view=lndlm_checkin o /lndlm/checkin)
+const isLndlmCheckinRoute = () => {
+  if (typeof window === 'undefined') return false;
+  const qView = new URLSearchParams(window.location.search).get('view');
+  return qView === 'lndlm_checkin' || /^\/lndlm\/checkin\/?$/i.test(window.location.pathname);
+};
 import { getSolicitudesPorReunion } from './services/solicitudesService';
 import { isUserOwner } from './services/supabaseService';
 import { LogOut, ShieldCheck, Users } from 'lucide-react';
@@ -103,6 +114,12 @@ export default function App() {
     if (qView === 'papeleta' || qView === 'formulario_solicitudes' || qView === 'solicitudes') {
       return 'papeleta';
     }
+    if (qView === 'proyector' || qView === 'segunda_pantalla') {
+      return 'proyector';
+    }
+    if (isLndlmCheckinRoute()) {
+      return 'lndlm_checkin';
+    }
     const saved = sessionStorage.getItem('presentismo_view');
     const savedUser = localStorage.getItem('presentismo_user');
     return saved || (savedUser ? 'dashboard' : 'login');
@@ -132,6 +149,16 @@ export default function App() {
 
     if (qView === 'papeleta' || qView === 'formulario_solicitudes' || qView === 'solicitudes') {
       setCurrentView('papeleta');
+      return;
+    }
+
+    if (qView === 'proyector' || qView === 'segunda_pantalla') {
+      setCurrentView('proyector');
+      return;
+    }
+
+    if (isLndlmCheckinRoute()) {
+      setCurrentView('lndlm_checkin');
       return;
     }
 
@@ -265,7 +292,7 @@ export default function App() {
     <ErrorBoundary>
       <div className="app-container notranslate" translate="no">
         {/* HEADER DE LA APLICACIÓN */}
-        {user && (
+        {user && currentView !== 'papeleta' && currentView !== 'proyector' && currentView !== 'lndlm_checkin' && (
           <header className="app-header">
             <h1>
               <span>BA</span> Participación Ciudadana
@@ -321,6 +348,10 @@ export default function App() {
 
       {/* CUERPO PRINCIPAL / ENRUTADOR DE VISTAS */}
       <main style={{ flexGrow: 1, display: 'flex', flexDirection: 'column' }}>
+        {currentView === 'proyector' && (
+          <PantallaProyeccion reunionId={selectedReunion?.id} />
+        )}
+
         {currentView === 'papeleta' && (
           <PapeletaDigital />
         )}
@@ -341,6 +372,10 @@ export default function App() {
               setSelectedReunion(reunion);
               setCurrentView('moderar_reunion');
             }}
+            onOpenLndlm={(reunion) => {
+              setSelectedReunion(reunion);
+              setCurrentView('tablero_lndlm');
+            }}
             onCreateMeetingClick={() => setCurrentView('create_reunion')}
             activeDashboardTab={activeDashboardTab}
             setActiveDashboardTab={setActiveDashboardTab}
@@ -352,6 +387,25 @@ export default function App() {
               setInitialModalReunionId(null);
             }}
           />
+        )}
+
+        {currentView === 'tablero_lndlm' && user && selectedReunion && (
+          <TableroLNDLM
+            reunion={selectedReunion}
+            onBack={() => setCurrentView('dashboard')}
+            onOpenComando={() => setCurrentView('comando_lndlm')}
+          />
+        )}
+
+        {currentView === 'comando_lndlm' && user && selectedReunion && (
+          <ComandoLNDLM
+            reunion={selectedReunion}
+            onBack={() => setCurrentView('tablero_lndlm')}
+          />
+        )}
+
+        {currentView === 'lndlm_checkin' && (
+          <LndlmCheckinApp />
         )}
 
         {currentView === 'create_reunion' && user && (
@@ -383,6 +437,10 @@ export default function App() {
         {currentView === 'administrar_reunion' && user && selectedReunion && (
           <AdministrarReunion 
             reunion={selectedReunion}
+            onOpenLndlm={(reunion) => {
+              setSelectedReunion(reunion);
+              setCurrentView('tablero_lndlm');
+            }}
             onBack={() => {
               setSelectedReunion(null);
               setCurrentView('dashboard');
@@ -435,7 +493,7 @@ export default function App() {
       </main>
 
       {/* FOOTER PREMIUM */}
-      {user && (
+      {user && currentView !== 'papeleta' && currentView !== 'proyector' && currentView !== 'lndlm_checkin' && (
         <footer style={{
           backgroundColor: '#031D27',
           color: 'rgba(255,255,255,0.5)',

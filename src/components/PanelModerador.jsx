@@ -1,7 +1,8 @@
 import React, { useState, useEffect } from 'react';
-import { ArrowLeft, Save, Mic, Users, Trash2, ArrowUp, ArrowDown, Share2, Clipboard, Check, RefreshCw, Plus, Clock, MessageSquare, Award, Activity, MapPin } from 'lucide-react';
+import { ArrowLeft, Save, Mic, Users, Trash2, ArrowUp, ArrowDown, Share2, Clipboard, Check, RefreshCw, Plus, Clock, MessageSquare, Award, Activity, MapPin, Tv } from 'lucide-react';
 import { updateReunion, getOradores, updateOradorDetails, updateOradorTags, getAsistentesPorReunion, registrarOrador, guardarAsistencia } from '../services/supabaseService';
 import { getSolicitudesPorReunion } from '../services/solicitudesService';
+import { emitProyectorEvent, PROYECTOR_EVENTS } from '../services/proyectorSyncService';
 import OradorTagSelector, { OradorTagsDisplay } from './OradorTagSelector';
 import PreguntasTematicas from './PreguntasTematicas';
 import MapaReclamosComuna from './MapaReclamosComuna';
@@ -79,6 +80,63 @@ export default function PanelModerador({ reunion: initialReunion, onBack }) {
   // Vista de Mapa Territorial de Reclamos por Comuna
   const [showMapaReclamos, setShowMapaReclamos] = useState(false);
   const [solicitudesReunion, setSolicitudesReunion] = useState([]);
+
+  // Estado para Devolución del Funcionario (2da Pantalla / Proyector)
+  const [isDevolucionActive, setIsDevolucionActive] = useState(() => {
+    if (typeof window !== 'undefined' && reunion?.id) {
+      try {
+        const raw = localStorage.getItem(`presentismo_devolucion_${reunion.id}`);
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          return Boolean(parsed?.activa);
+        }
+      } catch (e) {}
+    }
+    return false;
+  });
+
+  const handleToggleDevolucion = async () => {
+    const nextState = !isDevolucionActive;
+    setIsDevolucionActive(nextState);
+
+    const funcionarioName = reunion?.funcionario || 'Funcionario';
+
+    if (nextState) {
+      // 1. Limpiar cualquier orador activo en el mic
+      setActiveSpeaker(null);
+      setLiveMinuta('');
+      try {
+        await updateReunion(reunion.id, { active_orador_id: null });
+      } catch (err) {
+        console.error('Error al limpiar active_orador_id:', err);
+      }
+
+      // 2. Guardar en localStorage cross-window
+      try {
+        localStorage.setItem(`presentismo_devolucion_${reunion.id}`, JSON.stringify({
+          activa: true,
+          funcionario: funcionarioName,
+          timestamp: Date.now()
+        }));
+      } catch (e) {}
+
+      // 3. Emitir evento a la pantalla de proyección
+      emitProyectorEvent(PROYECTOR_EVENTS.DEVOLUCION_START, {
+        reunionId: reunion.id,
+        isDevolucion: true,
+        funcionario: funcionarioName
+      });
+    } else {
+      try {
+        localStorage.removeItem(`presentismo_devolucion_${reunion.id}`);
+      } catch (e) {}
+
+      emitProyectorEvent(PROYECTOR_EVENTS.DEVOLUCION_CLEAR, {
+        reunionId: reunion.id,
+        isDevolucion: false
+      });
+    }
+  };
 
   useEffect(() => {
     if (reunion?.id) {
@@ -717,9 +775,49 @@ export default function PanelModerador({ reunion: initialReunion, onBack }) {
 
   // Acciones sobre los oradores
   const handleLlamarAlMic = async (orador) => {
+    if (isDevolucionActive) {
+      setIsDevolucionActive(false);
+      try {
+        localStorage.removeItem(`presentismo_devolucion_${reunion.id}`);
+      } catch (e) {}
+    }
+
     setActiveSpeaker(orador);
     setLiveMinuta(orador.tema_efectivo || '');
     setActiveSpeakerTimer(0);
+
+    // Calcular los próximos 4 oradores en espera
+    const upcomingQueue = (oradores || [])
+      .filter(o => 
+        (o.estado === 'en_espera' || o.estado === 'espera' || !o.estado) && 
+        o.id !== orador.id && 
+        o.estado !== 'hablo' && 
+        o.estado !== 'se_bajo' && 
+        o.estado !== 'no_hablo'
+      )
+      .sort((a, b) => (a.orden || 0) - (b.orden || 0))
+      .slice(0, 4)
+      .map((o, idx) => ({
+        id: o.id,
+        posicion: String(idx + 1),
+        nombre: o.vecino ? `${o.vecino.nombre} ${o.vecino.apellido}` : 'Vecino anotado',
+        tema: o.tema_original || o.tema_efectivo || 'Tema a plantear'
+      }));
+
+    // Emitir evento a la pantalla de proyección (2da pantalla / proyector)
+    emitProyectorEvent(PROYECTOR_EVENTS.SPEAKER_CALL, {
+      reunionId: reunion.id,
+      speaker: {
+        id: orador.id,
+        dni: orador.vecino_id,
+        nombre: `${orador.vecino?.nombre || ''} ${orador.vecino?.apellido || ''}`.trim() || `Vecino DNI ${orador.vecino_id}`,
+        tema: orador.tema_efectivo || orador.tema_original || '',
+        orden: orador.orden || 1,
+        totalSeconds: 120
+      },
+      nextSpeakers: upcomingQueue
+    });
+
     try {
       await updateReunion(reunion.id, { active_orador_id: orador.id });
     } catch (err) {
@@ -728,8 +826,20 @@ export default function PanelModerador({ reunion: initialReunion, onBack }) {
   };
 
   const handleCancelarMic = async () => {
+    if (isDevolucionActive) {
+      setIsDevolucionActive(false);
+      try {
+        localStorage.removeItem(`presentismo_devolucion_${reunion.id}`);
+      } catch (e) {}
+    }
+
     setActiveSpeaker(null);
     setLiveMinuta('');
+
+    emitProyectorEvent(PROYECTOR_EVENTS.SPEAKER_CLEARED, {
+      reunionId: reunion.id
+    });
+
     try {
       await updateReunion(reunion.id, { active_orador_id: null });
     } catch (err) {
@@ -739,13 +849,24 @@ export default function PanelModerador({ reunion: initialReunion, onBack }) {
 
   const handleFinalizarExposicion = async () => {
     if (!activeSpeaker) return;
+
+    emitProyectorEvent(PROYECTOR_EVENTS.SPEAKER_CLEARED, {
+      reunionId: reunion.id
+    });
+
     try {
-      const finalTema = liveMinuta.trim() || activeSpeaker.tema_efectivo || activeSpeaker.tema_original || null;
-      const { error } = await updateOradorDetails(activeSpeaker.id, {
+      const updates = {
         estado: 'hablo',
-        tema_efectivo: finalTema,
         duracion_segundos: activeSpeakerTimer
-      });
+      };
+
+      // Solo si el moderador escribió una minuta específica en su pantalla, actualizar tema_efectivo.
+      // De lo contrario se preserva intacta la minuta registrada por el equipo de asistencia/territorio.
+      if (liveMinuta.trim()) {
+        updates.tema_efectivo = liveMinuta.trim();
+      }
+
+      const { error } = await updateOradorDetails(activeSpeaker.id, updates);
 
       if (error) throw error;
 
@@ -758,20 +879,22 @@ export default function PanelModerador({ reunion: initialReunion, onBack }) {
           return { 
             ...o, 
             estado: 'hablo', 
-            tema_efectivo: finalTema,
+            ...(updates.tema_efectivo ? { tema_efectivo: updates.tema_efectivo } : {}),
             duracion_segundos: activeSpeakerTimer
           };
         }
         return o;
       }));
 
-      // Auto-detectar y guardar tags a partir del texto final
-      const autoTags = autoDetectTags(finalTema || '');
-      if (autoTags.length > 0) {
-        await updateOradorTags(activeSpeaker.id, autoTags);
-        setOradores(prev => prev.map(o =>
-          o.id === activeSpeaker.id ? { ...o, tags: autoTags } : o
-        ));
+      // Si el moderador redactó texto nuevo, auto-detectar y guardar tags
+      if (updates.tema_efectivo) {
+        const autoTags = autoDetectTags(updates.tema_efectivo);
+        if (autoTags.length > 0) {
+          await updateOradorTags(activeSpeaker.id, autoTags);
+          setOradores(prev => prev.map(o =>
+            o.id === activeSpeaker.id ? { ...o, tags: autoTags } : o
+          ));
+        }
       }
 
       setActiveSpeaker(null);
@@ -786,15 +909,14 @@ export default function PanelModerador({ reunion: initialReunion, onBack }) {
     if (await confirm('¿Estás seguro de que esta persona se bajó de la cola de oradores?')) {
       try {
         const { error } = await updateOradorDetails(oradorId, {
-          estado: 'se_bajo',
-          tema_efectivo: null
+          estado: 'se_bajo'
         });
 
         if (error) throw error;
 
         setOradores(prev => prev.map(o => {
           if (o.id === oradorId) {
-            return { ...o, estado: 'se_bajo', tema_efectivo: null };
+            return { ...o, estado: 'se_bajo' };
           }
           return o;
         }));
@@ -811,15 +933,14 @@ export default function PanelModerador({ reunion: initialReunion, onBack }) {
     if (await confirm('¿Estás seguro de que esta persona no llegó a hablar?')) {
       try {
         const { error } = await updateOradorDetails(oradorId, {
-          estado: 'no_hablo',
-          tema_efectivo: null
+          estado: 'no_hablo'
         });
 
         if (error) throw error;
 
         setOradores(prev => prev.map(o => {
           if (o.id === oradorId) {
-            return { ...o, estado: 'no_hablo', tema_efectivo: null };
+            return { ...o, estado: 'no_hablo' };
           }
           return o;
         }));
@@ -1305,6 +1426,61 @@ ${oradoresEfectivos.length > 0
           >
             <MapPin size={15} /> 🗺️ Abrir Mapa ({solicitudesReunion.length})
           </a>
+
+          <button
+            type="button"
+            className="btn btn-sm"
+            onClick={() => window.open(`?view=proyector&reunion_id=${reunion.id}`, '_blank', 'width=1920,height=1080')}
+            style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: '6px',
+              backgroundColor: '#7C3AED',
+              color: '#FFFFFF',
+              border: 'none',
+              borderRadius: '6px',
+              padding: '6px 12px',
+              fontWeight: '700',
+              cursor: 'pointer',
+              boxShadow: '0 1px 3px rgba(0,0,0,0.15)'
+            }}
+            title="Abrir Pantalla de Proyección para Escritorio Extendido (sin backoffice)"
+          >
+            <Tv size={15} /> 📺 2da Pantalla ↗
+          </button>
+
+          {/* BOTÓN: DEVOLUCIÓN DEL FUNCIONARIO (CONTROL PARA 2DA PANTALLA) */}
+          <button
+            type="button"
+            className="btn btn-sm"
+            onClick={handleToggleDevolucion}
+            style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: '6px',
+              backgroundColor: isDevolucionActive ? '#DC2626' : '#0D9488',
+              color: '#FFFFFF',
+              border: isDevolucionActive ? '2px solid #EF4444' : 'none',
+              borderRadius: '6px',
+              padding: '6px 14px',
+              fontWeight: '700',
+              cursor: 'pointer',
+              boxShadow: isDevolucionActive ? '0 0 12px rgba(220, 38, 38, 0.45)' : '0 1px 3px rgba(0,0,0,0.15)',
+              transition: 'all 0.2s ease'
+            }}
+            title={isDevolucionActive ? 'Finalizar devolución del funcionario y volver a modo oradores' : 'Iniciar Devolución del Funcionario en la 2da Pantalla de proyección'}
+          >
+            {isDevolucionActive ? (
+              <>
+                <span style={{ width: '8px', height: '8px', borderRadius: '50%', backgroundColor: '#FFFFFF', display: 'inline-block' }} />
+                ⏹️ Finalizar Devolución ({reunion?.funcionario || 'Funcionario'})
+              </>
+            ) : (
+              <>
+                <Mic size={15} /> 🎙️ Devolución del Funcionario
+              </>
+            )}
+          </button>
         </div>
         <h2 style={{ fontSize: '1.25rem', color: 'var(--color-primary)', margin: 0, fontWeight: '700' }}>
           Panel de Moderación de Reunión
@@ -2137,7 +2313,61 @@ ${oradoresEfectivos.length > 0
             Vecino en el Mic (Vivo)
           </h3>
 
-          {activeSpeaker ? (
+          {isDevolucionActive ? (
+            <div style={{
+              backgroundColor: '#FFFFFF',
+              border: '2px solid #0D9488',
+              borderRadius: '10px',
+              padding: '20px 16px',
+              textAlign: 'center',
+              boxShadow: '0 4px 12px rgba(13, 148, 136, 0.1)'
+            }}>
+              <div style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '8px',
+                backgroundColor: '#CCFBF1',
+                color: '#0F766E',
+                padding: '4px 12px',
+                borderRadius: '20px',
+                fontSize: '0.8rem',
+                fontWeight: '800',
+                textTransform: 'uppercase',
+                marginBottom: '10px'
+              }}>
+                <Mic size={14} className="animate-pulse" />
+                EN DEVOLUCIÓN DE AUTORIDADES
+              </div>
+
+              <h4 style={{ margin: '0 0 6px 0', fontSize: '1.25rem', color: '#0F172A', fontWeight: '800' }}>
+                En devolución de {reunion?.funcionario || 'el Funcionario'}
+              </h4>
+
+              <p style={{ margin: '0 0 16px 0', fontSize: '0.85rem', color: '#64748B', lineHeight: '1.4' }}>
+                La 2da pantalla de proyección está mostrando el mensaje de devolución del funcionario y el mapa territorial completo.
+              </p>
+
+              <button
+                type="button"
+                className="btn btn-sm"
+                onClick={handleToggleDevolucion}
+                style={{
+                  backgroundColor: '#DC2626',
+                  color: '#FFFFFF',
+                  fontWeight: '700',
+                  padding: '8px 16px',
+                  border: 'none',
+                  borderRadius: '6px',
+                  cursor: 'pointer',
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: '6px'
+                }}
+              >
+                ⏹️ Finalizar Devolución y Volver a Oradores
+              </button>
+            </div>
+          ) : activeSpeaker ? (
             <div>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
                 <div>
@@ -2256,6 +2486,30 @@ ${oradoresEfectivos.length > 0
               <Mic size={28} style={{ color: '#94A3B8', marginBottom: '8px' }} />
               <p style={{ margin: 0, fontWeight: '500' }}>No hay vecino activo.</p>
               <p style={{ margin: '4px 0 0 0', fontSize: '0.75rem' }}>Presioná "Mic" en la cola.</p>
+              <div style={{ marginTop: '16px' }}>
+                <button
+                  type="button"
+                  className="btn btn-sm"
+                  onClick={handleToggleDevolucion}
+                  style={{
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: '6px',
+                    backgroundColor: '#0D9488',
+                    color: '#FFFFFF',
+                    border: 'none',
+                    borderRadius: '6px',
+                    padding: '8px 16px',
+                    fontSize: '0.82rem',
+                    fontWeight: '700',
+                    cursor: 'pointer',
+                    boxShadow: '0 1px 3px rgba(0,0,0,0.1)'
+                  }}
+                  title="Iniciar Devolución del Funcionario en la 2da Pantalla"
+                >
+                  <Mic size={14} /> 🎙️ Iniciar Devolución del Funcionario
+                </button>
+              </div>
             </div>
           )}
         </div>
