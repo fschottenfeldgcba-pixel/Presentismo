@@ -573,11 +573,11 @@ export const PROXIMITY_TIER_META = {
   MANUAL: {
     tier: 'MANUAL',
     score: null,
-    label: 'Manual / Excepción',
-    shortLabel: 'Manual / Excepción',
-    color: '#475569',
-    bgColor: '#E2E8F0',
-    borderColor: '#94A3B8',
+    label: 'Fijado Manual',
+    shortLabel: 'Manual',
+    color: '#92400E',
+    bgColor: '#FEF3C7',
+    borderColor: '#FDE68A',
     icon: '✋'
   }
 };
@@ -598,7 +598,22 @@ export const PROXIMITY_TIER_META = {
  *  - Voluntarios presentes sobrantes quedan marcados como 'SUPLENTE' ordenados por Comuna y Barrio.
  */
 export function assignVolunteersByProximity(volunteers = [], culturalSpaces = [], options = {}) {
-  const { preserveManualAssignments = false } = options;
+  const { preserveAutoAssignments = false, preserveManualAssignments = false } = options;
+  const keepAutoAssignments = Boolean(preserveAutoAssignments || preserveManualAssignments);
+
+  // 1. REGLA DE EXCLUSIÓN ESTRICTA AL INICIO:
+  // Separar los voluntarios con is_manual_override === true y sede asignada.
+  // El motor de cálculo de cercanía (Greedy Matching) TIENE PROHIBIDO alterar su destino bajo ninguna circunstancia.
+  const isManualVolunteer = (v) =>
+    Boolean(
+      v.is_manual_override === true ||
+      v.is_manual_override === 'true' ||
+      v.is_manual_override === 1 ||
+      v.proximity_tier === 'MANUAL'
+    ) && Boolean(v.assigned_space_id || v.space_id);
+
+  const manualVolunteersRaw = (volunteers || []).filter(isManualVolunteer);
+  const autoVolunteersRaw = (volunteers || []).filter(v => !isManualVolunteer(v));
 
   // Normalizar espacios culturales
   const normalizedSpaces = (culturalSpaces || []).map(s => {
@@ -621,8 +636,49 @@ export function assignVolunteersByProximity(volunteers = [], culturalSpaces = []
     spaceAssignedMap[s.id] = [];
   });
 
-  // Normalizar voluntarios y separar presentes disponibles
-  const normalizedVolunteers = (volunteers || []).map(v => {
+  // Procesar y blindar a los voluntarios manuales en sus sedes (restando cupo a la sede)
+  const manualKeptDnis = new Set();
+  const preservedManualVolunteers = manualVolunteersRaw.map(v => {
+    const spaceId = v.assigned_space_id || v.space_id;
+    const normBarrio = normalizeNeighborhoodCABA(v.neighborhood || v.barrio);
+    const comunaNum = extractComunaNumber(v.comuna, normBarrio);
+    const coords = resolveCoordinates({ ...v, neighborhood: normBarrio, comuna: comunaNum });
+    const targetSpace = normalizedSpaces.find(s => s.id === spaceId);
+    let dist = v.distance_km;
+    if (dist == null && targetSpace) {
+      dist = evaluateProximityAffinity({ neighborhood: normBarrio, comuna: comunaNum, lat: coords.lat, lng: coords.lng }, targetSpace).distance_km;
+    }
+
+    const dni = String(v.dni || v.vecino_id || '').trim();
+    manualKeptDnis.add(dni);
+
+    // Descontar el cupo en la sede destino para que el algoritmo de cercanía no la sobrecargue
+    if (spaceAssignedMap[spaceId]) {
+      spaceAssignedMap[spaceId].push({
+        dni,
+        manual: true
+      });
+    }
+
+    return {
+      ...v,
+      dni,
+      neighborhood: normBarrio,
+      comuna: comunaNum,
+      attended_training: Boolean(v.attended_training || v.asistio),
+      assigned_space_id: spaceId,
+      status: v.status === 'BAJA' ? 'BAJA' : 'ASIGNADO',
+      is_manual_override: true,
+      proximity_tier: v.proximity_tier || 'MANUAL',
+      assignment_score: v.assignment_score ?? null,
+      distance_km: dist ?? null,
+      lat: v.lat ?? coords.lat,
+      lng: v.lng ?? coords.lng
+    };
+  });
+
+  // Normalizar ÚNICAMENTE a los candidatos automáticos (is_manual_override !== true)
+  const normalizedVolunteers = autoVolunteersRaw.map(v => {
     const normBarrio = normalizeNeighborhoodCABA(v.neighborhood || v.barrio);
     const comunaNum = extractComunaNumber(v.comuna, normBarrio);
     const coords = resolveCoordinates({ ...v, neighborhood: normBarrio, comuna: comunaNum });
@@ -641,26 +697,8 @@ export function assignVolunteersByProximity(volunteers = [], culturalSpaces = []
   const assignedVolunteerDnis = new Set();
   const volunteerAssignmentResult = {}; // { [dni]: { assigned_space_id, assignment_score, proximity_tier, distance_km, status } }
 
-  // BLOQUEO ANTI-SOBRESCRITURA: las asignaciones a dedo (is_manual_override = true) NUNCA se tocan.
-  // Se conservan aun si exceden el cupo de la sede (el excedente es una decisión del operador).
-  const manualKeptDnis = new Set();
-  normalizedVolunteers.forEach(v => {
-    if (!v.is_manual_override || !v.attended_training || v.status === 'BAJA') return;
-    if (v.status !== 'ASIGNADO' || !v.assigned_space_id || !spaceAssignedMap[v.assigned_space_id]) return;
-    manualKeptDnis.add(v.dni);
-    assignedVolunteerDnis.add(v.dni);
-    spaceAssignedMap[v.assigned_space_id].push({ dni: v.dni, manual: true });
-    volunteerAssignmentResult[v.dni] = {
-      assigned_space_id: v.assigned_space_id,
-      assignment_score: v.assignment_score ?? null,
-      proximity_tier: v.proximity_tier || 'MANUAL',
-      distance_km: v.distance_km ?? null,
-      status: 'ASIGNADO'
-    };
-  });
-
-  // Si se solicita preservar asignaciones actuales válidas
-  if (preserveManualAssignments) {
+  // Si se solicita preservar asignaciones automáticas actuales válidas (ej: Cubrir Vacantes Libres)
+  if (keepAutoAssignments) {
     normalizedVolunteers.forEach(v => {
       if (assignedVolunteerDnis.has(v.dni)) return;
       if (v.status === 'BAJA') {
@@ -802,8 +840,8 @@ export function assignVolunteersByProximity(volunteers = [], culturalSpaces = []
   runPass('COMUNA_LIMITROFE');  // Pasada 3: Score 60
   runPass('RESTO_CABA');        // Pasada 4: Score 40
 
-  // Procesar estado final de todos los voluntarios (Asignados, Suplentes, Bajas e Inscriptos ausentes)
-  const updatedVolunteers = normalizedVolunteers.map(v => {
+  // Procesar estado final de los voluntarios calculados automáticamente
+  const updatedAutoVolunteers = normalizedVolunteers.map(v => {
     if (v.status === 'BAJA') {
       return {
         ...v,
@@ -811,7 +849,8 @@ export function assignVolunteersByProximity(volunteers = [], culturalSpaces = []
         assignment_score: null,
         proximity_tier: null,
         distance_km: null,
-        status: 'BAJA'
+        status: 'BAJA',
+        is_manual_override: false
       };
     }
 
@@ -819,7 +858,8 @@ export function assignVolunteersByProximity(volunteers = [], culturalSpaces = []
     if (assigned) {
       return {
         ...v,
-        ...assigned
+        ...assigned,
+        is_manual_override: false
       };
     }
 
@@ -831,7 +871,8 @@ export function assignVolunteersByProximity(volunteers = [], culturalSpaces = []
         assignment_score: null,
         proximity_tier: null,
         distance_km: null,
-        status: 'SUPLENTE'
+        status: 'SUPLENTE',
+        is_manual_override: false
       };
     }
 
@@ -841,9 +882,20 @@ export function assignVolunteersByProximity(volunteers = [], culturalSpaces = []
       assignment_score: null,
       proximity_tier: null,
       distance_km: null,
-      status: 'INSCRIPTO'
+      status: 'INSCRIPTO',
+      is_manual_override: false
     };
-  }).map(v => ({ ...v, is_manual_override: manualKeptDnis.has(v.dni) }));
+  });
+
+  // Recombinar los voluntarios manuales (100% preservados) con los resultados automáticos
+  const originalOrder = new Map();
+  (volunteers || []).forEach((v, idx) => {
+    const dni = String(v.dni || v.vecino_id || '').trim();
+    if (dni) originalOrder.set(dni, idx);
+  });
+
+  const updatedVolunteers = [...preservedManualVolunteers, ...updatedAutoVolunteers];
+  updatedVolunteers.sort((a, b) => (originalOrder.get(a.dni) ?? 999999) - (originalOrder.get(b.dni) ?? 999999));
 
   // Ordenar suplentes por Comuna y Barrio para reemplazos rápidos
   const substitutesList = updatedVolunteers
@@ -861,7 +913,7 @@ export function assignVolunteersByProximity(volunteers = [], culturalSpaces = []
     .map(v => ({
       attendee_id: v.dni,
       space_id: v.assigned_space_id || null,
-      proximity_tier: v.proximity_tier || null,
+      proximity_tier: v.proximity_tier === 'MANUAL' ? null : (v.proximity_tier || null),
       assignment_score: v.assignment_score || null,
       distance_km: v.distance_km ?? null,
       status: v.status === 'BAJA' ? 'BAJA' : (v.assigned_space_id ? 'ASIGNADO' : 'SUPLENTE'),
@@ -876,7 +928,7 @@ export function assignVolunteersByProximity(volunteers = [], culturalSpaces = []
     assignmentsRecords,
     spaceAssignedMap,
     summary,
-    manualPreservedCount: manualKeptDnis.size
+    manualPreservedCount: preservedManualVolunteers.length
   };
 }
 
@@ -1468,7 +1520,7 @@ export async function loadLndlmMeetingData(meetingId) {
 
     // Bandera de asignación a dedo (BD; si la columna aún no existe, respaldo en la config de la reunión)
     const isManual = Boolean(
-      assig.is_manual_override ?? fallbackAssignments[dni]?.is_manual_override ?? false
+      assig.is_manual_override ?? meta.is_manual_override ?? fallbackAssignments[dni]?.is_manual_override ?? false
     ) && Boolean(assignedSpaceId) && status === 'ASIGNADO';
 
     // Calcular o recuperar score y distancia si está asignado
@@ -1675,7 +1727,10 @@ export async function saveLndlmAssignments(meetingId, volunteers = []) {
         const stripped = chunk.map(({ is_manual_override: _omit, ...rest }) => rest);
         ({ error } = await supabase.from(table).upsert(stripped, { onConflict }));
       }
-      if (error) console.warn(`Error guardando en ${table}:`, error.message);
+      if (error) {
+        console.error(`Error guardando en ${table}:`, error.message);
+        throw new Error(`Error guardando en ${table}: ${error.message}`);
+      }
     }
   };
 
@@ -1683,10 +1738,11 @@ export async function saveLndlmAssignments(meetingId, volunteers = []) {
     if (dbAssignmentRows.length > 0) await upsertWithFallback('lndlm_assignments', dbAssignmentRows, 'meeting_id,attendee_id');
     if (dbVolunteerRows.length > 0) await upsertWithFallback('lndlm_volunteers', dbVolunteerRows, 'meeting_id,dni');
   } catch (e) {
-    console.warn('Fallback en guardado de lndlm_assignments/lndlm_volunteers:', e);
+    console.error('Error en guardado de lndlm_assignments/lndlm_volunteers en Supabase:', e);
+    return { error: e };
   }
 
-  // 2. Guardar en localStorage y en `reuniones.config_uno_a_uno`
+  // 2. Guardar en localStorage y en `reuniones.config_uno_a_uno` solo si no hubo error en Supabase
   try {
     const localKey = getLocalStorageKey(meetingId);
     const prevLocal = JSON.parse(localStorage.getItem(localKey) || '{}');
@@ -1706,6 +1762,146 @@ export async function saveLndlmAssignments(meetingId, volunteers = []) {
   });
 
   return { error: null };
+}
+
+/**
+ * Guarda o reasigna manualmente ("a dedo") a un voluntario puntual en Supabase y caches:
+ * 1. Ejecuta UPDATE/UPSERT directo en `lndlm_assignments` con `space_id` y `is_manual_override = true`.
+ * 2. Si falla Supabase, arroja excepción (NO actualiza caches ni estado local).
+ * 3. Si la promesa tiene éxito, sincroniza `lndlm_volunteers`, `localStorage` y `reuniones.config_uno_a_uno`.
+ */
+export async function saveSingleManualAssignment(meetingId, volunteer, targetSpace, options = {}) {
+  if (!meetingId) throw new Error('No se especificó meetingId para la asignación manual.');
+  if (!volunteer || !volunteer.dni) throw new Error('Datos del voluntario incompletos (DNI requerido).');
+  if (!targetSpace || !targetSpace.id) throw new Error('Espacio cultural de destino inválido.');
+
+  const dni = String(volunteer.dni || volunteer.vecino_id || '').trim();
+  const spaceId = targetSpace.id;
+  const now = new Date().toISOString();
+  const distanceKm = options.distance_km ?? null;
+
+  // 1. UPDATE / UPSERT real y explícito en Supabase: `lndlm_assignments`
+  const assigRow = {
+    meeting_id: meetingId,
+    attendee_id: dni,
+    space_id: spaceId,
+    proximity_tier: null, // UI maneja 'MANUAL', DB tier es NULL por el CHECK constraint
+    assignment_score: null,
+    distance_km: distanceKm,
+    status: 'ASIGNADO',
+    is_manual_override: true,
+    updated_at: now
+  };
+
+  let { error: assigErr } = await supabase
+    .from('lndlm_assignments')
+    .upsert(assigRow, { onConflict: 'meeting_id,attendee_id' });
+
+  // Si la columna `is_manual_override` no estuviera aún creada en la BD, reintentar sin ella
+  if (assigErr && /is_manual_override/i.test(`${assigErr.message || ''} ${assigErr.details || ''}`)) {
+    console.warn('Columna is_manual_override pendiente en BD. Reintentando sin ella...');
+    const { is_manual_override: _omit, ...stripped } = assigRow;
+    const retry = await supabase
+      .from('lndlm_assignments')
+      .upsert(stripped, { onConflict: 'meeting_id,attendee_id' });
+    assigErr = retry.error;
+  }
+
+  // SI SUPABASE FALLA, ARROJAR ERROR INMEDIATAMENTE
+  if (assigErr) {
+    console.error('Error al persistir asignación manual en lndlm_assignments:', assigErr);
+    throw new Error(assigErr.message || 'Error al actualizar en lndlm_assignments');
+  }
+
+  // 2. Actualizar también en `lndlm_volunteers`
+  const volRow = {
+    assigned_space_id: spaceId,
+    proximity_tier: null,
+    assignment_score: null,
+    distance_km: distanceKm,
+    status: 'ASIGNADO',
+    is_manual_override: true,
+    attended_training: true,
+    updated_at: now
+  };
+
+  let { error: volErr } = await supabase
+    .from('lndlm_volunteers')
+    .update(volRow)
+    .eq('meeting_id', meetingId)
+    .eq('dni', dni);
+
+  if (volErr && /is_manual_override/i.test(`${volErr.message || ''} ${volErr.details || ''}`)) {
+    const { is_manual_override: _omit, ...stripped } = volRow;
+    const retry = await supabase
+      .from('lndlm_volunteers')
+      .update(stripped)
+      .eq('meeting_id', meetingId)
+      .eq('dni', dni);
+    volErr = retry.error;
+  }
+  if (volErr) {
+    console.warn('Aviso secundario en lndlm_volunteers (lndlm_assignments fue exitoso):', volErr.message);
+  }
+
+  // 3. Registrar asistencia en la reunión si aún no la tenía
+  if (!volunteer.attended_training && meetingId) {
+    try {
+      await guardarAsistencia({
+        reunion_id: meetingId,
+        vecino_id: dni,
+        asistio: true,
+        estado_convocatoria: 'inscripto'
+      });
+    } catch (e) {
+      console.warn('Aviso guardando asistencia de voluntario manual:', e);
+    }
+  }
+
+  // 4. SINCRONIZACIÓN: Actualizar localStorage y config_uno_a_uno SOLO si Supabase tuvo éxito
+  try {
+    const localKey = getLocalStorageKey(meetingId);
+    const prevLocal = JSON.parse(localStorage.getItem(localKey) || '{}');
+    const prevAssig = { ...(prevLocal.assignments || {}) };
+    prevAssig[dni] = {
+      space_id: spaceId,
+      proximity_tier: 'MANUAL',
+      assignment_score: null,
+      distance_km: distanceKm,
+      status: 'ASIGNADO',
+      is_manual_override: true
+    };
+    localStorage.setItem(
+      localKey,
+      JSON.stringify({
+        ...prevLocal,
+        assignments: prevAssig
+      })
+    );
+  } catch (e) {
+    console.warn('Aviso al actualizar localStorage:', e);
+  }
+
+  try {
+    const currentCfg = await fetchReunionConfigJson(meetingId);
+    const lndlmCfg = currentCfg?.lndlm_data || {};
+    const prevAssig = { ...(lndlmCfg.assignments || {}) };
+    prevAssig[dni] = {
+      space_id: spaceId,
+      proximity_tier: 'MANUAL',
+      assignment_score: null,
+      distance_km: distanceKm,
+      status: 'ASIGNADO',
+      is_manual_override: true
+    };
+    await saveToReunionConfigJson(meetingId, {
+      assignments: prevAssig
+    });
+  } catch (e) {
+    console.warn('Aviso al guardar en config_uno_a_uno:', e);
+  }
+
+  return { success: true, error: null };
 }
 
 /**

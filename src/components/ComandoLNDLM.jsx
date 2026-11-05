@@ -6,7 +6,7 @@ import LndlmMap from './LndlmMap';
 import { loadLndlmMeetingData, BARRIOS_CABA_DATA } from '../services/lndlmService';
 import { computeSpaceLogistics, MAX_VIANDAS_PER_TRIP, suggestLogisticsSetup, suggestMotosForViandas, TRIPS_PER_MOTO } from '../services/lndlmRouting';
 import {
-  getLogisticHubs, saveLogisticHub, deleteLogisticHub,
+  getLogisticHubs, saveLogisticHub, saveAllLogisticHubs, deleteLogisticHub,
   getDeliveryRoutes, setRouteStatus, getLiveAssignments, generateAndSaveRoutes,
   MIGRATION_HINT
 } from '../services/lndlmLogisticsService';
@@ -276,26 +276,38 @@ export default function ComandoLNDLM({ reunion, onBack }) {
 
   // Auto-Proponer: arma las nodrizas sugeridas SOLO en el estado de React (no guarda hasta confirmar)
   const handleAutoPropose = () => {
-    const assignedCount = {};
-    volunteers.forEach(v => {
-      if (v.status === 'ASIGNADO' && v.assigned_space_id) {
-        assignedCount[v.assigned_space_id] = (assignedCount[v.assigned_space_id] || 0) + 1;
+    try {
+      const assignedCount = {};
+      volunteers.forEach(v => {
+        if (v.status === 'ASIGNADO' && v.assigned_space_id) {
+          assignedCount[v.assigned_space_id] = (assignedCount[v.assigned_space_id] || 0) + 1;
+        }
+      });
+      const spacesData = spaces.map(s => ({
+        id: s.id,
+        name: s.name,
+        comuna: s.comuna,
+        neighborhood: s.neighborhood,
+        lat: s.lat,
+        lng: s.lng,
+        viandas: assignedCount[s.id] || 0
+      }));
+
+      const suggestion = suggestLogisticsSetup(spacesData, {
+        displayBarrio: (b) => BARRIOS_CABA_DATA[b]?.display || b
+      });
+
+      if (!suggestion || suggestion.length === 0) {
+        showToast('No hay espacios con voluntarios asignados o con coordenadas válidas para proponer una distribución.', 'warning');
+        return;
       }
-    });
-    const spacesData = spaces.map(s => ({
-      id: s.id, name: s.name, comuna: s.comuna, neighborhood: s.neighborhood,
-      lat: s.lat, lng: s.lng, viandas: assignedCount[s.id] || 0
-    }));
-    const suggestion = suggestLogisticsSetup(spacesData, {
-      displayBarrio: (b) => BARRIOS_CABA_DATA[b]?.display || b
-    });
-    if (suggestion.length === 0) {
-      showToast('No hay espacios con voluntarios asignados para proponer una distribución. Ejecutá primero la asignación por cercanía.', 'warning');
-      return;
+      setHubDraft(null);
+      setProposedHubs(suggestion.map((h, i) => ({ ...h, id: `proposal_${i}` })));
+      showToast(`Propuesta generada: ${suggestion.length} nodrizas. Arrastrá los pines, editá nombres o motos y guardá.`, 'info');
+    } catch (err) {
+      console.error('Error al calcular auto-propuesta logística:', err);
+      showToast('Error al calcular rutas: verifique que las sedes tengan coordenadas válidas', 'error');
     }
-    setHubDraft(null);
-    setProposedHubs(suggestion.map((h, i) => ({ ...h, id: `proposal_${i}` })));
-    showToast(`Propuesta generada: ${suggestion.length} nodrizas. Arrastrá los pines, editá nombres o motos y guardá.`, 'info');
   };
 
   const updateProposedHub = (id, patch) => setProposedHubs(list => list.map(h => (h.id === id ? { ...h, ...patch } : h)));
@@ -303,20 +315,22 @@ export default function ComandoLNDLM({ reunion, onBack }) {
   const handleSaveProposal = async () => {
     if (!proposedHubs || proposedHubs.length === 0) return;
     setSavingProposal(true);
-    for (const h of proposedHubs) {
-      const { id: _tmp, ...payload } = h;
-      const { error } = await saveLogisticHub(meetingId, payload);
-      if (error) {
+    try {
+      const res = await saveAllLogisticHubs(meetingId, proposedHubs);
+      if (res?.error) {
         setSavingProposal(false);
-        showToast(isMissing(error) ? MIGRATION_HINT : `Error al guardar: ${error.message}`, 'error');
+        showToast(isMissing(res.error) ? MIGRATION_HINT : `Error al guardar: ${res.error.message}`, 'error');
         await refreshLive();
         return;
       }
+      setSavingProposal(false);
+      setProposedHubs(null);
+      await refreshLive();
+      showToast('Configuración logística guardada correctamente.', 'success');
+    } catch (err) {
+      setSavingProposal(false);
+      showToast(`Error al guardar: ${err.message}`, 'error');
     }
-    setSavingProposal(false);
-    setProposedHubs(null);
-    await refreshLive();
-    showToast('Configuración logística guardada.', 'success');
   };
 
   const toggleComuna = (c) => {
@@ -341,12 +355,17 @@ export default function ComandoLNDLM({ reunion, onBack }) {
     showToast('Nodriza guardada.', 'success');
   };
 
-  const isMissing = (error) => error && (error.code === '42P01' || error.code === 'PGRST205' || /does not exist|schema cache/i.test(error.message || ''));
+  const isMissing = (error) => error && (
+    error.code === '42P01' ||
+    error.code === '42501' ||
+    error.code === 'PGRST205' ||
+    /does not exist|schema cache|row-level security|permission denied/i.test(error.message || '')
+  );
 
   const handleDeleteHub = async (hub) => {
     const ok = await window.confirm(`¿Eliminar la nodriza "${hub.name}"? También se borran sus rutas.`);
     if (!ok) return;
-    await deleteLogisticHub(hub.id);
+    await deleteLogisticHub(meetingId, hub.id);
     if (hubDraft?.id === hub.id) setHubDraft(null);
     await refreshLive();
   };

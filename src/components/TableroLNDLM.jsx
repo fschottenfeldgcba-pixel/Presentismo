@@ -41,6 +41,7 @@ import {
   saveLndlmCulturalSpaces,
   deleteLndlmCulturalSpace,
   saveLndlmAssignments,
+  saveSingleManualAssignment,
   importVolunteersToMeeting,
   exportMasterLndlmExcel,
   exportSpacesAssignmentExcel,
@@ -268,9 +269,9 @@ export default function TableroLNDLM({ reunion, onBack, onOpenComando }) {
 
   /**
    * Ejecuta el algoritmo de Asignación Automática por Cercanía en 4 pasadas.
-   * Blindaje anti-sobrescritura: respeta de forma estricta los voluntarios con is_manual_override = true.
+   * Blindaje anti-sobrescritura: excluye y respeta de forma estricta los voluntarios con is_manual_override = true.
    */
-  const handleRunAutomaticAssignment = async (preserveManual = true) => {
+  const handleRunAutomaticAssignment = async (preserveAuto = false) => {
     if (spaces.length === 0) {
       showToast('Primero debés importar o cargar los Espacios Culturales (166 sedes) para poder asignar.', 'warning');
       return;
@@ -288,11 +289,16 @@ export default function TableroLNDLM({ reunion, onBack, onOpenComando }) {
     setProcessing(true);
     try {
       const result = assignVolunteersByProximity(volunteers, spaces, {
-        preserveManualAssignments: preserveManual !== false
+        preserveAutoAssignments: preserveAuto === true,
+        preserveManualAssignments: preserveAuto === true
       });
 
+      const res = await saveLndlmAssignments(meetingId, result.updatedVolunteers);
+      if (res?.error) {
+        throw res.error;
+      }
+
       setVolunteers(result.updatedVolunteers);
-      await saveLndlmAssignments(meetingId, result.updatedVolunteers);
 
       const s = result.summary;
       const preservedNote = result.manualPreservedCount > 0
@@ -304,7 +310,7 @@ export default function TableroLNDLM({ reunion, onBack, onOpenComando }) {
       );
     } catch (err) {
       console.error('Error ejecutando asignación automática:', err);
-      showToast('Ocurrió un error al ejecutar la asignación automática.', 'error');
+      showToast('Ocurrió un error al ejecutar y persistir la asignación automática: ' + (err.message || ''), 'error');
     } finally {
       setProcessing(false);
     }
@@ -514,23 +520,33 @@ export default function TableroLNDLM({ reunion, onBack, onOpenComando }) {
       return v;
     });
 
-    setVolunteers(updatedVols);
-    await saveLndlmAssignments(meetingId, updatedVols);
+    setProcessing(true);
+    try {
+      const res = await saveLndlmAssignments(meetingId, updatedVols);
+      if (res?.error) throw res.error;
 
-    if (openSubstituteSelector && space) {
-      setSubstituteModal({
-        space,
-        replacingVolunteer: null,
-        markReplacedAs: 'BAJA',
-        search: ''
-      });
-    } else {
-      showToast(
-        targetStatus === 'BAJA'
-          ? `Voluntario ${volunteer.first_name} ${volunteer.last_name} marcado como BAJA.`
-          : `Voluntario ${volunteer.first_name} ${volunteer.last_name} devuelto al banco de SUPLENTES.`,
-        'info'
-      );
+      setVolunteers(updatedVols);
+
+      if (openSubstituteSelector && space) {
+        setSubstituteModal({
+          space,
+          replacingVolunteer: null,
+          markReplacedAs: 'BAJA',
+          search: ''
+        });
+      } else {
+        showToast(
+          targetStatus === 'BAJA'
+            ? `Voluntario ${volunteer.first_name} ${volunteer.last_name} marcado como BAJA.`
+            : `Voluntario ${volunteer.first_name} ${volunteer.last_name} devuelto al banco de SUPLENTES.`,
+          'info'
+        );
+      }
+    } catch (err) {
+      console.error('Error al actualizar estado del voluntario:', err);
+      showToast('Error al persistir cambio en Supabase: ' + (err.message || ''), 'error');
+    } finally {
+      setProcessing(false);
     }
   };
 
@@ -550,6 +566,7 @@ export default function TableroLNDLM({ reunion, onBack, onOpenComando }) {
           assignment_score: null,
           proximity_tier: null,
           distance_km: null,
+          is_manual_override: false,
           status: markReplacedAs || 'BAJA'
         };
       }
@@ -559,33 +576,45 @@ export default function TableroLNDLM({ reunion, onBack, onOpenComando }) {
           attended_training: true,
           assigned_space_id: space.id,
           assignment_score: aff.assignment_score,
-          proximity_tier: aff.proximity_tier,
+          proximity_tier: aff.proximity_tier || 'MANUAL',
           distance_km: aff.distance_km,
-          status: 'ASIGNADO'
+          status: 'ASIGNADO',
+          is_manual_override: true
         };
       }
       return v;
     });
 
-    setVolunteers(updatedVols);
-    setSubstituteModal(null);
-    await saveLndlmAssignments(meetingId, updatedVols);
+    setProcessing(true);
+    try {
+      const res = await saveLndlmAssignments(meetingId, updatedVols);
+      if (res?.error) {
+        throw res.error;
+      }
 
-    const tierLabel = PROXIMITY_TIER_META[aff.proximity_tier]?.label || aff.proximity_tier;
-    showToast(
-      replacingVolunteer
-        ? `✅ Reemplazo exitoso en "${space.name}": se asignó a ${substituteVolunteer.first_name} ${substituteVolunteer.last_name} (${tierLabel}).`
-        : `✅ Voluntario ${substituteVolunteer.first_name} ${substituteVolunteer.last_name} asignado a "${space.name}" (${tierLabel}).`,
-      'success'
-    );
+      setVolunteers(updatedVols);
+      setSubstituteModal(null);
+
+      const tierLabel = PROXIMITY_TIER_META[aff.proximity_tier]?.label || aff.proximity_tier;
+      showToast(
+        replacingVolunteer
+          ? `✅ Reemplazo exitoso en "${space.name}": se asignó a ${substituteVolunteer.first_name} ${substituteVolunteer.last_name} (${tierLabel}).`
+          : `✅ Voluntario ${substituteVolunteer.first_name} ${substituteVolunteer.last_name} asignado a "${space.name}" (${tierLabel}).`,
+        'success'
+      );
+    } catch (err) {
+      console.error('Error al persistir reemplazo por suplente:', err);
+      showToast('Error al persistir el reemplazo en Supabase: ' + (err.message || ''), 'error');
+    } finally {
+      setProcessing(false);
+    }
   };
 
   /**
    * Asignación / Reasignación Manual ("a dedo"):
-   * - Setea is_manual_override = true y proximity_tier = 'MANUAL'
-   * - Libera automáticamente el cupo anterior si ya estaba asignado a otra sede
-   * - Permite exceder cupo si el operador lo fuerza manualmente
-   * - Blindado contra re-ejecución del algoritmo
+   * - Ejecuta UPDATE explícito a Supabase con space_id y flag is_manual_override = true
+   * - Si Supabase falla, arroja error y NO actualiza el estado local
+   * - Solo si la promesa de Supabase tiene éxito, actualiza estado local y cierra modal
    */
   const handleConfirmManualAssignment = async (targetVolunteer, targetSpace) => {
     if (!targetVolunteer || !targetSpace) return;
@@ -594,6 +623,13 @@ export default function TableroLNDLM({ reunion, onBack, onOpenComando }) {
       const prevSpace = targetVolunteer.assigned_space_id ? spacesByIdMap[targetVolunteer.assigned_space_id] : null;
       const aff = evaluateProximityAffinity(targetVolunteer, targetSpace);
 
+      // 1. VALIDACIÓN DE PERSISTENCIA: UPDATE directo en Supabase PRIMERO
+      await saveSingleManualAssignment(meetingId, targetVolunteer, targetSpace, {
+        distance_km: aff.distance_km
+      });
+
+      // 2. SOLO SI LA PROMESA DE SUPABASE SE RESOLVIÓ CON ÉXITO:
+      // Se actualiza el estado local en React y se cierra el modal
       const updatedVols = volunteers.map(v => {
         if (v.dni === targetVolunteer.dni) {
           return {
@@ -610,18 +646,8 @@ export default function TableroLNDLM({ reunion, onBack, onOpenComando }) {
         return v;
       });
 
-      if (!targetVolunteer.attended_training && meetingId) {
-        await guardarAsistencia({
-          reunion_id: meetingId,
-          vecino_id: targetVolunteer.dni,
-          asistio: true,
-          estado_convocatoria: 'inscripto'
-        });
-      }
-
       setVolunteers(updatedVols);
       setReasignarModal(null);
-      await saveLndlmAssignments(meetingId, updatedVols);
 
       if (prevSpace && prevSpace.id !== targetSpace.id) {
         showToast(
@@ -635,8 +661,10 @@ export default function TableroLNDLM({ reunion, onBack, onOpenComando }) {
         );
       }
     } catch (err) {
-      console.error('Error al realizar asignación manual:', err);
-      showToast('Error al persistir la asignación manual: ' + err.message, 'error');
+      console.error('Error al realizar asignación manual en Supabase:', err);
+      // MANEJO DE ERRORES: Si falla el UPDATE a Supabase, NO actualizar el estado local
+      showToast('Error al persistir la asignación manual: ' + (err.message || 'Error de conexión con la base de datos'), 'error');
+      throw err;
     } finally {
       setProcessing(false);
     }
@@ -746,6 +774,7 @@ export default function TableroLNDLM({ reunion, onBack, onOpenComando }) {
           assignment_score: null,
           proximity_tier: null,
           distance_km: null,
+          is_manual_override: false,
           status: nextStatus
         };
       }
@@ -1789,7 +1818,7 @@ export default function TableroLNDLM({ reunion, onBack, onOpenComando }) {
                                 {vol.cuil ? ` • CUIL: ${vol.cuil}` : ''}
                               </div>
                             </div>
-                            {renderAffinityBadge(vol.proximity_tier, vol.assignment_score, vol.distance_km)}
+                            {renderAffinityBadge(vol.is_manual_override ? 'MANUAL' : vol.proximity_tier, vol.assignment_score, vol.distance_km)}
                           </div>
 
                           <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem', fontSize: '0.76rem', color: '#334155', alignItems: 'center' }}>
@@ -2156,7 +2185,7 @@ export default function TableroLNDLM({ reunion, onBack, onOpenComando }) {
                                   <span style={{ fontSize: '0.7rem', color: '#64748B' }}>
                                     {assignedSpace.neighborhood} (C{assignedSpace.comuna})
                                   </span>
-                                  {renderAffinityBadge(v.proximity_tier, v.assignment_score, v.distance_km)}
+                                  {renderAffinityBadge(v.is_manual_override ? 'MANUAL' : v.proximity_tier, v.assignment_score, v.distance_km)}
                                 </div>
                               </div>
                             ) : (

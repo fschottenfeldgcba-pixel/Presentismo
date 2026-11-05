@@ -29,6 +29,7 @@ export default function ReasignarVoluntarioModal({
 }) {
   const [search, setSearch] = useState('');
   const [selected, setSelected] = useState(null); // espacio (move) o voluntario (assign)
+  const [submitting, setSubmitting] = useState(false);
 
   const isMove = mode === 'move-volunteer';
 
@@ -71,8 +72,8 @@ export default function ReasignarVoluntarioModal({
       ? spacesById[targetVolunteer.assigned_space_id]
       : null;
 
-  const handleConfirm = () => {
-    if (!targetSpace || !targetVolunteer) return;
+  const handleConfirm = async () => {
+    if (!targetSpace || !targetVolunteer || submitting) return;
     // Transferencia desde otra sede: confirmación explícita
     if (!isMove && currentSpaceOfTarget) {
       const ok = window.confirm(
@@ -80,7 +81,14 @@ export default function ReasignarVoluntarioModal({
       );
       if (!ok) return;
     }
-    onConfirm(targetVolunteer, targetSpace);
+    setSubmitting(true);
+    try {
+      await onConfirm(targetVolunteer, targetSpace);
+    } catch (e) {
+      console.error('Error al confirmar asignación manual:', e);
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   const rowStyle = (active) => ({
@@ -169,17 +177,19 @@ export default function ReasignarVoluntarioModal({
             </div>
           )}
           <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.5rem' }}>
-            <button type="button" className="btn btn-outline" onClick={onClose}>Cancelar</button>
+            <button type="button" className="btn btn-outline" disabled={submitting} onClick={onClose}>Cancelar</button>
             <button
               type="button"
               className="btn btn-primary"
-              disabled={!targetSpace || !targetVolunteer}
+              disabled={!targetSpace || !targetVolunteer || submitting}
               onClick={handleConfirm}
               style={{ display: 'inline-flex', alignItems: 'center', gap: '0.4rem', fontWeight: 700 }}
             >
               {isMove ? <ArrowRightLeft size={14} /> : <UserPlus size={14} />}
-              {isMove ? 'Mover a esta sede' : (currentSpaceOfTarget ? 'Transferir a esta sede' : 'Asignar a esta sede')}
-              {willExceed ? ' (forzar)' : ''}
+              {submitting
+                ? 'Guardando en Supabase...'
+                : (isMove ? 'Mover a esta sede' : (currentSpaceOfTarget ? 'Transferir a esta sede' : 'Asignar a esta sede'))}
+              {!submitting && willExceed ? ' (forzar)' : ''}
             </button>
           </div>
         </div>

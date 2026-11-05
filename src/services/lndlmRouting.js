@@ -6,14 +6,19 @@
 export const MAX_VIANDAS_PER_TRIP = 10;
 
 export function haversineKm(lat1, lng1, lat2, lng2) {
-  if ([lat1, lng1, lat2, lng2].some(x => x == null || isNaN(x))) return 99.9;
+  const nLat1 = Number(lat1);
+  const nLng1 = Number(lng1);
+  const nLat2 = Number(lat2);
+  const nLng2 = Number(lng2);
+  if (!isFinite(nLat1) || !isFinite(nLng1) || !isFinite(nLat2) || !isFinite(nLng2)) return 99.9;
   const R = 6371;
-  const dLat = ((lat2 - lat1) * Math.PI) / 180;
-  const dLng = ((lng2 - lng1) * Math.PI) / 180;
+  const dLat = ((nLat2 - nLat1) * Math.PI) / 180;
+  const dLng = ((nLng2 - nLng1) * Math.PI) / 180;
   const a =
     Math.sin(dLat / 2) ** 2 +
-    Math.cos((lat1 * Math.PI) / 180) * Math.cos((lat2 * Math.PI) / 180) * Math.sin(dLng / 2) ** 2;
-  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+    Math.cos((nLat1 * Math.PI) / 180) * Math.cos((nLat2 * Math.PI) / 180) * Math.sin(dLng / 2) ** 2;
+  const clampedA = Math.min(1, Math.max(0, a));
+  return R * 2 * Math.atan2(Math.sqrt(clampedA), Math.sqrt(Math.max(0, 1 - clampedA)));
 }
 
 const round2 = (n) => Math.round(n * 100) / 100;
@@ -43,49 +48,123 @@ export function suggestMotosForViandas(totalViandas) {
  *
  * @param spacesData [{ id, name, comuna, neighborhood, lat, lng, viandas }]  viandas = voluntarios asignados al espacio
  * @param options.displayBarrio (neighborhoodKey) => nombre legible para la nomenclatura
+ * @param options.zones macro-zonas geográficas
  *
- * Solo considera espacios con al menos 1 voluntario asignado. Cada macro-zona ubica su pin
- * en el centro de masa (lat/lng ponderado por viandas) de sus espacios.
+ * Solo considera espacios con al menos 1 voluntario asignado y coordenadas válidas.
+ * Cada macro-zona ubica su pin en el centro de masa (lat/lng ponderado por viandas) de sus espacios.
  */
 export function suggestLogisticsSetup(spacesData = [], { displayBarrio = (b) => b, zones = LOGISTICS_MACRO_ZONES } = {}) {
-  const active = (spacesData || []).filter(s =>
-    Number(s.viandas) > 0 && s.lat != null && s.lng != null && !isNaN(s.lat) && !isNaN(s.lng)
-  );
+  try {
+    if (!Array.isArray(spacesData) || spacesData.length === 0) {
+      return [];
+    }
 
-  const buckets = zones.map(z => ({ zone: z, spaces: [] }));
-  active.forEach(s => {
-    const idx = zones.findIndex(z => z.comunas.includes(Number(s.comuna)));
-    buckets[idx >= 0 ? idx : zones.length - 1].spaces.push(s);
-  });
+    const safeZones = Array.isArray(zones) && zones.length > 0 ? zones : LOGISTICS_MACRO_ZONES;
 
-  const result = [];
-  buckets.forEach(({ zone, spaces }) => {
-    if (spaces.length === 0) return;
-    const total = spaces.reduce((a, s) => a + Number(s.viandas), 0);
-    const lat = spaces.reduce((a, s) => a + Number(s.lat) * Number(s.viandas), 0) / total;
-    const lng = spaces.reduce((a, s) => a + Number(s.lng) * Number(s.viandas), 0) / total;
+    const parseCoord = (val) => {
+      if (val == null) return null;
+      if (typeof val === 'number') return isFinite(val) ? val : null;
+      const str = String(val).trim().replace(',', '.');
+      const num = parseFloat(str);
+      return isFinite(num) ? num : null;
+    };
 
-    // Comuna/barrio donde "cae" el centroide: el espacio más cercano al pin
-    let nearest = spaces[0];
-    let nearestD = Infinity;
-    spaces.forEach(s => {
-      const d = haversineKm(lat, lng, s.lat, s.lng);
-      if (d < nearestD) { nearestD = d; nearest = s; }
+    // 1. VALIDACIÓN DE NULOS Y COORDENADAS:
+    // Filtrar sedes que tengan viandas > 0 y coordenadas geográficas válidas (en rango)
+    const active = spacesData
+      .map(s => {
+        const lat = parseCoord(s.lat);
+        const lng = parseCoord(s.lng);
+        const viandas = Math.max(0, parseInt(s.viandas ?? 0, 10) || 0);
+        const comuna = parseInt(s.comuna, 10) || 1;
+        return {
+          ...s,
+          lat,
+          lng,
+          viandas,
+          comuna
+        };
+      })
+      .filter(s =>
+        s.viandas > 0 &&
+        s.lat !== null &&
+        s.lng !== null &&
+        s.lat !== 0 &&
+        s.lng !== 0 &&
+        Math.abs(s.lat) <= 90 &&
+        Math.abs(s.lng) <= 180
+      );
+
+    if (active.length === 0) {
+      return [];
+    }
+
+    // 2. Agrupar por macro-zonas
+    const buckets = safeZones.map(z => ({ zone: z, spaces: [] }));
+    active.forEach(s => {
+      const idx = safeZones.findIndex(z => Array.isArray(z.comunas) && z.comunas.includes(Number(s.comuna)));
+      const targetBucket = idx >= 0 ? buckets[idx] : buckets[buckets.length - 1];
+      if (targetBucket) {
+        targetBucket.spaces.push(s);
+      }
     });
 
-    result.push({
-      name: `Nodriza C${nearest.comuna} - ${displayBarrio(nearest.neighborhood) || zone.label}`,
-      lat: Number(lat.toFixed(6)),
-      lng: Number(lng.toFixed(6)),
-      moto_count: suggestMotosForViandas(total),
-      zone_comunas: [...zone.comunas],
-      zone_barrios: [],
-      total_viandas: total,
-      spaces_count: spaces.length,
-      zone_label: zone.label
+    // 3. Generación de Nodrizas por Centro de Masa
+    const result = [];
+    buckets.forEach(({ zone, spaces }) => {
+      // Manejar correctamente el caso en el que un clúster geográfico quede vacío
+      if (!spaces || spaces.length === 0) return;
+
+      const total = spaces.reduce((a, s) => a + (Number(s.viandas) || 0), 0);
+      if (total <= 0) return;
+
+      const sumLat = spaces.reduce((a, s) => a + (s.lat * s.viandas), 0);
+      const sumLng = spaces.reduce((a, s) => a + (s.lng * s.viandas), 0);
+      const rawLat = sumLat / total;
+      const rawLng = sumLng / total;
+
+      if (!isFinite(rawLat) || !isFinite(rawLng)) return;
+
+      // Comuna/barrio donde "cae" el centroide: el espacio más cercano al pin
+      let nearest = spaces[0];
+      let nearestD = Infinity;
+      spaces.forEach(s => {
+        const d = haversineKm(rawLat, rawLng, s.lat, s.lng);
+        if (d < nearestD) {
+          nearestD = d;
+          nearest = s;
+        }
+      });
+
+      let barrioLabel = '';
+      try {
+        barrioLabel = (typeof displayBarrio === 'function' ? displayBarrio(nearest?.neighborhood) : '') || '';
+      } catch (e) {
+        barrioLabel = nearest?.neighborhood || '';
+      }
+
+      const nodrizaName = nearest
+        ? `Nodriza C${nearest.comuna || zone.comunas?.[0] || 'X'} - ${barrioLabel || zone.label}`
+        : `Nodriza ${zone.label}`;
+
+      result.push({
+        name: nodrizaName,
+        lat: Number(rawLat.toFixed(6)),
+        lng: Number(rawLng.toFixed(6)),
+        moto_count: suggestMotosForViandas(total),
+        zone_comunas: [...(zone.comunas || [])],
+        zone_barrios: [],
+        total_viandas: total,
+        spaces_count: spaces.length,
+        zone_label: zone.label
+      });
     });
-  });
-  return result;
+
+    return result;
+  } catch (err) {
+    console.error('Error exacto en suggestLogisticsSetup:', err);
+    throw err;
+  }
 }
 
 /**

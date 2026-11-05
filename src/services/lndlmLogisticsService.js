@@ -11,25 +11,98 @@ const CHECKIN_BUCKET = 'lndlm-checkins';
 const isMissingTable = (error) =>
   Boolean(error) && (error.code === '42P01' || error.code === 'PGRST205' || error.code === 'PGRST202' || /does not exist|schema cache/i.test(error.message || ''));
 
+const isRlsOrMissing = (error) =>
+  Boolean(error) && (
+    error.code === '42P01' ||
+    error.code === '42501' ||
+    error.code === 'PGRST205' ||
+    error.code === 'PGRST202' ||
+    /row-level security|permission denied|does not exist|schema cache/i.test(error.message || '')
+  );
+
 export const MIGRATION_HINT =
-  'Faltan tablas/funciones de la Fase 2 en Supabase. Ejecutá en el SQL Editor el archivo supabase/migrations/20261102_lndlm_phase2_logistics.sql';
+  'Permisos RLS o tablas de Fase 2 pendientes en Supabase. Ejecutá en el SQL Editor el archivo supabase/migrations/20261105_fix_lndlm_rls_policies.sql';
+
+// Helper para sincronizar datos en reuniones.config_uno_a_uno como respaldo resiliente
+async function fetchReunionConfigJson(meetingId) {
+  if (!meetingId) return {};
+  try {
+    const { data } = await supabase
+      .from('reuniones')
+      .select('config_uno_a_uno')
+      .eq('id', meetingId)
+      .maybeSingle();
+    return data?.config_uno_a_uno || {};
+  } catch {
+    return {};
+  }
+}
+
+async function saveToReunionConfigJson(meetingId, lndlmPatch) {
+  if (!meetingId) return;
+  try {
+    const currentCfg = await fetchReunionConfigJson(meetingId);
+    const existingLndlm = currentCfg.lndlm_data || {};
+    const updatedCfg = {
+      ...currentCfg,
+      is_lndlm_event: true,
+      lndlm_data: {
+        ...existingLndlm,
+        ...lndlmPatch,
+        updated_at: new Date().toISOString()
+      }
+    };
+    await supabase
+      .from('reuniones')
+      .update({ config_uno_a_uno: updatedCfg })
+      .eq('id', meetingId);
+  } catch (err) {
+    console.warn('Aviso sincronizando config_uno_a_uno en reunión:', err);
+  }
+}
 
 // ============================================================================
 // NODRIZAS (HUBS)
 // ============================================================================
 
 export async function getLogisticHubs(meetingId) {
-  const { data, error } = await supabase
-    .from('lndlm_logistic_hubs')
-    .select('*')
-    .eq('meeting_id', meetingId)
-    .order('created_at', { ascending: true });
-  if (error) return { data: [], error, missing: isMissingTable(error) };
-  return { data: data || [], error: null };
+  let dbHubs = null;
+  let dbErr = null;
+  try {
+    const { data, error } = await supabase
+      .from('lndlm_logistic_hubs')
+      .select('*')
+      .eq('meeting_id', meetingId)
+      .order('created_at', { ascending: true });
+    if (!error) dbHubs = data;
+    else dbErr = error;
+  } catch (err) {
+    dbErr = err;
+  }
+
+  if (Array.isArray(dbHubs) && dbHubs.length > 0) {
+    return { data: dbHubs, error: null };
+  }
+
+  // Fallback transparente a config_uno_a_uno si la tabla falla o está vacía
+  try {
+    const cfg = await fetchReunionConfigJson(meetingId);
+    const fallbackHubs = cfg?.lndlm_data?.hubs || [];
+    if (fallbackHubs.length > 0) {
+      return { data: fallbackHubs, error: null };
+    }
+  } catch {}
+
+  if (dbErr && !isRlsOrMissing(dbErr)) {
+    return { data: [], error: dbErr, missing: isMissingTable(dbErr) };
+  }
+  return { data: dbHubs || [], error: null };
 }
 
 export async function saveLogisticHub(meetingId, hub) {
+  const hubId = hub.id || ((typeof crypto !== 'undefined' && crypto.randomUUID) ? crypto.randomUUID() : `hub_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`);
   const payload = {
+    id: hubId,
     meeting_id: meetingId,
     name: String(hub.name || '').trim() || 'Nodriza',
     lat: hub.lat === '' || hub.lat == null ? null : Number(hub.lat),
@@ -39,16 +112,93 @@ export async function saveLogisticHub(meetingId, hub) {
     zone_barrios: hub.zone_barrios || [],
     updated_at: new Date().toISOString()
   };
-  if (hub.id) {
-    const { data, error } = await supabase.from('lndlm_logistic_hubs').update(payload).eq('id', hub.id).select().single();
-    return { data, error };
+
+  let dbResult = null;
+  let dbError = null;
+
+  try {
+    if (hub.id) {
+      const { data, error } = await supabase.from('lndlm_logistic_hubs').update(payload).eq('id', hub.id).select().single();
+      dbResult = data;
+      dbError = error;
+    } else {
+      const { data, error } = await supabase.from('lndlm_logistic_hubs').insert(payload).select().single();
+      dbResult = data;
+      dbError = error;
+    }
+  } catch (err) {
+    dbError = err;
   }
-  const { data, error } = await supabase.from('lndlm_logistic_hubs').insert(payload).select().single();
-  return { data, error };
+
+  // Sincronizar en config_uno_a_uno como resguardo persistente
+  try {
+    const cfg = await fetchReunionConfigJson(meetingId);
+    const existingHubs = (cfg?.lndlm_data?.hubs || []).filter(h => h.id !== hubId);
+    await saveToReunionConfigJson(meetingId, { hubs: [...existingHubs, payload] });
+  } catch (e) {
+    console.warn('Aviso sincronizando hubs en config_uno_a_uno:', e);
+  }
+
+  // Si falló en la tabla por RLS o falta de tabla pero se guardó en config_uno_a_uno, devolver éxito
+  if (dbError && isRlsOrMissing(dbError)) {
+    return { data: payload, error: null, fallbackUsed: true };
+  }
+
+  return { data: dbResult, error: dbError };
 }
 
-export async function deleteLogisticHub(hubId) {
-  return await supabase.from('lndlm_logistic_hubs').delete().eq('id', hubId);
+export async function saveAllLogisticHubs(meetingId, hubs = []) {
+  const normalizedHubs = hubs.map(h => ({
+    id: h.id && !h.id.startsWith('prop_') ? h.id : ((typeof crypto !== 'undefined' && crypto.randomUUID) ? crypto.randomUUID() : `hub_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`),
+    meeting_id: meetingId,
+    name: String(h.name || '').trim() || 'Nodriza',
+    lat: h.lat === '' || h.lat == null ? null : Number(h.lat),
+    lng: h.lng === '' || h.lng == null ? null : Number(h.lng),
+    moto_count: Math.max(0, parseInt(h.moto_count, 10) || 0),
+    zone_comunas: (h.zone_comunas || []).map(Number),
+    zone_barrios: h.zone_barrios || [],
+    updated_at: new Date().toISOString()
+  }));
+
+  let dbError = null;
+  try {
+    await supabase.from('lndlm_logistic_hubs').delete().eq('meeting_id', meetingId);
+    const { error: insErr } = await supabase.from('lndlm_logistic_hubs').insert(normalizedHubs);
+    if (insErr) dbError = insErr;
+  } catch (err) {
+    dbError = err;
+  }
+
+  // Sincronizar en config_uno_a_uno
+  try {
+    await saveToReunionConfigJson(meetingId, { hubs: normalizedHubs });
+  } catch (e) {
+    console.warn('Aviso guardando hubs en config_uno_a_uno:', e);
+  }
+
+  if (dbError && isRlsOrMissing(dbError)) {
+    return { data: normalizedHubs, error: null, fallbackUsed: true };
+  }
+
+  return { data: normalizedHubs, error: dbError };
+}
+
+export async function deleteLogisticHub(meetingIdOrHubId, optionalHubId) {
+  const hubId = optionalHubId || meetingIdOrHubId;
+  const meetingId = optionalHubId ? meetingIdOrHubId : null;
+
+  try {
+    await supabase.from('lndlm_logistic_hubs').delete().eq('id', hubId);
+  } catch {}
+
+  if (meetingId) {
+    try {
+      const cfg = await fetchReunionConfigJson(meetingId);
+      const updatedHubs = (cfg?.lndlm_data?.hubs || []).filter(h => h.id !== hubId);
+      await saveToReunionConfigJson(meetingId, { hubs: updatedHubs });
+    } catch {}
+  }
+  return { error: null };
 }
 
 // ============================================================================
@@ -56,13 +206,37 @@ export async function deleteLogisticHub(hubId) {
 // ============================================================================
 
 export async function getDeliveryRoutes(meetingId) {
-  const { data, error } = await supabase
-    .from('lndlm_delivery_routes')
-    .select('*')
-    .eq('meeting_id', meetingId)
-    .order('created_at', { ascending: true });
-  if (error) return { data: [], error, missing: isMissingTable(error) };
-  return { data: data || [], error: null };
+  let dbRoutes = null;
+  let dbErr = null;
+  try {
+    const { data, error } = await supabase
+      .from('lndlm_delivery_routes')
+      .select('*')
+      .eq('meeting_id', meetingId)
+      .order('created_at', { ascending: true });
+    if (!error) dbRoutes = data;
+    else dbErr = error;
+  } catch (err) {
+    dbErr = err;
+  }
+
+  if (Array.isArray(dbRoutes) && dbRoutes.length > 0) {
+    return { data: dbRoutes, error: null };
+  }
+
+  // Fallback a config_uno_a_uno
+  try {
+    const cfg = await fetchReunionConfigJson(meetingId);
+    const fallbackRoutes = cfg?.lndlm_data?.routes || [];
+    if (fallbackRoutes.length > 0) {
+      return { data: fallbackRoutes, error: null };
+    }
+  } catch {}
+
+  if (dbErr && !isRlsOrMissing(dbErr)) {
+    return { data: [], error: dbErr, missing: isMissingTable(dbErr) };
+  }
+  return { data: dbRoutes || [], error: null };
 }
 
 export async function setRouteStatus(routeId, status) {
@@ -111,9 +285,11 @@ export async function generateAndSaveRoutes({ meetingId, hubs, spaces, assignmen
   const result = generateDeliveryRoutes({ hubs, spaces, spaceLogistics, excludeSpaceIds, deliveredBySpace });
 
   // Borrar rutas pendientes anteriores y guardar las nuevas
-  const del = await supabase.from('lndlm_delivery_routes').delete().eq('meeting_id', meetingId).eq('status', 'PENDING');
-  if (del.error) return { ...result, error: del.error, missing: isMissingTable(del.error) };
+  try {
+    await supabase.from('lndlm_delivery_routes').delete().eq('meeting_id', meetingId).eq('status', 'PENDING');
+  } catch {}
 
+  let insErr = null;
   if (result.routes.length > 0) {
     const rows = result.routes.map(r => ({
       meeting_id: meetingId,
@@ -125,8 +301,21 @@ export async function generateAndSaveRoutes({ meetingId, hubs, spaces, assignmen
       distance_km: r.distance_km,
       itinerary: r.itinerary
     }));
-    const ins = await supabase.from('lndlm_delivery_routes').insert(rows);
-    if (ins.error) return { ...result, error: ins.error };
+    try {
+      const ins = await supabase.from('lndlm_delivery_routes').insert(rows);
+      if (ins.error) insErr = ins.error;
+    } catch (e) {
+      insErr = e;
+    }
+  }
+
+  // Resguardo en config_uno_a_uno
+  try {
+    await saveToReunionConfigJson(meetingId, { routes: result.routes });
+  } catch {}
+
+  if (insErr && !isRlsOrMissing(insErr)) {
+    return { ...result, error: insErr };
   }
 
   return { ...result, keptRoutes: keptRoutes.length, error: null };
@@ -152,46 +341,62 @@ export async function lookupVolunteer(dni) {
     // Continuar al fallback
   }
 
-  // 2. Fallback resiliente: verificar asistencia en inscripciones_asistencias + vecinos de la reunión NDLM
+  // 2. Fallback resiliente multi-origen (lndlm_volunteers, lndlm_assignments, inscripciones_asistencias)
   try {
-    const { data: inas, error: inasErr } = await supabase
-      .from('inscripciones_asistencias')
-      .select('*, reunion:reuniones(*), vecino:vecinos(*)')
-      .eq('vecino_id', cleanDni)
-      .eq('asistio', true);
+    let volRow = null;
+    try {
+      const { data: vRows } = await supabase
+        .from('lndlm_volunteers')
+        .select('*');
+      volRow = (vRows || []).find(v => String(v.dni || '').replace(/\D/g, '') === cleanDni);
+    } catch {}
 
-    if (inasErr) return { data: null, error: inasErr, missing: isMissingTable(inasErr) };
+    let dbAssig = null;
+    try {
+      const { data: assigRows } = await supabase
+        .from('lndlm_assignments')
+        .select('*');
+      dbAssig = (assigRows || []).find(a => String(a.attendee_id || '').replace(/\D/g, '') === cleanDni);
+    } catch {}
 
-    const lndlmInas = (inas || []).find(i =>
-      i.reunion?.is_lndlm_event ||
-      /NDLM|Museos|LNDLM|Voluntariados.*Capacitaci/i.test(i.reunion?.nombre || '')
+    let lndlmInas = null;
+    try {
+      const { data: inas } = await supabase
+        .from('inscripciones_asistencias')
+        .select('*, reunion:reuniones(*), vecino:vecinos(*)')
+        .eq('asistio', true);
+      lndlmInas = (inas || []).find(i =>
+        String(i.vecino_id || '').replace(/\D/g, '') === cleanDni &&
+        (i.reunion?.is_lndlm_event || /NDLM|Museos|LNDLM|Voluntariados.*Capacitaci/i.test(i.reunion?.nombre || ''))
+      );
+    } catch {}
+
+    // El voluntario se considera habilitado si:
+    // a) Está en lndlm_volunteers con attended_training = true
+    // b) O tiene asignación en lndlm_assignments (status = ASIGNADO y space_id)
+    // c) O está en inscripciones_asistencias con asistio = true
+    const hasAttended = Boolean(
+      volRow?.attended_training ||
+      (dbAssig && dbAssig.status === 'ASIGNADO' && dbAssig.space_id) ||
+      lndlmInas
     );
 
-    // Si no asistió a la capacitación
-    if (!lndlmInas) {
+    // Si no asistió a la capacitación ni está habilitado
+    if (!hasAttended) {
       return { data: { ok: false, error: 'NO_ATTENDANCE' }, error: null };
     }
 
-    const meetingId = lndlmInas.reunion_id;
-    const vecino = lndlmInas.vecino || {};
-    const reunion = lndlmInas.reunion || {};
-    const cfg = reunion.config_uno_a_uno?.lndlm_data || {};
+    const meetingId = lndlmInas?.reunion_id || volRow?.meeting_id || dbAssig?.meeting_id;
+    const vecino = lndlmInas?.vecino || {};
+    const firstName = volRow?.first_name || vecino?.nombre || 'Voluntario';
+    const lastName = volRow?.last_name || vecino?.apellido || '';
+    const reunion = lndlmInas?.reunion || {};
+    const cfg = reunion?.config_uno_a_uno?.lndlm_data || {};
 
     // 3. Buscar asignación activa en lndlm_assignments o en config_uno_a_uno
-    let dbAssig = null;
-    try {
-      const { data: assigRow } = await supabase
-        .from('lndlm_assignments')
-        .select('*')
-        .eq('meeting_id', meetingId)
-        .eq('attendee_id', cleanDni)
-        .maybeSingle();
-      if (assigRow) dbAssig = assigRow;
-    } catch {}
-
     const confAssig = cfg.assignments?.[cleanDni];
-    const spaceId = dbAssig?.space_id || (confAssig?.status === 'ASIGNADO' ? confAssig.space_id : null);
-    const isAssigned = (dbAssig?.status === 'ASIGNADO' || confAssig?.status === 'ASIGNADO') && Boolean(spaceId);
+    const spaceId = (dbAssig?.status === 'ASIGNADO' ? dbAssig.space_id : null) || (confAssig?.status === 'ASIGNADO' ? confAssig.space_id : null);
+    const isAssigned = Boolean(spaceId);
 
     // Si aún no tiene sede asignada
     if (!isAssigned) {
@@ -200,8 +405,8 @@ export async function lookupVolunteer(dni) {
           ok: true,
           assigned: false,
           volunteer: {
-            first_name: vecino.nombre || 'Voluntario',
-            last_name: vecino.apellido || '',
+            first_name: firstName,
+            last_name: lastName,
             dni: cleanDni
           }
         },
@@ -226,15 +431,38 @@ export async function lookupVolunteer(dni) {
 
     // 5. Estado de la ruta de entrega si existe
     let routeStatus = null;
+    if (meetingId) {
+      try {
+        const { data: routes } = await supabase
+          .from('lndlm_delivery_routes')
+          .select('status, itinerary')
+          .eq('meeting_id', meetingId);
+        const matched = (routes || []).find(r =>
+          (r.itinerary || []).some(stop => stop.space_id === spaceId)
+        );
+        if (matched) routeStatus = matched.status;
+      } catch {}
+    }
+
+    let teamAssigned = 1;
+    let teamCheckedIn = dbAssig?.check_in_time ? 1 : 0;
+    let receiverName = dbAssig?.is_food_receiver ? `${firstName} ${lastName}`.trim() : '';
+
     try {
-      const { data: routes } = await supabase
-        .from('lndlm_delivery_routes')
-        .select('status, itinerary')
-        .eq('meeting_id', meetingId);
-      const matched = (routes || []).find(r =>
-        (r.itinerary || []).some(stop => stop.space_id === spaceId)
-      );
-      if (matched) routeStatus = matched.status;
+      const { data: teamRows } = await supabase
+        .from('lndlm_assignments')
+        .select('attendee_id, check_in_time, is_food_receiver')
+        .eq('space_id', spaceId)
+        .eq('status', 'ASIGNADO');
+
+      if (teamRows && teamRows.length > 0) {
+        teamAssigned = teamRows.length;
+        teamCheckedIn = teamRows.filter(r => r.check_in_time).length;
+        const receiver = teamRows.find(r => r.is_food_receiver);
+        if (receiver && receiver.attendee_id === cleanDni) {
+          receiverName = `${firstName} ${lastName}`.trim();
+        }
+      }
     } catch {}
 
     return {
@@ -242,8 +470,8 @@ export async function lookupVolunteer(dni) {
         ok: true,
         assigned: true,
         volunteer: {
-          first_name: vecino.nombre || 'Voluntario',
-          last_name: vecino.apellido || '',
+          first_name: firstName,
+          last_name: lastName,
           dni: cleanDni
         },
         space: {
@@ -260,9 +488,9 @@ export async function lookupVolunteer(dni) {
         },
         route_status: routeStatus,
         team: {
-          assigned: 1,
-          checked_in: dbAssig?.check_in_time ? 1 : 0,
-          receiver_name: dbAssig?.is_food_receiver ? `${vecino.nombre || ''} ${vecino.apellido || ''}`.trim() : ''
+          assigned: teamAssigned,
+          checked_in: teamCheckedIn,
+          receiver_name: receiverName
         }
       },
       error: null
@@ -314,12 +542,12 @@ export async function volunteerCheckin(dni, photoUrl) {
   // Fallback si la RPC no existe o falla por RLS
   try {
     const now = new Date().toISOString();
-    const { data: assig } = await supabase
+    const { data: assigRows } = await supabase
       .from('lndlm_assignments')
       .select('*')
-      .eq('attendee_id', cleanDni)
-      .eq('status', 'ASIGNADO')
-      .maybeSingle();
+      .eq('status', 'ASIGNADO');
+
+    const assig = (assigRows || []).find(a => String(a.attendee_id || '').replace(/\D/g, '') === cleanDni);
 
     if (!assig) return { data: { ok: false, error: 'NOT_ASSIGNED' }, error: null };
 
@@ -361,12 +589,12 @@ export async function volunteerConfirmFood(dni) {
 
   try {
     const now = new Date().toISOString();
-    const { data: assig } = await supabase
+    const { data: assigRows } = await supabase
       .from('lndlm_assignments')
       .select('*')
-      .eq('attendee_id', cleanDni)
-      .eq('status', 'ASIGNADO')
-      .maybeSingle();
+      .eq('status', 'ASIGNADO');
+
+    const assig = (assigRows || []).find(a => String(a.attendee_id || '').replace(/\D/g, '') === cleanDni);
 
     if (!assig) return { data: { ok: false, error: 'NOT_ASSIGNED' }, error: null };
     if (!assig.check_in_time) return { data: { ok: false, error: 'NOT_CHECKED_IN' }, error: null };

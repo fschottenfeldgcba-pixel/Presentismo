@@ -664,13 +664,42 @@ export const guardarAsistencia = async (reunionId, vecinoDni, asistioVal, extraD
 
     // Sincronizar en segundo plano con lndlm_volunteers si existe la reunión/fila LNDLM
     try {
+      const cleanDni = String(vecinoDni || '').replace(/\D/g, '');
       supabase
         .from('lndlm_volunteers')
-        .update({ attended_training: Boolean(asistioVal), updated_at: new Date().toISOString() })
+        .select('id, dni')
         .eq('meeting_id', reunionId)
-        .eq('dni', String(vecinoDni || '').trim())
-        .then(() => {});
-    } catch {}
+        .then(async ({ data: existingVols }) => {
+          const matched = (existingVols || []).find(v => String(v.dni || '').replace(/\D/g, '') === cleanDni);
+          if (matched) {
+            await supabase
+              .from('lndlm_volunteers')
+              .update({ attended_training: Boolean(asistioVal), updated_at: new Date().toISOString() })
+              .eq('id', matched.id);
+          } else if (asistioVal) {
+            // Si el voluntario no estaba en lndlm_volunteers, lo creamos para que el portal lo reconozca de inmediato
+            const { data: vec } = await supabase
+              .from('vecinos')
+              .select('nombre, apellido')
+              .eq('dni', vecinoDni)
+              .maybeSingle();
+
+            await supabase
+              .from('lndlm_volunteers')
+              .insert([{
+                meeting_id: reunionId,
+                dni: cleanDni,
+                first_name: vec?.nombre || 'Voluntario',
+                last_name: vec?.apellido || '',
+                attended_training: true,
+                status: 'SUPLENTE',
+                updated_at: new Date().toISOString()
+              }]);
+          }
+        });
+    } catch (syncErr) {
+      console.warn('Aviso sincronizando lndlm_volunteers:', syncErr);
+    }
 
     return { data, error: null };
   } catch (error) {
