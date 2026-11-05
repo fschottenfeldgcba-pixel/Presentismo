@@ -55,15 +55,17 @@ export default function LndlmCheckinApp() {
   };
 
   const login = useCallback(async (rawDni, silent = false) => {
-    const dni = String(rawDni || '').replace(/\D/g, '');
+    const dni = String(rawDni || '').replace(/\D/g, '').trim();
     if (!dni) {
       setError('Ingresá tu número de DNI.');
       return;
     }
+    console.log('[Portal LNDLM UI] Intentando login con DNI:', dni);
     if (!silent) setLoading(true);
     setError('');
     const res = await lookupVolunteer(dni);
     if (!silent) setLoading(false);
+    console.log('[Portal LNDLM UI] Respuesta recibida de lookupVolunteer:', res);
 
     if (res.error || !res.data?.ok) {
       if (silent) return; // en refresco automático no pisamos la pantalla

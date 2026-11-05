@@ -325,81 +325,156 @@ export async function generateAndSaveRoutes({ meetingId, hubs, spaces, assignmen
 // API DE LA WEBAPP DEL VOLUNTARIO (RPC con DNI)
 // ============================================================================
 
+/**
+ * Genera variantes representativas de un DNI (con y sin puntos, sin ceros iniciales)
+ * para garantizar compatibilidad con cualquier formato almacenado en Supabase.
+ */
+function getDniVariants(rawDni) {
+  const clean = String(rawDni || '').replace(/\D/g, '').trim();
+  if (!clean) return [];
+  const dotted = clean.replace(/\B(?=(\d{3})+(?!\d))/g, '.');
+  const noZeros = clean.replace(/^0+/, '');
+  const variants = [clean, dotted, noZeros, String(rawDni || '').trim()].filter(Boolean);
+  return Array.from(new Set(variants));
+}
+
 export async function lookupVolunteer(dni) {
-  const cleanDni = String(dni || '').replace(/\D/g, '');
+  const cleanDni = String(dni || '').replace(/\D/g, '').trim();
   if (!cleanDni) {
+    console.warn('[LNDLM Lookup] DNI vacío recibido.');
     return { data: { ok: false, error: 'NO_ATTENDANCE' }, error: null };
   }
 
+  const dniVariants = getDniVariants(cleanDni);
+  console.log('[LNDLM Lookup] 🔎 Validando DNI:', cleanDni, '| Variantes de búsqueda:', dniVariants);
+
   // 1. Intentar primero con la RPC nativa de Postgres
   try {
-    const { data, error } = await supabase.rpc('lndlm_volunteer_lookup', { p_dni: cleanDni });
-    if (!error && data?.ok) {
-      return { data, error: null };
+    const { data: rpcData, error: rpcErr } = await supabase.rpc('lndlm_volunteer_lookup', { p_dni: cleanDni });
+    console.log('[LNDLM Lookup] 1. RPC lndlm_volunteer_lookup:', { rpcData, rpcErr });
+    if (!rpcErr && rpcData?.ok && rpcData?.assigned) {
+      console.log('[LNDLM Lookup] ✅ Acceso validado vía RPC Postgres.');
+      return { data: rpcData, error: null };
     }
-  } catch {
-    // Continuar al fallback
+  } catch (rpcCatch) {
+    console.warn('[LNDLM Lookup] 1. RPC falló o no existe, pasando a fallback directo:', rpcCatch);
   }
 
-  // 2. Fallback resiliente multi-origen (lndlm_volunteers, lndlm_assignments, inscripciones_asistencias)
+  // 2. Fallback resiliente multi-origen con consultas DIRECTAS y filtradas a Supabase
   try {
-    let volRow = null;
-    try {
-      const { data: vRows } = await supabase
-        .from('lndlm_volunteers')
-        .select('*');
-      volRow = (vRows || []).find(v => String(v.dni || '').replace(/\D/g, '') === cleanDni);
-    } catch {}
-
-    let dbAssig = null;
-    try {
-      const { data: assigRows } = await supabase
+    const [assigRes, volRes, inasRes, vecRes] = await Promise.all([
+      // A. lndlm_assignments: ¿Tiene museo asignado activamente?
+      supabase
         .from('lndlm_assignments')
-        .select('*');
-      dbAssig = (assigRows || []).find(a => String(a.attendee_id || '').replace(/\D/g, '') === cleanDni);
-    } catch {}
+        .select('*')
+        .in('attendee_id', dniVariants),
 
-    let lndlmInas = null;
-    try {
-      const { data: inas } = await supabase
+      // B. lndlm_volunteers: ¿Está registrado en la nómina LNDLM?
+      supabase
+        .from('lndlm_volunteers')
+        .select('*')
+        .in('dni', dniVariants),
+
+      // C. inscripciones_asistencias: ¿Tiene presente marcado en la capacitación?
+      supabase
         .from('inscripciones_asistencias')
         .select('*, reunion:reuniones(*), vecino:vecinos(*)')
-        .eq('asistio', true);
-      lndlmInas = (inas || []).find(i =>
-        String(i.vecino_id || '').replace(/\D/g, '') === cleanDni &&
-        (i.reunion?.is_lndlm_event || /NDLM|Museos|LNDLM|Voluntariados.*Capacitaci/i.test(i.reunion?.nombre || ''))
-      );
-    } catch {}
+        .in('vecino_id', dniVariants),
 
-    // El voluntario se considera habilitado si:
-    // a) Está en lndlm_volunteers con attended_training = true
-    // b) O tiene asignación en lndlm_assignments (status = ASIGNADO y space_id)
-    // c) O está en inscripciones_asistencias con asistio = true
+      // D. vecinos: Padrón unificado
+      supabase
+        .from('vecinos')
+        .select('*')
+        .in('dni', dniVariants)
+    ]);
+
+    console.log('[LNDLM Lookup] 2. Resultados crudos de Supabase:', {
+      assignments: assigRes.data,
+      assignmentsError: assigRes.error,
+      volunteers: volRes.data,
+      volunteersError: volRes.error,
+      inscripciones: inasRes.data,
+      inscripcionesError: inasRes.error,
+      vecinos: vecRes.data,
+      vecinosError: vecRes.error
+    });
+
+    // Identificar registros coincidentes
+    const dbAssig = (assigRes.data || []).find(a => a.status === 'ASIGNADO' && a.space_id) || (assigRes.data || [])[0] || null;
+    const volRow = (volRes.data || [])[0] || null;
+    const inasRow = (inasRes.data || []).find(i => Boolean(i.asistio)) || (inasRes.data || [])[0] || null;
+    const vecRow = (vecRes.data || [])[0] || inasRow?.vecino || null;
+
+    // Respaldo en config_uno_a_uno de reuniones si la asignación está guardada en el JSON
+    let cfgAssig = null;
+    let cfgSpace = null;
+    let cfgReunion = inasRow?.reunion || null;
+
+    if (!dbAssig?.space_id) {
+      try {
+        const { data: reuniones } = await supabase
+          .from('reuniones')
+          .select('id, nombre, config_uno_a_uno')
+          .or('is_lndlm_event.eq.true,nombre.ilike.%NDLM%,nombre.ilike.%Museos%,nombre.ilike.%Capacitaci%')
+          .order('created_at', { ascending: false })
+          .limit(6);
+
+        for (const r of (reuniones || [])) {
+          const lndlmData = r.config_uno_a_uno?.lndlm_data;
+          if (lndlmData?.assignments?.[cleanDni]) {
+            cfgAssig = lndlmData.assignments[cleanDni];
+            cfgReunion = r;
+            if (cfgAssig.space_id && Array.isArray(lndlmData.spaces)) {
+              cfgSpace = lndlmData.spaces.find(s => s.id === cfgAssig.space_id);
+            }
+            break;
+          }
+        }
+      } catch (cfgErr) {
+        console.warn('[LNDLM Lookup] Error leyendo config_uno_a_uno:', cfgErr);
+      }
+    }
+
+    // 3. Validación de Asistencia confirmada a la capacitación:
+    // Habilitado si:
+    // a) Está en inscripciones_asistencias con asistio = true
+    // b) O tiene attended_training = true en lndlm_volunteers
+    // c) O ya está ASIGNADO a un museo en lndlm_assignments (en el Tablero LNDLM)
+    // d) O tiene asignación activa en config_uno_a_uno
     const hasAttended = Boolean(
+      inasRow?.asistio ||
       volRow?.attended_training ||
       (dbAssig && dbAssig.status === 'ASIGNADO' && dbAssig.space_id) ||
-      lndlmInas
+      (cfgAssig && cfgAssig.status === 'ASIGNADO' && cfgAssig.space_id)
     );
 
-    // Si no asistió a la capacitación ni está habilitado
+    console.log('[LNDLM Lookup] 3. Evaluación de Asistencia:', {
+      hasAttended,
+      inasAsistio: inasRow?.asistio,
+      volAttendedTraining: volRow?.attended_training,
+      hasDbAssigSpace: Boolean(dbAssig && dbAssig.status === 'ASIGNADO' && dbAssig.space_id),
+      hasCfgAssigSpace: Boolean(cfgAssig && cfgAssig.status === 'ASIGNADO' && cfgAssig.space_id)
+    });
+
     if (!hasAttended) {
+      console.warn('[LNDLM Lookup] ❌ DNI no registra asistencia a capacitación.');
       return { data: { ok: false, error: 'NO_ATTENDANCE' }, error: null };
     }
 
-    const meetingId = lndlmInas?.reunion_id || volRow?.meeting_id || dbAssig?.meeting_id;
-    const vecino = lndlmInas?.vecino || {};
-    const firstName = volRow?.first_name || vecino?.nombre || 'Voluntario';
-    const lastName = volRow?.last_name || vecino?.apellido || '';
-    const reunion = lndlmInas?.reunion || {};
-    const cfg = reunion?.config_uno_a_uno?.lndlm_data || {};
+    const meetingId = dbAssig?.meeting_id || volRow?.meeting_id || inasRow?.reunion_id || cfgReunion?.id || null;
+    const firstName = volRow?.first_name || vecRow?.nombre || inasRow?.vecino?.nombre || 'Voluntario';
+    const lastName = volRow?.last_name || vecRow?.apellido || inasRow?.vecino?.apellido || '';
 
-    // 3. Buscar asignación activa en lndlm_assignments o en config_uno_a_uno
-    const confAssig = cfg.assignments?.[cleanDni];
-    const spaceId = (dbAssig?.status === 'ASIGNADO' ? dbAssig.space_id : null) || (confAssig?.status === 'ASIGNADO' ? confAssig.space_id : null);
+    // 4. Buscar asignación activa de sede
+    const spaceId = (dbAssig?.status === 'ASIGNADO' ? dbAssig.space_id : null) ||
+                    (volRow?.status === 'ASIGNADO' ? volRow.assigned_space_id : null) ||
+                    (cfgAssig?.status === 'ASIGNADO' ? cfgAssig.space_id : null);
+
     const isAssigned = Boolean(spaceId);
 
-    // Si aún no tiene sede asignada
+    // Si aún no tiene sede asignada (está en banco de suplentes)
     if (!isAssigned) {
+      console.log('[LNDLM Lookup] ℹ️ Voluntario confirmado sin espacio asignado (SUPLENTE).');
       return {
         data: {
           ok: true,
@@ -414,24 +489,24 @@ export async function lookupVolunteer(dni) {
       };
     }
 
-    // 4. Cargar datos del Espacio Cultural (de tabla o config)
-    let space = null;
-    try {
-      const { data: spRow } = await supabase
-        .from('lndlm_cultural_spaces')
-        .select('*')
-        .eq('id', spaceId)
-        .maybeSingle();
-      if (spRow) space = spRow;
-    } catch {}
-
-    if (!space && Array.isArray(cfg.spaces)) {
-      space = cfg.spaces.find(s => s.id === spaceId);
+    // 5. Cargar datos del Espacio Cultural (de tabla o config)
+    let space = cfgSpace || null;
+    if (!space && spaceId) {
+      try {
+        const { data: spRow } = await supabase
+          .from('lndlm_cultural_spaces')
+          .select('*')
+          .eq('id', spaceId)
+          .maybeSingle();
+        if (spRow) space = spRow;
+      } catch (spErr) {
+        console.warn('[LNDLM Lookup] Error cargando espacio:', spErr);
+      }
     }
 
-    // 5. Estado de la ruta de entrega si existe
+    // 6. Estado de la ruta de entrega si existe
     let routeStatus = null;
-    if (meetingId) {
+    if (meetingId && spaceId) {
       try {
         const { data: routes } = await supabase
           .from('lndlm_delivery_routes')
@@ -459,44 +534,44 @@ export async function lookupVolunteer(dni) {
         teamAssigned = teamRows.length;
         teamCheckedIn = teamRows.filter(r => r.check_in_time).length;
         const receiver = teamRows.find(r => r.is_food_receiver);
-        if (receiver && receiver.attendee_id === cleanDni) {
+        if (receiver && dniVariants.includes(receiver.attendee_id)) {
           receiverName = `${firstName} ${lastName}`.trim();
         }
       }
     } catch {}
 
-    return {
-      data: {
-        ok: true,
-        assigned: true,
-        volunteer: {
-          first_name: firstName,
-          last_name: lastName,
-          dni: cleanDni
-        },
-        space: {
-          id: space?.id || spaceId,
-          name: space?.name || 'Espacio Cultural',
-          address: space?.address || '',
-          contact_name: space?.contact_name || '',
-          contact_phone: space?.contact_phone || ''
-        },
-        checkin: {
-          check_in_time: dbAssig?.check_in_time || null,
-          is_food_receiver: Boolean(dbAssig?.is_food_receiver),
-          food_received_time: dbAssig?.food_received_time || null
-        },
-        route_status: routeStatus,
-        team: {
-          assigned: teamAssigned,
-          checked_in: teamCheckedIn,
-          receiver_name: receiverName
-        }
+    const finalResult = {
+      ok: true,
+      assigned: true,
+      volunteer: {
+        first_name: firstName,
+        last_name: lastName,
+        dni: cleanDni
       },
-      error: null
+      space: {
+        id: space?.id || spaceId,
+        name: space?.name || 'Espacio Cultural',
+        address: space?.address || '',
+        contact_name: space?.contact_name || '',
+        contact_phone: space?.contact_phone || ''
+      },
+      checkin: {
+        check_in_time: dbAssig?.check_in_time || null,
+        is_food_receiver: Boolean(dbAssig?.is_food_receiver),
+        food_received_time: dbAssig?.food_received_time || null
+      },
+      route_status: routeStatus,
+      team: {
+        assigned: teamAssigned,
+        checked_in: teamCheckedIn,
+        receiver_name: receiverName
+      }
     };
+
+    console.log('[LNDLM Lookup] 🎉 Login validado con éxito:', finalResult);
+    return { data: finalResult, error: null };
   } catch (err) {
-    console.error('Error en lookupVolunteer fallback:', err);
+    console.error('[LNDLM Lookup] 💥 Error en lookupVolunteer fallback:', err);
     return { data: null, error: err };
   }
 }
@@ -533,7 +608,8 @@ export async function uploadCheckinPhoto(file, dni) {
 }
 
 export async function volunteerCheckin(dni, photoUrl) {
-  const cleanDni = String(dni || '').replace(/\D/g, '');
+  const cleanDni = String(dni || '').replace(/\D/g, '').trim();
+  const dniVariants = getDniVariants(cleanDni);
   try {
     const { data, error } = await supabase.rpc('lndlm_checkin', { p_dni: cleanDni, p_photo_url: photoUrl });
     if (!error && data?.ok) return { data, error: null };
@@ -545,9 +621,10 @@ export async function volunteerCheckin(dni, photoUrl) {
     const { data: assigRows } = await supabase
       .from('lndlm_assignments')
       .select('*')
+      .in('attendee_id', dniVariants)
       .eq('status', 'ASIGNADO');
 
-    const assig = (assigRows || []).find(a => String(a.attendee_id || '').replace(/\D/g, '') === cleanDni);
+    const assig = (assigRows || [])[0];
 
     if (!assig) return { data: { ok: false, error: 'NOT_ASSIGNED' }, error: null };
 
@@ -581,7 +658,8 @@ export async function volunteerCheckin(dni, photoUrl) {
 }
 
 export async function volunteerConfirmFood(dni) {
-  const cleanDni = String(dni || '').replace(/\D/g, '');
+  const cleanDni = String(dni || '').replace(/\D/g, '').trim();
+  const dniVariants = getDniVariants(cleanDni);
   try {
     const { data, error } = await supabase.rpc('lndlm_confirm_food', { p_dni: cleanDni });
     if (!error && data?.ok) return { data, error: null };
@@ -592,9 +670,10 @@ export async function volunteerConfirmFood(dni) {
     const { data: assigRows } = await supabase
       .from('lndlm_assignments')
       .select('*')
+      .in('attendee_id', dniVariants)
       .eq('status', 'ASIGNADO');
 
-    const assig = (assigRows || []).find(a => String(a.attendee_id || '').replace(/\D/g, '') === cleanDni);
+    const assig = (assigRows || [])[0];
 
     if (!assig) return { data: { ok: false, error: 'NOT_ASSIGNED' }, error: null };
     if (!assig.check_in_time) return { data: { ok: false, error: 'NOT_CHECKED_IN' }, error: null };
