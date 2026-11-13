@@ -22,7 +22,9 @@ import { autoDetectTags } from '../constants/oradorTags';
 import PreguntasTematicas from './PreguntasTematicas';
 import Cronometro1a1 from './Cronometro1a1';
 import PanelSolicitudesPapeleta from './PanelSolicitudesPapeleta';
-import { getUrlWhatsAppPapeleta, getSolicitudesPorReunion, clasificarUbicacion } from '../services/solicitudesService';
+import BotonDescargarFichas from './BotonDescargarFichas';
+import FichaEnvioLinks from './FichaEnvioLinks';
+import { getUrlWhatsAppPapeleta, getUrlMailPapeleta, getSolicitudesPorReunion, clasificarUbicacion } from '../services/solicitudesService';
 import { classifyTopicHeuristic, classifyTopicWithAI, isBaistrocchiMeeting, getBadgeDisplay, PIN_CONFIGS, BAISTROCCHI_PIN_OPTIONS, getBadgesFromTags } from '../services/topicClassificationService';
 import { isLndlmMeeting } from '../services/lndlmService';
 import * as XLSX from 'xlsx';
@@ -1977,7 +1979,16 @@ export default function ControlAsistencia({ reunion, onBack, mode = 'asistencia'
             <button className="btn btn-secondary btn-sm" onClick={onBack}>
               <ArrowLeft size={16} /> Volver al Tablero
             </button>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+              <button
+                type="button"
+                className="btn btn-sm"
+                onClick={() => setCurrentView('papeletas')}
+                style={{ display: 'flex', alignItems: 'center', gap: '6px', fontWeight: 'bold', padding: '6px 12px', backgroundColor: '#0284C7', color: '#FFFFFF', border: 'none', borderRadius: '6px', cursor: 'pointer' }}
+              >
+                <FileText size={14} /> 📋 Ver Papeletas Digitales
+              </button>
+              <BotonDescargarFichas reunion={reunion} />
               <span className="badge badge-info" style={{ textTransform: 'uppercase' }}>Toma de Asistencia</span>
             </div>
           </div>
@@ -2050,6 +2061,7 @@ export default function ControlAsistencia({ reunion, onBack, mode = 'asistencia'
                         </td>
                         <td style={{ fontSize: '0.85rem', color: 'var(--color-text-dark)' }}>
                           {item.tema_previo || <span style={{ fontStyle: 'italic', color: 'var(--color-text-muted)' }}>Sin tema cargado</span>}
+                          <FichaEnvioLinks reunion={reunion} item={item} />
                         </td>
                         <td style={{ textAlign: 'center', verticalAlign: 'middle' }}>
                           <label style={{ display: 'inline-flex', alignItems: 'center', cursor: 'pointer', margin: 0 }}>
@@ -2150,7 +2162,7 @@ export default function ControlAsistencia({ reunion, onBack, mode = 'asistencia'
               cursor: 'pointer'
             }}
           >
-            <FileText size={14} /> 📋 Papeletas Digitales
+            <FileText size={14} /> 📋 Ver Papeletas Digitales
           </button>
         </div>
 

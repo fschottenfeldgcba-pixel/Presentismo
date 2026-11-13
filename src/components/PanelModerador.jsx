@@ -6,6 +6,7 @@ import { emitProyectorEvent, PROYECTOR_EVENTS } from '../services/proyectorSyncS
 import OradorTagSelector, { OradorTagsDisplay } from './OradorTagSelector';
 import PreguntasTematicas from './PreguntasTematicas';
 import MapaReclamosComuna from './MapaReclamosComuna';
+import BotonDescargarFichas from './BotonDescargarFichas';
 import { autoDetectTags } from '../constants/oradorTags';
 import { supabase } from '../lib/supabaseClient';
 import { TIPOS_REUNION } from '../data/mockData';
@@ -1426,6 +1427,8 @@ ${oradoresEfectivos.length > 0
           >
             <MapPin size={15} /> 🗺️ Abrir Mapa ({solicitudesReunion.length})
           </a>
+
+          <BotonDescargarFichas reunion={reunion} />
 
           <button
             type="button"

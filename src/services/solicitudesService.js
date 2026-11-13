@@ -34,7 +34,7 @@ export async function getReunionParaPapeleta(reunionId) {
   try {
     const { data, error } = await supabase
       .from('reuniones')
-      .select('id, nombre, fecha, lugar, comuna, barrio, funcionario, hora_inicio_real, hora_fin_real')
+      .select('id, nombre, fecha, lugar, comuna, barrio, funcionario, hora_inicio_real, hora_fin_real, tipo_reunion')
       .eq('id', reunionId)
       .maybeSingle();
 
@@ -908,4 +908,22 @@ export function getUrlWhatsAppPapeleta({ celular, nombre, reunionId, dni }) {
   const mensaje = `${saludo}Te compartimos el enlace para ingresar tus reclamos o solicitudes en la reunión de hoy de BA Participación Ciudadana:\n${linkPapeleta}`;
 
   return `https://wa.me/${phoneClean}?text=${encodeURIComponent(mensaje)}`;
+}
+
+/**
+ * Genera el enlace mailto: para enviar la Papeleta Digital a un vecino por e-mail
+ */
+export function getUrlMailPapeleta({ email, nombre, reunionId, dni, reunionNombre }) {
+  const dest = String(email || '').trim();
+  if (!dest || !dest.includes('@')) return null;
+
+  const origin = window.location.origin;
+  const pathname = window.location.pathname;
+  const linkPapeleta = `${origin}${pathname}?view=papeleta&reunion_id=${reunionId || ''}&dni=${dni || ''}`;
+
+  const saludo = nombre && nombre.trim() ? `Hola ${nombre.trim()},` : 'Hola,';
+  const asunto = `Tu ficha digital${reunionNombre ? ` - ${reunionNombre}` : ''}`;
+  const cuerpo = `${saludo}\n\nTe compartimos el enlace para completar tu ficha digital con tus datos de contacto y el detalle de tu reclamo o consulta:\n${linkPapeleta}\n\nGracias,\nBA Participación Ciudadana`;
+
+  return `mailto:${dest}?subject=${encodeURIComponent(asunto)}&body=${encodeURIComponent(cuerpo)}`;
 }

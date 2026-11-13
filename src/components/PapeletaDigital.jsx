@@ -9,6 +9,7 @@ import {
   validarVecinoPresenteEnReunion
 } from '../services/solicitudesService';
 import InputDireccionCaba from './InputDireccionCaba';
+import { TIPOS_REUNION } from '../data/mockData';
 import SelectorUbicacionPapeleta from './SelectorUbicacionPapeleta';
 import { CheckCircle2, Plus, Trash2, Send, MapPin, FileText, User, Phone, Mail, Calendar, Sparkles, Building2, AlertCircle, AlertTriangle, Info, Clock, Lock } from 'lucide-react';
 
@@ -44,6 +45,9 @@ export default function PapeletaDigital({ reunionId, initialDni, onVolver }) {
 
   // Error feedback
   const [formError, setFormError] = useState('');
+
+  // Ficha simplificada: solo para reuniones "Uno a Uno"
+  const isUnoAUno = reunion?.tipo_reunion === TIPOS_REUNION.UNO_A_UNO;
 
   // Validar vecino inscripto y presente
   const verificarAsistenciaVecino = async (dniToCheck, reunionIdToCheck) => {
@@ -188,9 +192,15 @@ export default function PapeletaDigital({ reunionId, initialDni, onVolver }) {
     }
 
     // Validar que al menos una solicitud tenga temática y descripción
-    const validSolicitudes = solicitudes.filter(s => s.tematica && (s.descripcion.trim() || s.direccion.trim()));
+    // En reuniones Uno a Uno la ficha es simplificada: solo datos de contacto + descripción
+    const sourceSolicitudes = isUnoAUno
+      ? solicitudes.slice(0, 1).map(s => ({ ...s, tematica: 'Otros', tematica_otro: 'Consulta Uno a Uno', direccion: '' }))
+      : solicitudes;
+    const validSolicitudes = sourceSolicitudes.filter(s => s.tematica && (s.descripcion.trim() || s.direccion.trim()));
     if (validSolicitudes.length === 0) {
-      setFormError('Por favor seleccioná la temática e ingresá la descripción de al menos una solicitud.');
+      setFormError(isUnoAUno
+        ? 'Por favor describí tu reclamo o tema a conversar.'
+        : 'Por favor seleccioná la temática e ingresá la descripción de al menos una solicitud.');
       return;
     }
 
@@ -346,7 +356,7 @@ export default function PapeletaDigital({ reunionId, initialDni, onVolver }) {
           </div>
 
           <h1 style={{ fontSize: '1.35rem', fontWeight: '800', margin: '0 0 6px 0', color: '#FFFFFF' }}>
-            FORMULARIO DE SOLICITUDES
+            {isUnoAUno ? 'FICHA DIGITAL - UNO A UNO' : 'FORMULARIO DE SOLICITUDES'}
           </h1>
 
           {reunion && (
@@ -442,6 +452,7 @@ export default function PapeletaDigital({ reunionId, initialDni, onVolver }) {
                 />
               </div>
 
+              {!isUnoAUno && (
               <div>
                 <label style={{ fontSize: '0.78rem', fontWeight: '700', color: '#334155', display: 'block', marginBottom: '4px' }}>
                   * Barrio / Comuna:
@@ -455,6 +466,7 @@ export default function PapeletaDigital({ reunionId, initialDni, onVolver }) {
                   style={{ fontSize: '0.88rem', padding: '8px 12px', borderRadius: '6px' }}
                 />
               </div>
+              )}
 
               <div>
                 <label style={{ fontSize: '0.78rem', fontWeight: '700', color: '#334155', display: 'block', marginBottom: '4px' }}>
@@ -470,6 +482,7 @@ export default function PapeletaDigital({ reunionId, initialDni, onVolver }) {
                 />
               </div>
 
+              {!isUnoAUno && (
               <div>
                 <label style={{ fontSize: '0.78rem', fontWeight: '700', color: '#334155', display: 'block', marginBottom: '4px' }}>
                   * Fecha:
@@ -482,6 +495,7 @@ export default function PapeletaDigital({ reunionId, initialDni, onVolver }) {
                   style={{ fontSize: '0.88rem', padding: '8px 12px', borderRadius: '6px' }}
                 />
               </div>
+              )}
             </div>
           </div>
 
@@ -492,7 +506,7 @@ export default function PapeletaDigital({ reunionId, initialDni, onVolver }) {
                 <FileText size={16} style={{ color: '#25C2B9' }} /> Reclamos y Solicitudes
               </h3>
               <span style={{ fontSize: '0.75rem', color: '#64748B', fontWeight: '600' }}>
-                {solicitudes.length} {solicitudes.length === 1 ? 'solicitud' : 'solicitudes'}
+                {isUnoAUno ? 'Reclamo / Tema' : (<>{solicitudes.length} {solicitudes.length === 1 ? 'solicitud' : 'solicitudes'}</>)}
               </span>
             </div>
 
@@ -507,6 +521,20 @@ export default function PapeletaDigital({ reunionId, initialDni, onVolver }) {
                 <p style={{ fontSize: '0.84rem', color: '#64748B', margin: '0 auto', maxWidth: '440px', lineHeight: '1.4' }}>
                   Para habilitar la carga de solicitudes, ingresá tu <strong>DNI</strong> arriba. Solo pueden registrar solicitudes aquellas personas que figuren inscriptas para la reunión y se encuentren <strong>acreditadas como presentes</strong> en la mesa de entrada.
                 </p>
+              </div>
+            ) : isUnoAUno ? (
+              <div style={{ backgroundColor: '#FFFFFF', border: '2px solid #E2E8F0', borderRadius: '12px', padding: '16px' }}>
+                <label style={{ fontSize: '0.78rem', fontWeight: '700', color: '#334155', display: 'block', marginBottom: '4px' }}>
+                  * Descripción del reclamo o tema a conversar:
+                </label>
+                <textarea
+                  rows={5}
+                  placeholder="Contanos brevemente qué querés plantear en tu encuentro Uno a Uno..."
+                  className="form-control"
+                  value={solicitudes[0]?.descripcion || ''}
+                  onChange={(e) => handleSolicitudChange(solicitudes[0].id, 'descripcion', e.target.value)}
+                  style={{ fontSize: '0.88rem', lineHeight: '1.4' }}
+                />
               </div>
             ) : (
               <>

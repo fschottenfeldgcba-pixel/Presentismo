@@ -18,6 +18,7 @@ import {
   Edit2, Trash2, Save
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
+import BotonDescargarFichas from './BotonDescargarFichas';
 
 export default function PanelSolicitudesPapeleta({ reunion, onBack }) {
   const [solicitudes, setSolicitudes] = useState([]);
@@ -405,6 +406,8 @@ ${item.descripcion}
           >
             <Share2 size={15} /> Copiar Link
           </button>
+
+          <BotonDescargarFichas reunion={reunion} />
 
           <button
             type="button"

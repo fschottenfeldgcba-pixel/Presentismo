@@ -4,6 +4,8 @@ import { guardarAsistencia, upsertVecino, getAsistentesPorReunion } from '../ser
 import { getSolicitudesPorReunion } from '../services/solicitudesService';
 import { emitProyectorEvent, PROYECTOR_EVENTS } from '../services/proyectorSyncService';
 import PanelSolicitudesPapeleta from './PanelSolicitudesPapeleta';
+import BotonDescargarFichas from './BotonDescargarFichas';
+import FichaEnvioLinks from './FichaEnvioLinks';
 import MapaReclamosComuna from './MapaReclamosComuna';
 import { supabase } from '../lib/supabaseClient';
 import * as XLSX from 'xlsx';
@@ -1397,6 +1399,8 @@ ${sortedCited.length > 0
               <FileText size={15} /> 📄 Estado Papeletas ({solicitudesCount})
             </button>
 
+            <BotonDescargarFichas reunion={reunion} />
+
             <button 
               type="button"
               className="btn btn-sm" 
@@ -2617,6 +2621,7 @@ ${sortedCited.length > 0
                                 </span>
                                 <ExternalLink size={10} />
                               </a>
+                              <FichaEnvioLinks reunion={reunion} item={item} />
                             </td>
 
                             {/* ¿Presente? */}
