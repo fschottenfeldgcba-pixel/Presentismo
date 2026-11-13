@@ -117,7 +117,7 @@ export async function validarVecinoPresenteEnReunion(dni, reunionId, options = {
   try {
     const { data, error } = await supabase
       .from('inscripciones_asistencias')
-      .select('reunion_id, vecino_id, asistio, tema_previo, vecinos(nombre, apellido, celular, barrio, email)')
+      .select('reunion_id, vecino_id, asistio, tema_previo, confirmado, estado_convocatoria, vecinos(nombre, apellido, celular, barrio, email)')
       .eq('reunion_id', reunionId)
       .eq('vecino_id', cleanDni)
       .maybeSingle();
@@ -132,7 +132,12 @@ export async function validarVecinoPresenteEnReunion(dni, reunionId, options = {
       };
     }
 
-    if (!data.asistio && !options.permitirInscripto) {
+    // En reuniones Uno a Uno o si está citado/confirmado, permitir completar la papeleta
+    const esCitadoConfirmado = Boolean(data.confirmado) || 
+      data.estado_convocatoria === 'seleccionado_uno_a_uno' || 
+      data.estado_convocatoria === 'citado';
+
+    if (!data.asistio && !options.permitirInscripto && !options.isUnoAUno && !esCitadoConfirmado) {
       const nom = data.vecinos ? `${data.vecinos.nombre || ''} ${data.vecinos.apellido || ''}`.trim() : '';
       return {
         valido: false,
@@ -444,17 +449,11 @@ export async function guardarSolicitudesPapeleta({
 
         const clasif = clasificarUbicacion(s.direccion, {
           autocompletado: s.autocompletado || Boolean(latVal && lngVal),
-          tipo: s.tipo_ubicacion || s.tipo,
           lat: latVal,
-          lng: lngVal,
-          altura: s.altura,
-          cruce: s.cruce
+          lng: lngVal
         });
-        const tipoRegistro = clasif.tipo; // 'solicitud' | 'preocupacion'
-        const stableId = s.id || `pap_${cleanDni}_${Date.now()}_${idx}_${Math.random().toString(36).substring(2, 7)}`;
 
-        return {
-          id: stableId,
+        const row = {
           reunion_id: reunion_id || null,
           vecino_id: cleanDni || null,
           nombre_apellido: nombre_apellido?.trim() || '',
@@ -466,13 +465,20 @@ export async function guardarSolicitudesPapeleta({
           tematica: s.tematica === 'Otros' && s.tematica_otro?.trim() ? `Otros: ${s.tematica_otro.trim()}` : s.tematica,
           direccion: s.direccion?.trim() || '',
           descripcion: s.descripcion?.trim() || '',
-          tipo_registro: tipoRegistro, // 'solicitud' | 'preocupacion'
-          lat: clasif.esPuntual ? latVal : null,
-          lng: clasif.esPuntual ? lngVal : null,
           estado: 'pendiente',
           ticket_suaci: '',
-          notas_operador: ''
+          notas_operador: '',
+          _tipo_registro: clasif.tipo,
+          _lat: clasif.esPuntual ? latVal : null,
+          _lng: clasif.esPuntual ? lngVal : null
         };
+
+        // Si s.id ya es un UUID válido, preservarlo; de lo contrario Supabase genera un UUID nativo
+        if (s.id && typeof s.id === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(s.id)) {
+          row.id = s.id;
+        }
+
+        return row;
       })
   );
 
@@ -480,22 +486,47 @@ export async function guardarSolicitudesPapeleta({
     return { success: false, error: 'Por favor completá al menos la temática y descripción de una solicitud.' };
   }
 
-  // 1. Intentar guardar en la tabla especializada `solicitudes_papeleta`
+  let dbGuardadoExitoso = false;
+  let errorMensaje = '';
+
+  // 1. Guardar en la tabla principal `solicitudes_papeleta`
   try {
-    const { data, error } = await supabase
+    // Intentar primero con columnas extendidas (lat, lng, tipo_registro) por si existen en Supabase
+    const payloadConGeo = rowsToInsert.map(({ _tipo_registro, _lat, _lng, ...base }) => ({
+      ...base,
+      tipo_registro: _tipo_registro || 'solicitud',
+      lat: _lat,
+      lng: _lng
+    }));
+
+    let { data, error } = await supabase
       .from('solicitudes_papeleta')
-      .insert(rowsToInsert)
+      .insert(payloadConGeo)
       .select();
 
-    if (!error) {
-      return { success: true, count: rowsToInsert.length, data };
+    // Si la tabla en Supabase no tiene esas columnas, reintentar de inmediato con las columnas base garantizadas
+    if (error && (error.code === 'PGRST204' || error.message?.includes('column'))) {
+      const payloadBase = rowsToInsert.map(({ _tipo_registro, _lat, _lng, ...base }) => base);
+      const resBase = await supabase
+        .from('solicitudes_papeleta')
+        .insert(payloadBase)
+        .select();
+      data = resBase.data;
+      error = resBase.error;
     }
-    console.warn('Fallback a almacenamiento complementario para solicitudes:', error.message);
+
+    if (!error && data) {
+      dbGuardadoExitoso = true;
+    } else if (error) {
+      console.error('Error insertando en solicitudes_papeleta:', error);
+      errorMensaje = error.message;
+    }
   } catch (err) {
-    console.warn('Tabla solicitudes_papeleta no disponible en Supabase:', err);
+    console.error('Excepción al insertar en solicitudes_papeleta:', err);
+    errorMensaje = err?.message || String(err);
   }
 
-  // 2. Fallback de resguardo: Guardar en `inscripciones_asistencias` o localStorage
+  // 2. Respaldo en `inscripciones_asistencias` (pregunta_puerta) y marcar presencia
   try {
     if (reunion_id && cleanDni) {
       const { data: existingInsc } = await supabase
@@ -515,24 +546,30 @@ export async function guardarSolicitudesPapeleta({
         await supabase
           .from('inscripciones_asistencias')
           .update({
+            asistio: true, // Si el vecino completó la papeleta, está presente
             pregunta_puerta: existingInsc.pregunta_puerta 
               ? `${existingInsc.pregunta_puerta}\n${newPapeletaPayload}` 
               : newPapeletaPayload
           })
           .eq('id', existingInsc.id);
+        dbGuardadoExitoso = true;
       }
     }
   } catch (fallbackErr) {
-    console.warn('Error en fallback de inscripciones_asistencias:', fallbackErr);
+    console.warn('Error en respaldo de inscripciones_asistencias:', fallbackErr);
   }
 
-  // También persistir en almacenamiento local de la sesión para recuperación inmediata
+  // 3. También persistir en caché local
   try {
     const cacheKey = `papeletas_reunion_${reunion_id || 'general'}`;
     const prev = JSON.parse(localStorage.getItem(cacheKey) || '[]');
-    const withIds = rowsToInsert.map(r => ({ ...r, id: `local_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`, created_at: new Date().toISOString() }));
+    const withIds = rowsToInsert.map((r, idx) => ({ ...r, id: r.id || `local_${Date.now()}_${idx}`, created_at: new Date().toISOString() }));
     localStorage.setItem(cacheKey, JSON.stringify([...withIds, ...prev]));
   } catch (e) {}
+
+  if (!dbGuardadoExitoso && errorMensaje) {
+    return { success: false, error: `No se pudo registrar la solicitud: ${errorMensaje}` };
+  }
 
   return { success: true, count: rowsToInsert.length };
 }
@@ -730,15 +767,18 @@ export async function actualizarDetalleSolicitud(solicitudId, updates = {}, reun
 
       const clasif = clasificarUbicacion(updates.direccion, { ...updates.meta, lat: payload.lat, lng: payload.lng });
       payload.tipo_registro = clasif.tipo;
-      if (!clasif.esPuntual && !payload.lat) {
-        payload.lat = null;
-        payload.lng = null;
-      }
     }
+
+    // Limpiar campos que no pertenecen a la tabla solicitudes_papeleta
+    const cleanPayload = { ...payload };
+    delete cleanPayload.lat;
+    delete cleanPayload.lng;
+    delete cleanPayload.tipo_registro;
+    delete cleanPayload.meta;
 
     const { data, error } = await supabase
       .from('solicitudes_papeleta')
-      .update(payload)
+      .update(cleanPayload)
       .eq('id', solicitudId)
       .select();
 

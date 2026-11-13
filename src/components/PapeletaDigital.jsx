@@ -63,13 +63,13 @@ export default function PapeletaDigital({ reunionId, initialDni, onVolver }) {
     try {
       const urlParams = new URLSearchParams(window.location.search);
       const fromModeracion = urlParams.get('from') === 'moderacion' || urlParams.get('origen') === 'moderacion';
-      const res = await validarVecinoPresenteEnReunion(cleanDni, rId, { permitirInscripto: fromModeracion });
+      const res = await validarVecinoPresenteEnReunion(cleanDni, rId, { permitirInscripto: fromModeracion, isUnoAUno });
       if (res.valido) {
         setValidacionDni({ 
           estado: 'valido', 
           motivo: '', 
-          mensaje: fromModeracion 
-            ? 'Vecino verificado desde el panel de moderación. Podés registrar el reclamo.' 
+          mensaje: (fromModeracion || isUnoAUno)
+            ? 'Vecino habilitado para cargar reclamo.'
             : 'Acreditación validada. ¡Podés registrar tus reclamos!' 
         });
         if (res.vecino) {

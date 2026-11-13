@@ -28,10 +28,16 @@
   --transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
-* {
-  box-sizing: border-box;
-  margin: 0;
-  padding: 0;
+/* Orden de capas: permite que las utilidades de Tailwind (solo usadas en /brief-ejecutivo)
+   pisen el reset global, sin alterar el resto de la app (que sigue sin capas) */
+@layer theme, base, utilities;
+
+@layer base {
+  * {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+  }
 }
 
 body {

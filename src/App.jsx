@@ -13,6 +13,11 @@ import GestionUsuarios from './components/GestionUsuarios';
 import TableroLNDLM from './components/TableroLNDLM';
 import ComandoLNDLM from './components/ComandoLNDLM';
 import LndlmCheckinApp from './components/LndlmCheckinApp';
+import ExecutiveBrief from './components/ExecutiveBrief';
+
+// Ruta oculta de la Vista Ejecutiva (sin links en la navegación): /brief-ejecutivo
+const isExecutiveBriefRoute = () =>
+  typeof window !== 'undefined' && /^\/brief-ejecutivo\/?$/i.test(window.location.pathname);
 
 // Vista pública del voluntario: link general único (?view=lndlm_checkin o /lndlm/checkin)
 const isLndlmCheckinRoute = () => {
@@ -103,7 +108,7 @@ class ErrorBoundary extends React.Component {
   }
 }
 
-export default function App() {
+function AppInner() {
   const [user, setUser] = useState(() => {
     const saved = localStorage.getItem('presentismo_user');
     return saved ? JSON.parse(saved) : null;
@@ -568,4 +573,15 @@ export default function App() {
     </div>
     </ErrorBoundary>
   );
+}
+
+export default function App() {
+  if (isExecutiveBriefRoute()) {
+    return (
+      <ErrorBoundary>
+        <ExecutiveBrief />
+      </ErrorBoundary>
+    );
+  }
+  return <AppInner />;
 }

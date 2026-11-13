@@ -82,6 +82,8 @@ export default function AdministrarReunion({ reunion, onOpenLndlm, onBack, onSav
   const [nombre, setNombre] = useState(reunion?.nombre || '');
   const [funcionario, setFuncionario] = useState(reunion?.funcionario || '');
   const [fecha, setFecha] = useState(reunion?.fecha || '');
+  const [horaInicio, setHoraInicio] = useState(reunion?.hora_inicio_real ? String(reunion.hora_inicio_real).slice(0, 5) : '');
+  const [horaFin, setHoraFin] = useState(reunion?.hora_fin_real ? String(reunion.hora_fin_real).slice(0, 5) : '');
   const [lugar, setLugar] = useState(reunion?.lugar || '');
   const [tipoReunion, setTipoReunion] = useState(reunion?.tipo_reunion || '');
   const [comuna, setComuna] = useState(reunion?.comuna || 'Comuna 1');
@@ -131,6 +133,8 @@ export default function AdministrarReunion({ reunion, onOpenLndlm, onBack, onSav
       if (reunion.nombre) setNombre(reunion.nombre);
       if (reunion.funcionario) setFuncionario(reunion.funcionario);
       if (reunion.fecha) setFecha(reunion.fecha);
+      if (reunion.hora_inicio_real !== undefined) setHoraInicio(reunion.hora_inicio_real ? String(reunion.hora_inicio_real).slice(0, 5) : '');
+      if (reunion.hora_fin_real !== undefined) setHoraFin(reunion.hora_fin_real ? String(reunion.hora_fin_real).slice(0, 5) : '');
       if (reunion.lugar) setLugar(reunion.lugar);
       if (reunion.tipo_reunion) setTipoReunion(reunion.tipo_reunion);
       if (reunion.comuna) setComuna(reunion.comuna);
@@ -239,6 +243,26 @@ export default function AdministrarReunion({ reunion, onOpenLndlm, onBack, onSav
     };
   }, []);
 
+  const calculateEndTime = (timeStr, minutesToAdd = 90) => {
+    if (!timeStr) return '';
+    const parts = timeStr.split(':');
+    if (parts.length < 2) return '';
+    const h = parseInt(parts[0], 10);
+    const m = parseInt(parts[1], 10);
+    if (isNaN(h) || isNaN(m)) return '';
+    const totalMins = h * 60 + m + minutesToAdd;
+    const newH = Math.floor(totalMins / 60) % 24;
+    const newM = totalMins % 60;
+    return `${newH.toString().padStart(2, '0')}:${newM.toString().padStart(2, '0')}`;
+  };
+
+  const handleHoraInicioChange = (val) => {
+    setHoraInicio(val);
+    if (val && !horaFin) {
+      setHoraFin(calculateEndTime(val, 90));
+    }
+  };
+
   // Autocompletar el nombre de la reunión
   useEffect(() => {
     const displayFecha = fecha ? fecha.split('-').reverse().join('/') : '';
@@ -335,6 +359,8 @@ export default function AdministrarReunion({ reunion, onOpenLndlm, onBack, onSav
       nombre: nombre.trim(),
       funcionario: funcionario.trim() || null,
       fecha,
+      hora_inicio_real: horaInicio ? horaInicio.trim() : null,
+      hora_fin_real: horaFin ? horaFin.trim() : null,
       lugar: lugar.trim(),
       tipo_reunion: tipoReunion,
       comuna,
@@ -570,6 +596,29 @@ export default function AdministrarReunion({ reunion, onOpenLndlm, onBack, onSav
                     <option value={TIPOS_REUNION.EXPERIENCIAS_BA}>{TIPOS_REUNION.EXPERIENCIAS_BA}</option>
                     <option value={TIPOS_REUNION.VOLUNTARIADOS}>{TIPOS_REUNION.VOLUNTARIADOS}</option>
                   </select>
+                </div>
+              </div>
+
+              <div className="grid-2" style={{ gap: '1rem' }}>
+                <div className="form-group">
+                  <label htmlFor="horaInicio">Horario Inicio</label>
+                  <input
+                    type="time"
+                    id="horaInicio"
+                    className="form-control"
+                    value={horaInicio}
+                    onChange={(e) => handleHoraInicioChange(e.target.value)}
+                  />
+                </div>
+                <div className="form-group">
+                  <label htmlFor="horaFin">Horario Fin</label>
+                  <input
+                    type="time"
+                    id="horaFin"
+                    className="form-control"
+                    value={horaFin}
+                    onChange={(e) => setHoraFin(e.target.value)}
+                  />
                 </div>
               </div>
 
